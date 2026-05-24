@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<JUCERPROJECT id="tEiODR" name="MidiMorfApp" projectType="guiapp" useAppConfig="0"
+              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" companyName="Retro Relic"
+              version="1.0.3">
+  <MAINGROUP id="rL3Kk6" name="MidiMorfApp">
+    <GROUP id="{819795D2-B9DA-2740-0AF6-C8F10D4674AA}" name="Source">
+      <FILE id="U1w5TJ" name="AboutPage.h" compile="0" resource="0" file="Source/AboutPage.h"/>
+      <FILE id="ZZLLRg" name="MorfChordPage.h" compile="0" resource="0" file="Source/MorfChordPage.h"/>
+      <FILE id="NCsSfq" name="DualMPadPage.h" compile="0" resource="0" file="Source/DualMPadPage.h"/>
+      <FILE id="yvwwxI" name="Main.mm" compile="1" resource="0" file="Source/Main.mm"/>
+      <FILE id="c7KyM7" name="MainComponent.h" compile="0" resource="0" file="Source/MainComponent.h"/>
+      <FILE id="FcSmCZ" name="AccelerometerManager.h" compile="0" resource="0"
+            file="Source/AccelerometerManager.h"/>
+      <FILE id="vF6joQ" name="FXButton.h" compile="0" resource="0" file="Source/FXButton.h"/>
+      <FILE id="iIzcBt" name="MainComponent.mm" compile="1" resource="0"
+            file="Source/MainComponent.mm"/>
+      <FILE id="lvgSTU" name="MidiMorfProtocol.h" compile="0" resource="0"
+            file="Source/MidiMorfProtocol.h"/>
+      <FILE id="W9JVTH" name="NetworkClient.h" compile="0" resource="0" file="Source/NetworkClient.h"/>
+      <FILE id="KKcyAO" name="NetworkClient.cpp" compile="1" resource="0"
+            file="Source/NetworkClient.cpp"/>
+      <FILE id="w3d2iE" name="XYPad.h" compile="0" resource="0" file="Source/XYPad.h"/>
+      <FILE id="aSldr1" name="AxisSlider.h" compile="0" resource="0" file="Source/AxisSlider.h"/>
+      <FILE id="aMmClr" name="MidiMorfColors.h" compile="0" resource="0"
+            file="Source/MidiMorfColors.h"/>
+      <FILE id="aPgCnt" name="PageContainer.h" compile="0" resource="0" file="Source/PageContainer.h"/>
+      <FILE id="aPgDts" name="PageDotsIndicator.h" compile="0" resource="0"
+            file="Source/PageDotsIndicator.h"/>
+      <FILE id="aFxPg1" name="FXPunchInPage.h" compile="0" resource="0" file="Source/FXPunchInPage.h"/>
+      <FILE id="aKsPg1" name="MorfPadPage.h" compile="0" resource="0" file="Source/MorfPadPage.h"/>
+      <FILE id="aOmPg1" name="OmnichordPage.h" compile="0" resource="0" file="Source/OmnichordPage.h"/>
+      <FILE id="aCdGrd" name="ChordGrid.h" compile="0" resource="0" file="Source/ChordGrid.h"/>
+      <FILE id="aStmPl" name="StrumPlate.h" compile="0" resource="0" file="Source/StrumPlate.h"/>
+      <FILE id="aTrPg1" name="TransportPage.h" compile="0" resource="0" file="Source/TransportPage.h"/>
+      <FILE id="aSnEn1" name="SynthEngine.h" compile="0" resource="0" file="Source/SynthEngine.h"/>
+      <FILE id="aAuEn1" name="AudioEngine.h" compile="0" resource="0" file="Source/AudioEngine.h"/>
+      <FILE id="aMdSk1" name="MidiSink.h" compile="0" resource="0" file="Source/MidiSink.h"/>
+      <FILE id="aMpHd1" name="MorfPadHandler.h" compile="0" resource="0"
+            file="Source/MorfPadHandler.h"/>
+      <FILE id="aOmHd1" name="OmnichordHandler.h" compile="0" resource="0"
+            file="Source/OmnichordHandler.h"/>
+      <FILE id="aMcHd1" name="MorfChordHandler.h" compile="0" resource="0"
+            file="Source/MorfChordHandler.h"/>
+      <FILE id="aEvRt1" name="EventRouter.h" compile="0" resource="0" file="Source/EventRouter.h"/>
+      <FILE id="aSnSt1" name="SynthSettingsPage.h" compile="0" resource="0"
+            file="Source/SynthSettingsPage.h"/>
+      <FILE id="aPnKs1" name="PianoKeySelector.h" compile="0" resource="0"
+            file="Source/PianoKeySelector.h"/>
+      <FILE id="aRcHd1" name="RoseChordHandler.h" compile="0" resource="0"
+            file="Source/RoseChordHandler.h"/>
+      <FILE id="aRcPg1" name="RoseChordPage.h" compile="0" resource="0"
+            file="Source/RoseChordPage.h"/>
+    </GROUP>
+    <GROUP id="{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}" name="Resources">
+      <FILE id="EdAAxR" name="DSEG7ModernMini-Regular.ttf" compile="0" resource="1"
+            file="../../../../../Downloads/fonts-DSEG_v046/DSEG7-Modern-MINI/DSEG7ModernMini-Regular.ttf"/>
+      <FILE id="YCKwSB" name="DSEG14ModernMini-Regular.ttf" compile="0" resource="1"
+            file="../../../../../Downloads/fonts-DSEG_v046/DSEG14-Modern-MINI/DSEG14ModernMini-Regular.ttf"/>
+      <FILE id="aInBlm" name="inBloom.png" compile="0" resource="1" file="../inBloom.png"/>
+    </GROUP>
+  </MAINGROUP>
+  <MODULES>
+    <MODULE id="juce_audio_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_devices" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_formats" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_processors" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_processors_headless" showAllCode="1" useLocalCopy="0"
+            useGlobalPath="1"/>
+    <MODULE id="juce_audio_utils" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_core" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_data_structures" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_dsp" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_events" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_graphics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_extra" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_osc" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+  </MODULES>
+  <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
+  <EXPORTFORMATS>
+    <XCODE_IPHONE targetFolder="Builds/iOS" localNetworkPermissionNeeded="1" localNetworkPermissionText="Midi-Morf needs local network access to connect to your DAW&lt;"
+                  customPList="&lt;key&gt;NSLocalNetworkUsageDescription&lt;/key&gt;                                                                                                                                                                                                               &#10;  &lt;string&gt;Midi-Morf needs local network access to connect to your DAW&lt;/string&gt;                                                                                                                                                                          &#10;  &lt;key&gt;NSBonjourServices&lt;/key&gt;                                                                                                                                                                                                                            &#10;  &lt;array&gt;                                                                                                                                                                                                                                                 &#10;      &lt;string&gt;_midimorf._tcp&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UISupportedInterfaceOrientations&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;UIInterfaceOrientationPortrait&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;CFBundleIconName&lt;/key&gt;&#10;  &lt;string&gt;AppIcon&lt;/string&gt;&#10;"
+                  iosDevelopmentTeamID=" 69KM48W4T" extraCustomFrameworks="CoreMotion"
+                  iosScreenOrientation="UIInterfaceOrientationPortrait" iPadScreenOrientation="UIInterfaceOrientationPortrait">
+      <CONFIGURATIONS>
+        <CONFIGURATION isDebug="1" name="Debug" iosDeploymentTarget="17.5" iosCompatibility="17.5"/>
+        <CONFIGURATION isDebug="0" name="Release" iosDeploymentTarget="17.5" iosCompatibility="17.5"/>
+      </CONFIGURATIONS>
+      <MODULEPATHS>
+        <MODULEPATH id="juce_audio_basics" path="../../juce"/>
+        <MODULEPATH id="juce_audio_devices" path="../../juce"/>
+        <MODULEPATH id="juce_audio_formats" path="../../juce"/>
+        <MODULEPATH id="juce_audio_processors" path="../../juce"/>
+        <MODULEPATH id="juce_audio_utils" path="../../juce"/>
+        <MODULEPATH id="juce_core" path="../../juce"/>
+        <MODULEPATH id="juce_data_structures" path="../../juce"/>
+        <MODULEPATH id="juce_dsp" path="../../juce"/>
+        <MODULEPATH id="juce_events" path="../../juce"/>
+        <MODULEPATH id="juce_graphics" path="../../juce"/>
+        <MODULEPATH id="juce_gui_basics" path="../../juce"/>
+        <MODULEPATH id="juce_osc" path="../../juce"/>
+        <MODULEPATH id="juce_gui_extra" path="../../../../../../../Applications/JUCE/modules"/>
+        <MODULEPATH id="juce_audio_processors_headless" path="../../../../../../../Applications/JUCE/modules"/>
+      </MODULEPATHS>
+    </XCODE_IPHONE>
+  </EXPORTFORMATS>
+</JUCERPROJECT>

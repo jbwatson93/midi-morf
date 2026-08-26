@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <JUCERPROJECT id="mMsRv1" name="MidiMorfServer" projectType="guiapp" useAppConfig="0"
-              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" version="1.0.0"
+              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" version="2.0.0"
               bundleIdentifier="com.midimorf.server" companyName="Retro Relic">
   <MAINGROUP id="BQ54sE" name="MidiMorfServer">
     <FILE id="iconFile" name="Icon.png" compile="0" resource="1" file="Icon.png"/>
@@ -50,7 +50,8 @@
   <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
   <EXPORTFORMATS>
     <XCODE_MAC targetFolder="Builds/MacOSX" customPList="&lt;key&gt;NSLocalNetworkUsageDescription&lt;/key&gt;&#10;&lt;string&gt;Midi-Morf needs local network access to connect to your phone&lt;/string&gt;&#10;&lt;key&gt;NSBonjourServices&lt;/key&gt;&#10;&lt;array&gt;&#10;    &lt;string&gt;_midimorf._tcp&lt;/string&gt;&#10;&lt;/array&gt;"
-               localNetworkPermissionNeeded="1" bigIcon="iconFile" smallIcon="iconFile">
+               localNetworkPermissionNeeded="1" bigIcon="iconFile" smallIcon="iconFile"
+               hardenedRuntime="1">
       <CONFIGURATIONS>
         <CONFIGURATION isDebug="1" name="Debug" targetName="MidiMorfServer"/>
         <CONFIGURATION isDebug="0" name="Release" targetName="MidiMorfServer"/>

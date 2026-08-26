@@ -4,8 +4,19 @@
 #include "EventRouter.h"
 #include "MidiMorfColors.h"
 #include "PianoKeySelector.h"
+#include "Glassmorphism.h"
 #include <vector>
 #include <algorithm>
+
+// Deep emerald — organic / chord-progression vibe; pairs with Strum-Chord's
+// indigo so the two chord-focused pages read as siblings but stay distinct.
+static const PagePalette morfChordPagePalette {
+    juce::Colour (0xff0F2418),       // substrate top — deep emerald
+    juce::Colour (0xff050F08),       // substrate bottom — near-black with green undertone
+    juce::Colour (0xCC1F4530),       // acrylic top — translucent emerald
+    juce::Colour (0xD80F2418),       // acrylic bottom — deeper translucent
+    juce::Colour (0xCC000000)        // edge — translucent black
+};
 
 //==============================================================================
 // Vertical strum plate for landscape Morf-Chord - drag up/down to strum
@@ -23,17 +34,41 @@ public:
     void paint (juce::Graphics& g) override
     {
         auto bounds = getLocalBounds().toFloat();
+        const float radius = 8.0f;
 
-        g.setColour (MidiMorfColors::padBackground);
-        g.fillRoundedRectangle (bounds, 8.0f);
+        // 3D recessed-chamber glass treatment, matching the horizontal
+        // StrumPlate on Strum-Chord.
+        {
+            juce::Graphics::ScopedSaveState save (g);
+            juce::Path clip;
+            clip.addRoundedRectangle (bounds, radius);
+            g.reduceClipRegion (clip);
 
-        g.setColour (MidiMorfColors::padBorder);
-        g.drawRoundedRectangle (bounds.reduced (1.0f), 8.0f, 1.5f);
+            g.setGradientFill (juce::ColourGradient (
+                juce::Colour (0xff0A1810), bounds.getX(), bounds.getY(),
+                juce::Colour (0xff020805), bounds.getX(), bounds.getBottom(), false));
+            g.fillAll();
 
-        // Draw horizontal string lines
+            auto sheen = bounds.withHeight (bounds.getHeight() * 0.35f);
+            g.setGradientFill (juce::ColourGradient (
+                juce::Colour (0x44FFFFFF), sheen.getX(), sheen.getY(),
+                juce::Colour (0x00FFFFFF), sheen.getX(), sheen.getBottom(), false));
+            g.fillRect (sheen);
+
+            auto shadow = bounds.withTrimmedTop (bounds.getHeight() * 0.6f);
+            g.setGradientFill (juce::ColourGradient (
+                juce::Colour (0x00000000), shadow.getX(), shadow.getY(),
+                juce::Colour (0x66000000), shadow.getX(), shadow.getBottom(), false));
+            g.fillRect (shadow);
+        }
+
+        g.setColour (juce::Colour (0xAA000000));
+        g.drawRoundedRectangle (bounds.reduced (1.0f), radius, 1.5f);
+
+        // Horizontal string lines — slightly brighter for visibility on dark glass
         int numLines = 18;
         float lineSpacing = bounds.getHeight() / (numLines + 1);
-        g.setColour (MidiMorfColors::crosshair.withAlpha (0.3f));
+        g.setColour (juce::Colour (0x44FFFFFF));
         for (int i = 1; i <= numLines; ++i)
         {
             float y = bounds.getY() + i * lineSpacing;
@@ -43,7 +78,7 @@ public:
         if (touching)
         {
             float py = bounds.getY() + lastPosition * bounds.getHeight();
-            g.setColour (MidiMorfColors::accent.withAlpha (0.6f));
+            g.setColour (MidiMorfColors::accent.withAlpha (0.7f));
             g.fillRect (bounds.getX(), py - 2.0f, bounds.getWidth(), 4.0f);
         }
 
@@ -116,13 +151,12 @@ public:
         pianoKeys.onNoteSelected = [this] (int note) { rootNote = (uint8_t) note; sendKeySelect(); };
         addAndMakeVisible (pianoKeys);
 
-        // Major/Minor toggle
+        // Major/Minor toggle — glass treatment, light text in both states.
         modeButton.setButtonText ("Major");
         modeButton.setClickingTogglesState (true);
-        modeButton.setColour (juce::TextButton::buttonColourId, MidiMorfColors::buttonFace);
-        modeButton.setColour (juce::TextButton::buttonOnColourId, MidiMorfColors::accent);
-        modeButton.setColour (juce::TextButton::textColourOnId, MidiMorfColors::textLight);
-        modeButton.setColour (juce::TextButton::textColourOffId, MidiMorfColors::textDark);
+        modeButton.setColour (juce::TextButton::textColourOnId,  MidiMorfColors::textLight);
+        modeButton.setColour (juce::TextButton::textColourOffId, MidiMorfColors::textLight);
+        modeButton.setLookAndFeel (&glassLnf);
         modeButton.onClick = [this] {
             scaleMode = modeButton.getToggleState() ? 1 : 0;
             modeButton.setButtonText (scaleMode == 0 ? "Major" : "Minor");
@@ -141,6 +175,11 @@ public:
         // Strum plate
         strumPlate.setListener (this);
         addAndMakeVisible (strumPlate);
+    }
+
+    ~MorfChordLandscapeContent() override
+    {
+        modeButton.setLookAndFeel (nullptr);
     }
 
     void paint (juce::Graphics& g) override
@@ -175,13 +214,41 @@ public:
 
             auto padColour = juce::Colour::fromHSL (hue, sat, light, 1.0f);
 
-            // Background
-            g.setColour (padColour);
-            g.fillRoundedRectangle (padRect, 6.0f);
+            // Glassmorphism chord pad: substrate gradient in the hue, top
+            // sheen, bottom shadow. When held, substrate brightens so the
+            // active chord glows.
+            const float radius = 6.0f;
+            const bool isActive = (i == heldDegree);
+            {
+                juce::Graphics::ScopedSaveState save (g);
+                juce::Path clip;
+                clip.addRoundedRectangle (padRect, radius);
+                g.reduceClipRegion (clip);
 
-            // Border
-            g.setColour (i == heldDegree ? padColour.brighter (0.5f) : padColour.darker (0.3f));
-            g.drawRoundedRectangle (padRect.reduced (1.0f), 6.0f, 1.5f);
+                const auto subTop = isActive ? padColour.brighter (0.55f) : padColour;
+                const auto subBot = isActive ? padColour                   : padColour.darker (0.35f);
+
+                g.setGradientFill (juce::ColourGradient (
+                    subTop, padRect.getX(), padRect.getY(),
+                    subBot, padRect.getX(), padRect.getBottom(), false));
+                g.fillAll();
+
+                auto sheen = padRect.withHeight (padRect.getHeight() * 0.42f);
+                g.setGradientFill (juce::ColourGradient (
+                    juce::Colour (0x55FFFFFF), sheen.getX(), sheen.getY(),
+                    juce::Colour (0x00FFFFFF), sheen.getX(), sheen.getBottom(), false));
+                g.fillRect (sheen);
+
+                auto shadow = padRect.withTrimmedTop (padRect.getHeight() * 0.6f);
+                g.setGradientFill (juce::ColourGradient (
+                    juce::Colour (0x00000000), shadow.getX(), shadow.getY(),
+                    juce::Colour (0x55000000), shadow.getX(), shadow.getBottom(), false));
+                g.fillRect (shadow);
+            }
+
+            // Border — brighter rim when active
+            g.setColour (isActive ? padColour.brighter (0.7f) : padColour.darker (0.45f));
+            g.drawRoundedRectangle (padRect.reduced (1.0f), radius, isActive ? 2.0f : 1.5f);
 
             // Zone grid lines (faint)
             g.setColour (juce::Colours::white.withAlpha (0.15f));
@@ -504,6 +571,7 @@ private:
     }
 
     EventRouter& networkClient;
+    GlassButtonLookAndFeel glassLnf { morfChordPagePalette, MidiMorfColors::accent, 6.0f };
     PianoKeySelector pianoKeys;
     juce::TextButton modeButton;
     VerticalStrumPlate strumPlate;
@@ -533,22 +601,18 @@ public:
         addAndMakeVisible (content);
     }
 
+    void paint (juce::Graphics& g) override
+    {
+        Glassmorphism::paintPanel (g, getLocalBounds().toFloat(), morfChordPagePalette);
+    }
+
     void saveState (juce::PropertiesFile& props) { content.saveState (props); }
     void restoreState (const juce::PropertiesFile& props) { content.restoreState (props); }
 
     void resized() override
     {
-        int pw = getWidth();
-        int ph = getHeight();
-
-        // Size content to landscape: width=ph, height=pw
-        content.setSize (ph, pw);
-
-        // Rotate 90 CW - same transform as DualMPadPage
-        content.setTransform (
-            juce::AffineTransform::rotation (
-                juce::MathConstants<float>::halfPi, 0.0f, 0.0f)
-            .translated ((float) pw, 0.0f));
+        // App is now native landscape — no rotation needed.
+        content.setBounds (getLocalBounds().reduced (12));
     }
 
 private:

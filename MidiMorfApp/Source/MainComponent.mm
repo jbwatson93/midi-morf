@@ -1,5 +1,9 @@
 #include "MainComponent.h"
 
+#if JUCE_IOS
+ #import <UIKit/UIKit.h>
+#endif
+
 static const juce::String controllerNames[] = {
     "Morf FX",
     "Morf-Pad",
@@ -7,11 +11,19 @@ static const juce::String controllerNames[] = {
     "Transport",
     "Dual M-Pad",
     "Morf-Chord",
-    "Rose-Chord"
+    "Rose-Chord",
+    "Step-Seq"
 };
 
-static const juce::String synthPageName  = "Synth";
-static const juce::String aboutPageName = "About";
+// Guards the invariant that broke once already: NUM_CONTROLLERS is the index
+// base for the synth/about/settings pages AND the bound on this array, so the
+// two must not drift apart.
+static_assert (juce::numElementsInArray (controllerNames) == MidiMorf::NUM_CONTROLLERS,
+               "controllerNames must have exactly NUM_CONTROLLERS entries");
+
+static const juce::String synthPageName    = "Synth";
+static const juce::String settingsPageName = "Settings";
+static const juce::String aboutPageName    = "About";
 
 MainComponent::MainComponent()
     : fxPage (eventRouter),
@@ -20,7 +32,8 @@ MainComponent::MainComponent()
       transportPage (eventRouter),
       dualMPadPage (eventRouter),
       morfChordPage (eventRouter),
-      roseChordPage (eventRouter)
+      roseChordPage (eventRouter),
+      stepSequencerPage (eventRouter)
 {
     // App properties for state persistence
     juce::PropertiesFile::Options options;
@@ -30,44 +43,14 @@ MainComponent::MainComponent()
     options.osxLibrarySubFolder = "Application Support";
     appProperties.setStorageParameters (options);
 
-    // Audio engine — start first so the device is ready before any UI plays notes
-    audioEngine.start();
+    // Audio engine — defer init by a frame so the UI is fully mounted before
+    // iOS negotiates the audio session. If the session can't be acquired (e.g.
+    // another audio app holds it), the UI still shows and we silently retry on
+    // the next foreground.
+    juce::Timer::callAfterDelay (250, [this] { audioEngine.start(); });
 
-    // Hamburger menu button
-    menuButton.setButtonText ("=");
-    menuButton.setColour (juce::TextButton::buttonColourId, MidiMorfColors::buttonFace);
-    menuButton.setColour (juce::TextButton::textColourOffId, MidiMorfColors::textDark);
-    menuButton.onClick = [this] { showNavigationMenu(); };
-    addAndMakeVisible (menuButton);
-
-    // Mode toggle (WiFi ↔ Local) — synth-capable controllers obey it
-    modeToggleButton.onClick = [this]
-    {
-        auto next = (eventRouter.getMode() == EventRouter::Mode::WiFi)
-                        ? EventRouter::Mode::Local
-                        : EventRouter::Mode::WiFi;
-        eventRouter.setMode (next);
-        updateModeToggleAppearance();
-        saveState();
-    };
-    addAndMakeVisible (modeToggleButton);
-    updateModeToggleAppearance();
-
-    // Mode label
-    modeLabel.setText ("Morf FX", juce::dontSendNotification);
-    modeLabel.setJustificationType (juce::Justification::centredLeft);
-    modeLabel.setFont (juce::FontOptions (15.0f, juce::Font::bold));
-    modeLabel.setColour (juce::Label::textColourId, MidiMorfColors::textDark);
-    addAndMakeVisible (modeLabel);
-
-    // Status label
-    statusLabel.setText ("Searching...", juce::dontSendNotification);
-    statusLabel.setJustificationType (juce::Justification::centredRight);
-    statusLabel.setColour (juce::Label::textColourId, MidiMorfColors::statusAmber);
-    statusLabel.setFont (juce::FontOptions (11.0f));
-    addAndMakeVisible (statusLabel);
-
-    // Page container — controller pages, then Synth editor, then About
+    // Page container — controller pages, then Synth editor, then About.
+    // Pages first so the floating menu button sits on top of them.
     pageContainer.addPage (&fxPage);
     pageContainer.addPage (&morfPadPage);
     pageContainer.addPage (&omnichordPage);
@@ -75,10 +58,38 @@ MainComponent::MainComponent()
     pageContainer.addPage (&dualMPadPage);
     pageContainer.addPage (&morfChordPage);
     pageContainer.addPage (&roseChordPage);
+    pageContainer.addPage (&stepSequencerPage);
     pageContainer.addPage (&synthSettingsPage);
     pageContainer.addPage (&aboutPage);
+    pageContainer.addPage (&settingsPage);
     pageContainer.setListener (this);
     addAndMakeVisible (pageContainer);
+
+    // Settings page persists its mode change like everything else.
+    settingsPage.onModeChanged = [this] { saveState(); };
+
+    // Floating menu + synth shortcut (sit on top of the page, in the right gutter).
+    menuButton.onClick = [this] { showNavigationMenu(); };
+    addAndMakeVisible (menuButton);
+
+    synthButton.onClick = [this]
+    {
+        // Synth page is the slot right after the controller pages.
+        pageContainer.setPage (MidiMorf::NUM_CONTROLLERS);
+    };
+    addAndMakeVisible (synthButton);
+
+    // Favorite quick-jump button. Short tap navigates to the assigned page;
+    // long-press opens a picker so the user can rebind it. Empty slot routes
+    // a short tap to the picker as well, so the first interaction is useful.
+    favoriteButton.onShortTap = [this]
+    {
+        int idx = favoriteButton.getAssignment();
+        if (idx >= 0 && idx < pageContainer.getNumPages())
+            pageContainer.setPage (idx);
+    };
+    favoriteButton.onLongPress = [this] { showFavoritePicker(); };
+    addAndMakeVisible (favoriteButton);
 
     synthSettingsPage.onPatchChanged = [this] { saveState(); };
 
@@ -96,7 +107,8 @@ MainComponent::MainComponent()
     // Ping timer
     startTimerHz (2);
 
-    setSize (400, 700);
+    // Landscape initial size hint
+    setSize (800, 400);
 }
 
 MainComponent::~MainComponent()
@@ -111,57 +123,149 @@ MainComponent::~MainComponent()
 
 void MainComponent::paint (juce::Graphics& g)
 {
-    g.fillAll (MidiMorfColors::background);
+    // Wood-grain back panel — fills the whole window, but the page container
+    // covers the centre so it's only visible in the safe-area gutters
+    // (rounded corners + Dynamic Island side in landscape).
+    auto wood = juce::ImageCache::getFromMemory (BinaryData::wood2_jpg,
+                                                  BinaryData::wood2_jpgSize);
+    if (! wood.isNull())
+    {
+        g.drawImage (wood, getLocalBounds().toFloat(),
+                     juce::RectanglePlacement::fillDestination);
+        // Slight darkening overlay so the texture reads as a "panel" rather
+        // than a stark photo — keeps focus on the controls.
+        g.setColour (juce::Colour (0x33000000));
+        g.fillAll();
+    }
+    else
+    {
+        g.fillAll (MidiMorfColors::background);
+    }
 }
 
 void MainComponent::resized()
 {
     auto area = getLocalBounds();
 
-    // Safe area padding for iOS notch/home indicator
-    area.removeFromTop (50);
-    area.removeFromBottom (34);
-    area = area.reduced (8, 0);
+    // Floating-button geometry needs to be in scope for both the page trim
+    // (so we never let page content land under the buttons) and the button
+    // layout below.
+    const int btnW          = 56;
+    const int floatingPadR  = 4;            // gap between button right edge and screen
+    const int floatingGapLR = 4;            // gap between button left edge and page right
+    const int rightGutter   = btnW + floatingPadR + floatingGapLR;   // 64
 
-    // Top bar: hamburger | mode label | mode toggle | status
-    auto topBar = area.removeFromTop (40);
-    menuButton.setBounds (topBar.removeFromLeft (50));
-    topBar.removeFromLeft (8);
-    statusLabel.setBounds (topBar.removeFromRight (90));
-    topBar.removeFromRight (4);
-    modeToggleButton.setBounds (topBar.removeFromRight (70));
-    topBar.removeFromRight (6);
-    modeLabel.setBounds (topBar);
+#if JUCE_IOS
+    // iPad has tiny rounded-corner safe-area insets — page content would
+    // slide right under the floating Menu / Synth / Favourite buttons (and
+    // cover things like the right-edge strum bar on Strum-Chord and
+    // Morf-Chord) unless we floor the trim at the button gutter. iPhone with
+    // Dynamic Island already gives ~44pt of inset which is enough; iPhone
+    // landscape is also tight on horizontal real estate so we don't want to
+    // widen the wood frame there unnecessarily.
+    const bool isIPad = ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad);
 
-    area.removeFromTop (4);
+    if (auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+    {
+        auto insets = display->safeAreaInsets;
+        const int hMax      = juce::jmax (insets.getLeft(), insets.getRight());
+        const int extraPad  = 8;
+        const int safeTrim  = hMax + extraPad;
+        const int trim      = isIPad ? juce::jmax (safeTrim, rightGutter)
+                                     : safeTrim;
+        area = area.withTrimmedLeft  (trim)
+                   .withTrimmedRight (trim);
+    }
+    else if (isIPad)
+    {
+        area = area.withTrimmedLeft  (rightGutter)
+                   .withTrimmedRight (rightGutter);
+    }
+#endif
 
-    // Page container fills the rest
+    // PageContainer fills the safe area so page content never lands behind a
+    // rounded corner or under the Dynamic Island.
     pageContainer.setBounds (area);
+
+    // The menu button intentionally lives OUTSIDE the safe area, in the
+    // rounded-corner gutter on the right edge — that's the dead space JB
+    // wants reclaimed. It uses the full screen rect, not the safe-area one.
+    auto full = getLocalBounds();
+    const int btnH = 60;
+    const int gap  = 6;
+    int x = full.getRight() - btnW - 4;
+    menuButton.setBounds     (x, full.getY() + 36,                       btnW, btnH);
+    synthButton.setBounds    (x, full.getY() + 36 +     (btnH + gap),    btnW, btnH);
+    favoriteButton.setBounds (x, full.getY() + 36 + 2 * (btnH + gap),    btnW, btnH);
 }
 
 void MainComponent::showNavigationMenu()
 {
     juce::PopupMenu menu;
 
+    // Controller pages
     for (int i = 0; i < MidiMorf::NUM_CONTROLLERS; ++i)
     {
         bool isCurrent = (i == pageContainer.getCurrentPage());
         menu.addItem (i + 1, controllerNames[i], true, isCurrent);
     }
 
+    // Synth, Settings, About
     menu.addSeparator();
-    int synthIdx = MidiMorf::NUM_CONTROLLERS;
-    int aboutIdx = MidiMorf::NUM_CONTROLLERS + 1;
-    menu.addItem (synthIdx + 1, synthPageName, true, pageContainer.getCurrentPage() == synthIdx);
-    menu.addItem (aboutIdx + 1, aboutPageName, true, pageContainer.getCurrentPage() == aboutIdx);
+    const int synthIdx    = MidiMorf::NUM_CONTROLLERS;
+    const int aboutIdx    = MidiMorf::NUM_CONTROLLERS + 1;
+    const int settingsIdx = MidiMorf::NUM_CONTROLLERS + 2;
+    menu.addItem (synthIdx    + 1, synthPageName,    true, pageContainer.getCurrentPage() == synthIdx);
+    menu.addItem (settingsIdx + 1, settingsPageName, true, pageContainer.getCurrentPage() == settingsIdx);
+    menu.addItem (aboutIdx    + 1, aboutPageName,    true, pageContainer.getCurrentPage() == aboutIdx);
 
     menu.showMenuAsync (juce::PopupMenu::Options()
                             .withTargetComponent (&menuButton)
-                            .withStandardItemHeight (44),
+                            .withStandardItemHeight (36),
         [this] (int result)
         {
-            if (result > 0)
-                pageContainer.setPage (result - 1);
+            if (result <= 0) return;
+            pageContainer.setPage (result - 1);
+        });
+}
+
+juce::String MainComponent::getPageDisplayName (int pageIndex) const
+{
+    if (pageIndex >= 0 && pageIndex < MidiMorf::NUM_CONTROLLERS)
+        return controllerNames[pageIndex];
+    if (pageIndex == MidiMorf::NUM_CONTROLLERS)     return synthPageName;
+    if (pageIndex == MidiMorf::NUM_CONTROLLERS + 1) return aboutPageName;
+    if (pageIndex == MidiMorf::NUM_CONTROLLERS + 2) return settingsPageName;
+    return {};
+}
+
+void MainComponent::showFavoritePicker()
+{
+    juce::PopupMenu menu;
+    menu.addItem (juce::PopupMenu::Item ("Set favorite to...").setEnabled (false));
+    menu.addSeparator();
+
+    const int currentAssignment = favoriteButton.getAssignment();
+    for (int i = 0; i < MidiMorf::NUM_CONTROLLERS; ++i)
+        menu.addItem (i + 1, controllerNames[i], true, i == currentAssignment);
+
+    menu.addSeparator();
+    const int synthIdx    = MidiMorf::NUM_CONTROLLERS;
+    const int aboutIdx    = MidiMorf::NUM_CONTROLLERS + 1;
+    const int settingsIdx = MidiMorf::NUM_CONTROLLERS + 2;
+    menu.addItem (synthIdx    + 1, synthPageName,    true, synthIdx    == currentAssignment);
+    menu.addItem (settingsIdx + 1, settingsPageName, true, settingsIdx == currentAssignment);
+    menu.addItem (aboutIdx    + 1, aboutPageName,    true, aboutIdx    == currentAssignment);
+
+    menu.showMenuAsync (juce::PopupMenu::Options()
+                            .withTargetComponent (&favoriteButton)
+                            .withStandardItemHeight (36),
+        [this] (int result)
+        {
+            if (result <= 0) return;
+            const int idx = result - 1;
+            favoriteButton.setAssignment (idx, getPageDisplayName (idx));
+            saveState();
         });
 }
 
@@ -170,8 +274,9 @@ void MainComponent::connectedToPlugin (const juce::String& hostName)
 {
     juce::MessageManager::callAsync ([this, hostName]()
     {
-        statusLabel.setText ("Connected", juce::dontSendNotification);
-        statusLabel.setColour (juce::Label::textColourId, MidiMorfColors::statusGreen);
+        connected = true;
+        connectedHost = hostName;
+        settingsPage.setConnectionStatus (connected, connectedHost);
     });
 }
 
@@ -179,8 +284,9 @@ void MainComponent::disconnectedFromPlugin()
 {
     juce::MessageManager::callAsync ([this]()
     {
-        statusLabel.setText ("Searching...", juce::dontSendNotification);
-        statusLabel.setColour (juce::Label::textColourId, MidiMorfColors::statusAmber);
+        connected = false;
+        connectedHost.clear();
+        settingsPage.setConnectionStatus (connected, connectedHost);
     });
 }
 
@@ -196,6 +302,9 @@ void MainComponent::slotConfigReceived (int slotIndex, const juce::String& name)
 void MainComponent::tiltUpdated (float tiltX, float tiltY)
 {
     eventRouter.sendTiltUpdate (tiltX, tiltY);
+    // Local modulation: accel feeds the routing matrix's AccelX/AccelY sources.
+    audioEngine.getSynth().setAccelX (tiltX);
+    audioEngine.getSynth().setAccelY (tiltY);
 }
 
 // PageContainer::Listener
@@ -205,15 +314,11 @@ void MainComponent::pageChanged (int newPageIndex)
     {
         auto mode = static_cast<MidiMorf::ControllerMode> (newPageIndex);
         eventRouter.sendScreenMode (mode);
-        modeLabel.setText (controllerNames[newPageIndex], juce::dontSendNotification);
-    }
-    else if (newPageIndex == MidiMorf::NUM_CONTROLLERS)
-    {
-        modeLabel.setText (synthPageName, juce::dontSendNotification);
-    }
-    else
-    {
-        modeLabel.setText (aboutPageName, juce::dontSendNotification);
+
+        // The server keeps no per-page memory, so the sequencer has to resend
+        // its whole pattern whenever the page comes back into focus.
+        if (mode == MidiMorf::ControllerMode::StepSequencer)
+            stepSequencerPage.pushFullState();
     }
 
     // Persist current state whenever page changes
@@ -233,6 +338,7 @@ void MainComponent::saveState()
     {
         props->setValue ("lastPage", pageContainer.getCurrentPage());
         props->setValue ("mode", eventRouter.getMode() == EventRouter::Mode::Local ? 1 : 0);
+        props->setValue ("favorite_0", favoriteButton.getAssignment());
         morfPadPage.saveState (*props);
         dualMPadPage.saveState (*props);
         morfChordPage.saveState (*props);
@@ -252,22 +358,28 @@ void MainComponent::restoreState()
         roseChordPage.restoreState (*props);
         synthSettingsPage.restoreState (*props);
 
-        int savedMode = props->getIntValue ("mode", 0);
+        // First-launch default: Local mode. New users hear the built-in
+        // synth immediately when they tap a controller — no server setup
+        // needed for a satisfying first-play. Existing users' saved mode
+        // still wins because it's read from the same key.
+        int savedMode = props->getIntValue ("mode", 1);
         eventRouter.setMode (savedMode == 1 ? EventRouter::Mode::Local : EventRouter::Mode::WiFi);
-        updateModeToggleAppearance();
+        settingsPage.refreshFromRouter();
 
-        int lastPage = props->getIntValue ("lastPage", 0);
-        if (lastPage >= 0 && lastPage < MidiMorf::NUM_CONTROLLERS + 2)  // controllers + synth + about
+        int favIdx = props->getIntValue ("favorite_0", -1);
+        if (favIdx >= 0 && favIdx < MidiMorf::NUM_CONTROLLERS + 3)
+            favoriteButton.setAssignment (favIdx, getPageDisplayName (favIdx));
+
+        // First-launch default: Morf-Chord (index 5). It's synth-capable so
+        // Local mode plays immediately, and full chords make a stronger first
+        // impression than single notes. Existing users' saved page still wins.
+        int lastPage = props->getIntValue ("lastPage", 5);
+        if (lastPage >= 0 && lastPage < MidiMorf::NUM_CONTROLLERS + 3)
             pageContainer.setPage (lastPage);
     }
 }
 
-void MainComponent::updateModeToggleAppearance()
+void MainComponent::seqPlayheadChanged (int step)
 {
-    bool local = (eventRouter.getMode() == EventRouter::Mode::Local);
-    modeToggleButton.setButtonText (local ? "Local" : "WiFi");
-    modeToggleButton.setColour (juce::TextButton::buttonColourId,
-                                 local ? MidiMorfColors::accent : MidiMorfColors::buttonFace);
-    modeToggleButton.setColour (juce::TextButton::textColourOffId,
-                                 local ? MidiMorfColors::textLight : MidiMorfColors::textDark);
+    stepSequencerPage.setPlayhead (step);
 }

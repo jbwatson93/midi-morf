@@ -228,7 +228,7 @@ void NetworkClient::sendMorfChordKeySelect (uint8_t rootNote, uint8_t scaleMode)
     queuePacket (packet, sizeof (packet));
 }
 
-void NetworkClient::sendRoseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint8_t modBits, int8_t voicingOffset)
+void NetworkClient::sendRoseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset)
 {
     uint8_t packet[MidiMorf::HEADER_SIZE + MidiMorf::ROSECHORD_NOTEON_PAYLOAD_SIZE];
     packet[0] = static_cast<uint8_t> (MidiMorf::PhoneMessage::RoseChordNoteOn);
@@ -236,6 +236,7 @@ void NetworkClient::sendRoseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint
     packet[2] = typeBits;
     packet[3] = modBits;
     packet[4] = static_cast<uint8_t> (voicingOffset);  // i8 transported as raw byte
+    packet[5] = static_cast<uint8_t> (octaveOffset);   // i8 transported as raw byte
     queuePacket (packet, sizeof (packet));
 }
 
@@ -246,13 +247,69 @@ void NetworkClient::sendRoseChordNoteOff()
     queuePacket (packet, sizeof (packet));
 }
 
-void NetworkClient::sendRoseChordConfig (uint8_t typeBits, uint8_t modBits, int8_t voicingOffset)
+void NetworkClient::sendRoseChordConfig (uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset)
 {
     uint8_t packet[MidiMorf::HEADER_SIZE + MidiMorf::ROSECHORD_CONFIG_PAYLOAD_SIZE];
     packet[0] = static_cast<uint8_t> (MidiMorf::PhoneMessage::RoseChordConfig);
     packet[1] = typeBits;
     packet[2] = modBits;
     packet[3] = static_cast<uint8_t> (voicingOffset);
+    packet[4] = static_cast<uint8_t> (octaveOffset);
+    queuePacket (packet, sizeof (packet));
+}
+
+void NetworkClient::sendPackEntitlement (uint8_t packId, bool valid)
+{
+    uint8_t packet[MidiMorf::HEADER_SIZE + MidiMorf::PACK_ENTITLEMENT_PAYLOAD_SIZE];
+    packet[0] = static_cast<uint8_t> (MidiMorf::PhoneMessage::PackEntitlement);
+    packet[1] = packId;
+    packet[2] = valid ? 1 : 0;
+    queuePacket (packet, sizeof (packet));
+}
+
+void NetworkClient::sendSeqStepSet (uint8_t step, uint8_t degree, uint8_t velocity, uint8_t gate, uint8_t mod, bool rest)
+{
+    uint8_t packet[MidiMorf::HEADER_SIZE + MidiMorf::SEQ_STEP_SET_PAYLOAD_SIZE];
+    packet[0] = static_cast<uint8_t> (MidiMorf::PhoneMessage::SeqStepSet);
+    packet[1] = step;
+    packet[2] = degree;
+    packet[3] = velocity;
+    packet[4] = gate;
+    packet[5] = mod;
+    packet[6] = rest ? MidiMorf::SEQ_FLAG_REST : 0;
+    queuePacket (packet, sizeof (packet));
+}
+
+void NetworkClient::sendSeqRatchet (MidiMorf::SeqRatchetDiv division, bool active)
+{
+    uint8_t packet[MidiMorf::HEADER_SIZE + MidiMorf::SEQ_RATCHET_PAYLOAD_SIZE];
+    packet[0] = static_cast<uint8_t> (MidiMorf::PhoneMessage::SeqRatchet);
+    packet[1] = static_cast<uint8_t> (division);
+    packet[2] = active ? 1 : 0;
+    queuePacket (packet, sizeof (packet));
+}
+
+void NetworkClient::sendSeqConfig (uint8_t patternLength, uint8_t rate, uint8_t direction, uint8_t swing,
+                                   uint8_t scaleIndex, uint8_t rootNote, uint8_t baseOctave, uint8_t octaveRange)
+{
+    uint8_t packet[MidiMorf::HEADER_SIZE + MidiMorf::SEQ_CONFIG_PAYLOAD_SIZE];
+    packet[0] = static_cast<uint8_t> (MidiMorf::PhoneMessage::SeqConfig);
+    packet[1] = patternLength;
+    packet[2] = rate;
+    packet[3] = direction;
+    packet[4] = swing;
+    packet[5] = scaleIndex;
+    packet[6] = rootNote;
+    packet[7] = baseOctave;
+    packet[8] = octaveRange;
+    queuePacket (packet, sizeof (packet));
+}
+
+void NetworkClient::sendSeqTransport (MidiMorf::SeqCommand command)
+{
+    uint8_t packet[MidiMorf::HEADER_SIZE + MidiMorf::SEQ_TRANSPORT_PAYLOAD_SIZE];
+    packet[0] = static_cast<uint8_t> (MidiMorf::PhoneMessage::SeqTransport);
+    packet[1] = static_cast<uint8_t> (command);
     queuePacket (packet, sizeof (packet));
 }
 
@@ -337,23 +394,35 @@ bool NetworkClient::tryConnect()
             auto& service = services[0];
             DBG ("NetworkClient: found service at " << service.address.toString() << ":" << service.port);
 
-            serviceList.reset();
+            // Cache the service info — we're about to release serviceList.
+            const auto serviceAddr = service.address.toString();
+            const int  servicePort = service.port;
 
-            if (socket.connect (service.address.toString(), service.port, 3000))
+            // AvailableServiceList inherits from AsyncUpdater. Destroying it
+            // off the message thread while a Bonjour callback is pending
+            // trips the AsyncUpdater destructor assertion (juce_AsyncUpdater
+            // .cpp:69). Move ownership to the message thread for destruction.
+            juce::MessageManager::callAsync (
+                [sl = std::move (serviceList)]() mutable {});
+
+            if (socket.connect (serviceAddr, servicePort, 3000))
             {
                 connected.store (true);
                 DBG ("NetworkClient: connected!");
 
                 if (listener != nullptr)
-                    listener->connectedToPlugin (service.address.toString());
+                    listener->connectedToPlugin (serviceAddr);
                 return true;
             }
 
             DBG ("NetworkClient: TCP connect failed");
+            return false;
         }
     }
 
-    serviceList.reset();
+    // No service found this round — also hand off to the message thread.
+    juce::MessageManager::callAsync (
+        [sl = std::move (serviceList)]() mutable {});
     return false;
 }
 
@@ -440,6 +509,26 @@ void NetworkClient::processIncoming (const uint8_t* data, int size)
             case MidiMorf::PluginMessage::Pong:
                 offset += 1;
                 break;
+
+            case MidiMorf::PluginMessage::SeqPlayhead:
+            {
+                if (offset + 1 >= size)
+                    return;
+
+                const uint8_t raw = data[offset + 1];
+                const int step = (raw == MidiMorf::SEQ_STEP_NONE) ? -1 : (int) raw;
+                offset += 2;
+
+                if (listener != nullptr)
+                {
+                    juce::MessageManager::callAsync ([this, step]()
+                    {
+                        if (listener != nullptr)
+                            listener->seqPlayheadChanged (step);
+                    });
+                }
+                break;
+            }
 
             default:
                 return;

@@ -7,6 +7,17 @@
 #include "EventRouter.h"
 #include "MidiMorfColors.h"
 #include "MidiMorfProtocol.h"
+#include "Glassmorphism.h"
+
+// Deep teal palette — studio rack effects vibe. Lives at file scope so
+// FXButton instances can hold a pointer to it.
+static const PagePalette fxPagePalette {
+    juce::Colour (0xff0F2A33),       // substrate top — deep teal
+    juce::Colour (0xff061418),       // substrate bottom — near-black with teal undertone
+    juce::Colour (0xCC1F4550),       // acrylic top — translucent indigo-teal
+    juce::Colour (0xD8112832),       // acrylic bottom — deeper translucent
+    juce::Colour (0xCC000000)        // edge — translucent black
+};
 
 class FXPunchInPage : public juce::Component,
                       public XYPad::Listener,
@@ -32,6 +43,7 @@ public:
         {
             auto* btn = new FXButton (i);
             btn->setListener (this);
+            btn->setPalette (&fxPagePalette);
             fxButtons.add (btn);
             addAndMakeVisible (btn);
         }
@@ -45,36 +57,42 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        // Transparent — parent paints the background
+        // FX page paints its own deep-teal glass panel over the PageContainer's
+        // theme background — gives FX Punch-in a distinct identity from the
+        // chord/instrument pages.
+        Glassmorphism::paintPanel (g, getLocalBounds().toFloat(), fxPagePalette);
     }
 
     void resized() override
     {
-        auto area = getLocalBounds();
+        // Landscape layout:
+        //   • XY pad fills the left, with the Y slider on its left edge
+        //   • 2×2 FX button grid on the right
+        //   • X slider runs along the bottom under the XY pad (full width up
+        //     to the FX block)
+        auto area = getLocalBounds().reduced (12);
 
-        // FX buttons at bottom in 2x2 grid, ~1/3 of available height
-        int gridH = area.getHeight() / 3;
-        auto buttonArea = area.removeFromBottom (gridH);
-        int rowH = (gridH - 6) / 2;
-        int colW = (buttonArea.getWidth() - 6) / 2;
+        // Right column: FX buttons (2×2)
+        const int fxColW = juce::jmax (140, area.getWidth() / 4);
+        auto fxArea = area.removeFromRight (fxColW);
 
-        fxButtons[0]->setBounds (buttonArea.getX(),              buttonArea.getY(),              colW, rowH);
-        fxButtons[1]->setBounds (buttonArea.getX() + colW + 6,   buttonArea.getY(),              colW, rowH);
-        fxButtons[2]->setBounds (buttonArea.getX(),              buttonArea.getY() + rowH + 6,   colW, rowH);
-        fxButtons[3]->setBounds (buttonArea.getX() + colW + 6,   buttonArea.getY() + rowH + 6,   colW, rowH);
+        int rowH = (fxArea.getHeight() - 6) / 2;
+        int colW = (fxArea.getWidth()  - 6) / 2;
+        fxButtons[0]->setBounds (fxArea.getX(),              fxArea.getY(),              colW, rowH);
+        fxButtons[1]->setBounds (fxArea.getX() + colW + 6,   fxArea.getY(),              colW, rowH);
+        fxButtons[2]->setBounds (fxArea.getX(),              fxArea.getY() + rowH + 6,   colW, rowH);
+        fxButtons[3]->setBounds (fxArea.getX() + colW + 6,   fxArea.getY() + rowH + 6,   colW, rowH);
 
-        area.removeFromBottom (6);
+        area.removeFromRight (8);
 
-        // X slider (horizontal) at bottom of remaining area
-        auto xSliderArea = area.removeFromBottom (40);
+        // X slider along the bottom of the remaining left region
+        auto xSliderArea = area.removeFromBottom (36);
         xSlider.setBounds (xSliderArea);
-
         area.removeFromBottom (6);
 
-        // Y slider (vertical) on the left side
-        auto ySliderArea = area.removeFromLeft (50);
+        // Y slider on the left edge of the XY pad
+        auto ySliderArea = area.removeFromLeft (44);
         ySlider.setBounds (ySliderArea);
-
         area.removeFromLeft (6);
 
         // XY pad fills the rest

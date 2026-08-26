@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "MidiMorfColors.h"
 #include "BinaryData.h"
+#include "Glassmorphism.h"
 
 class FXButton : public juce::Component
 {
@@ -25,6 +26,7 @@ public:
     void setListener (Listener* l) { listener = l; }
     void setLabel (const juce::String& newLabel) { label = newLabel; repaint(); }
     void setHighlighted (bool h) { highlighted = h; repaint(); }
+    void setPalette (const PagePalette* p) { palette = p; repaint(); }
     int getSlotIndex() const { return slotIndex; }
     bool isHeld() const { return held; }
 
@@ -32,31 +34,14 @@ public:
     {
         auto bounds = getLocalBounds().toFloat().reduced (2.0f);
 
-        if (held)
-        {
-            g.setColour (MidiMorfColors::buttonFaceActive);
-            g.fillRoundedRectangle (bounds, 8.0f);
-            g.setColour (MidiMorfColors::textDark);
-        }
-        else
-        {
-            g.setColour (MidiMorfColors::buttonFace);
-            g.fillRoundedRectangle (bounds, 8.0f);
+        if (palette != nullptr)
+            Glassmorphism::paintButton (g, bounds, *palette,
+                                         MidiMorfColors::accent,
+                                         held, highlighted, 8.0f);
 
-            if (highlighted)
-            {
-                g.setColour (MidiMorfColors::accent);
-                g.drawRoundedRectangle (bounds.reduced (1.0f), 8.0f, 2.0f);
-            }
-            else
-            {
-                g.setColour (MidiMorfColors::buttonBorder);
-                g.drawRoundedRectangle (bounds.reduced (1.0f), 8.0f, 1.5f);
-            }
-
-            g.setColour (MidiMorfColors::textDark);
-        }
-
+        // Label — dark text on the bright held substrate, light text on the
+        // dark idle substrate so the label always reads.
+        g.setColour (held ? MidiMorfColors::textDark : MidiMorfColors::textLight);
         g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
         g.drawText (label, bounds, juce::Justification::centred);
     }
@@ -84,4 +69,5 @@ private:
     bool highlighted = false;
     Listener* listener = nullptr;
     juce::Typeface::Ptr ledTypeface;
+    const PagePalette* palette = nullptr;
 };

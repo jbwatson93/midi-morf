@@ -14,6 +14,7 @@ MidiMorfEngine::MidiMorfEngine()
     omnichordHandler = std::make_unique<OmnichordHandler> (virtualMidiPort);
     morfChordHandler   = std::make_unique<MorfChordHandler> (virtualMidiPort);
     roseChordHandler = std::make_unique<RoseChordHandler> (virtualMidiPort, 7);
+    stepSequencer = std::make_unique<StepSequencerEngine> (virtualMidiPort, 8);
 
     networkServer.setListener (this);
     loadState();
@@ -27,6 +28,12 @@ MidiMorfEngine::~MidiMorfEngine()
 void MidiMorfEngine::start()
 {
     virtualMidiPort.open();
+
+    // DAW clock in on a second virtual port, driving the sequencer engines.
+    midiClock.addListener (stepSequencer.get());
+    midiClock.open();
+    startTimerHz (30);
+
     networkServer.setListener (this);
     networkServer.start();
 
@@ -38,6 +45,12 @@ void MidiMorfEngine::stop()
 {
     saveState();
     networkServer.stop();
+
+    stopTimer();
+    midiClock.close();
+    midiClock.removeListener (stepSequencer.get());
+    stepSequencer->allNotesOff();
+
     virtualMidiPort.close();
 }
 
@@ -269,6 +282,8 @@ void MidiMorfEngine::clientConnected (const juce::String&)
 
 void MidiMorfEngine::clientDisconnected()
 {
+    stepSequencer->allNotesOff();
+
     int mask = activeSlotMask.exchange (0);
     for (int i = 0; i < MidiMorf::NUM_SLOTS; ++i)
     {
@@ -399,9 +414,9 @@ void MidiMorfEngine::morfChordKeySelected (uint8_t rootNote, uint8_t scaleMode)
     morfChordHandler->setKey (rootNote, scaleMode);
 }
 
-void MidiMorfEngine::roseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint8_t modBits, int8_t voicingOffset)
+void MidiMorfEngine::roseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset)
 {
-    roseChordHandler->setConfig (typeBits, modBits, voicingOffset);
+    roseChordHandler->setConfig (typeBits, modBits, voicingOffset, octaveOffset);
     roseChordHandler->noteOn (rootIdx);
 }
 
@@ -410,9 +425,9 @@ void MidiMorfEngine::roseChordNoteOff()
     roseChordHandler->noteOff();
 }
 
-void MidiMorfEngine::roseChordConfig (uint8_t typeBits, uint8_t modBits, int8_t voicingOffset)
+void MidiMorfEngine::roseChordConfig (uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset)
 {
-    roseChordHandler->setConfig (typeBits, modBits, voicingOffset);
+    roseChordHandler->setConfig (typeBits, modBits, voicingOffset, octaveOffset);
 }
 
 // Local UI interaction
@@ -497,4 +512,79 @@ void MidiMorfEngine::sendTiltAssignBurst (bool isXAxis)
     sendCC (ch, cc, 0);
     sendCC (ch, cc, 127);
     sendCC (ch, cc, 0);
+}
+
+
+// ── Creative Sequencer Pack ──────────────────────────────────────────────────
+
+void MidiMorfEngine::timerCallback()
+{
+    const int step = stepSequencer->isEnabled() ? stepSequencer->getCurrentStep() : -1;
+
+    if (step == lastSentPlayhead)
+        return;
+
+    lastSentPlayhead = step;
+    networkServer.sendSeqPlayhead (step < 0 ? MidiMorf::SEQ_STEP_NONE
+                                            : static_cast<uint8_t> (step));
+}
+
+void MidiMorfEngine::packEntitlement (uint8_t packId, bool valid)
+{
+    if (static_cast<MidiMorf::PackId> (packId) != MidiMorf::PackId::CreativeSequencer)
+        return;
+
+    // Authoritative: the phone holds the entitlement, the server just obeys it.
+    // NOTE: StepSequencerEngine still defaults to enabled so the demo pattern
+    // plays with no phone attached. Flip that default when the IAP ships (WS-3).
+    stepSequencer->setEnabled (valid);
+    DBG ("MidiMorfEngine: Creative Sequencer Pack " << (valid ? "unlocked" : "locked"));
+}
+
+void MidiMorfEngine::seqStepSet (uint8_t step, uint8_t degree, uint8_t velocity, uint8_t gate, uint8_t mod, uint8_t flags)
+{
+    StepSequencerEngine::Step s;
+    s.degree   = degree;
+    s.velocity = velocity;
+    s.gate     = gate;
+    s.mod      = mod;
+    s.rest     = (flags & MidiMorf::SEQ_FLAG_REST) != 0;
+
+    stepSequencer->setStep (step, s);
+}
+
+void MidiMorfEngine::seqConfig (uint8_t patternLength, uint8_t rate, uint8_t direction, uint8_t swing,
+                                uint8_t scaleIndex, uint8_t rootNote, uint8_t baseOctave, uint8_t octaveRange)
+{
+    stepSequencer->setPatternLength (patternLength);
+    stepSequencer->setRate (static_cast<StepSequencerEngine::Rate> (
+        juce::jlimit (0, 5, (int) rate)));
+    stepSequencer->setDirection (static_cast<StepSequencerEngine::Direction> (
+        juce::jlimit (0, 3, (int) direction)));
+    stepSequencer->setSwing ((float) juce::jlimit (0, 100, (int) swing) / 100.0f);
+    stepSequencer->setScale (scaleIndex, rootNote, baseOctave, octaveRange);
+}
+
+void MidiMorfEngine::seqTransport (uint8_t command)
+{
+    switch (static_cast<MidiMorf::SeqCommand> (command))
+    {
+        case MidiMorf::SeqCommand::Panic:
+            stepSequencer->allNotesOff();
+            break;
+
+        case MidiMorf::SeqCommand::Run:
+            // Transport is the DAW's to own — the sequencer follows MIDI clock.
+            // Nothing to do here; kept so the phone can express intent.
+            break;
+
+        case MidiMorf::SeqCommand::Reset:
+            stepSequencer->clockStart();
+            break;
+    }
+}
+
+void MidiMorfEngine::seqRatchet (uint8_t division, bool active)
+{
+    stepSequencer->setRatchet (division, active);
 }

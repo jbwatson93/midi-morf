@@ -3,11 +3,24 @@
 #include <JuceHeader.h>
 #include "EventRouter.h"
 #include "MidiMorfColors.h"
+#include "Glassmorphism.h"
 
-class TransportPage : public juce::Component
+// Deep slate — utility hardware feel. Restrained enough that the candy-bright
+// Play / Stop / Record buttons stay the visual focus.
+static const PagePalette transportPagePalette {
+    juce::Colour (0xff1A1E26),       // substrate top — deep slate
+    juce::Colour (0xff080A0D),       // substrate bottom — near-black
+    juce::Colour (0xCC2A323C),       // acrylic top — translucent slate
+    juce::Colour (0xD81A1E26),       // acrylic bottom — deeper translucent
+    juce::Colour (0xCC000000)        // edge — translucent black
+};
+
+//==============================================================================
+// Portrait-aspect content. Hosted by TransportPage which rotates it 90° CCW.
+class TransportPortraitContent : public juce::Component
 {
 public:
-    TransportPage (EventRouter& client)
+    TransportPortraitContent (EventRouter& client)
         : networkClient (client)
     {
     }
@@ -31,10 +44,12 @@ public:
             utilBounds[i] = b;
 
             bool isPressed = (pressedUtil == i);
-            drawY2KButton (g, b, isPressed, juce::Colour (0xFF2A3A5C), 6.0f);
+            Glassmorphism::paintButton (g, b, transportPagePalette,
+                                         MidiMorfColors::accent,
+                                         isPressed, false, 6.0f);
 
             // Rotated text for sideways use
-            g.setColour (isPressed ? juce::Colours::white : juce::Colour (0xFFB0C4E8));
+            g.setColour (isPressed ? MidiMorfColors::textDark : MidiMorfColors::textLight);
             g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
 
             juce::Graphics::ScopedSaveState ss (g);
@@ -233,4 +248,38 @@ private:
 
     const juce::String utilLabels[5] = { "TAP", "LOOP", "CLIP/DEV", "MIX/SCENE", "METRO" };
     const uint8_t utilIds[5] = { 7, 5, 8, 9, 10 };
+};
+
+//==============================================================================
+// Outer page — landscape container that rotates the portrait content 90° CCW.
+// Inside the portrait content the utility-button text is already +90°-rotated;
+// the net rotation cancels out so the text reads normally in landscape.
+class TransportPage : public juce::Component
+{
+public:
+    TransportPage (EventRouter& client) : content (client)
+    {
+        addAndMakeVisible (content);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        // Landscape-native panel paint — rotated content sits on top.
+        Glassmorphism::paintPanel (g, getLocalBounds().toFloat(), transportPagePalette);
+    }
+
+    void resized() override
+    {
+        int landW = getWidth();
+        int landH = getHeight();
+        if (landW <= 0 || landH <= 0) return;
+
+        content.setSize (landH, landW);
+        content.setTransform (
+            juce::AffineTransform::rotation (-juce::MathConstants<float>::halfPi, 0.0f, 0.0f)
+            .translated (0.0f, (float) landH));
+    }
+
+private:
+    TransportPortraitContent content;
 };

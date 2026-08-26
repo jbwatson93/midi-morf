@@ -10,8 +10,11 @@ class TransportHandler;
 #include "OmnichordHandler.h"
 #include "MorfChordHandler.h"
 #include "RoseChordHandler.h"
+#include "MidiClockReceiver.h"
+#include "StepSequencerEngine.h"
 
-class MidiMorfEngine : public NetworkServer::Listener
+class MidiMorfEngine : public NetworkServer::Listener,
+                       private juce::Timer
 {
 public:
     MidiMorfEngine();
@@ -27,6 +30,8 @@ public:
     MorfChordHandler& getMorfChordHandler() { return *morfChordHandler; }
     OmnichordHandler& getOmnichordHandler() { return *omnichordHandler; }
     RoseChordHandler& getRoseChordHandler() { return *roseChordHandler; }
+    StepSequencerEngine& getStepSequencer() { return *stepSequencer; }
+    MidiClockReceiver& getMidiClock() { return midiClock; }
 
     void sendTiltAssignBurst (bool isXAxis);
 
@@ -68,9 +73,17 @@ public:
     void morfChordReleased() override;
     void morfChordStrum (float position, float velocity) override;
     void morfChordKeySelected (uint8_t rootNote, uint8_t scaleMode) override;
-    void roseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint8_t modBits, int8_t voicingOffset) override;
+    void roseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset) override;
     void roseChordNoteOff() override;
-    void roseChordConfig (uint8_t typeBits, uint8_t modBits, int8_t voicingOffset) override;
+    void roseChordConfig (uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset) override;
+
+    // NetworkServer::Listener — Creative Sequencer Pack
+    void packEntitlement (uint8_t packId, bool valid) override;
+    void seqStepSet (uint8_t step, uint8_t degree, uint8_t velocity, uint8_t gate, uint8_t mod, uint8_t flags) override;
+    void seqConfig (uint8_t patternLength, uint8_t rate, uint8_t direction, uint8_t swing,
+                    uint8_t scaleIndex, uint8_t rootNote, uint8_t baseOctave, uint8_t octaveRange) override;
+    void seqTransport (uint8_t command) override;
+    void seqRatchet (uint8_t division, bool active) override;
 
     // Local UI interaction
     void localXYUpdated (float x, float y);
@@ -82,6 +95,10 @@ public:
     void loadState();
 
 private:
+    // Polls the sequencer playhead and pushes changes to the phone. Runs on the
+    // message thread: the MIDI thread must never touch the socket.
+    void timerCallback() override;
+
     void sendCC (int channel, int ccNumber, int value);
     void sendNoteOn (int channel, int note, int velocity);
     void sendNoteOff (int channel, int note);
@@ -100,6 +117,11 @@ private:
     std::unique_ptr<OmnichordHandler> omnichordHandler;
     std::unique_ptr<MorfChordHandler> morfChordHandler;
     std::unique_ptr<RoseChordHandler> roseChordHandler;
+
+    // Creative Sequencer Pack — DAW clock in, sequencer engines out
+    MidiClockReceiver midiClock;
+    std::unique_ptr<StepSequencerEngine> stepSequencer;
+    int lastSentPlayhead = -2;   // -2 = never sent
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MidiMorfEngine)
 };

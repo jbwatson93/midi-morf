@@ -62,6 +62,16 @@ public:
     void sendScreenMode (MidiMorf::ControllerMode m) { network.sendScreenMode (m); }
     void sendTransportButton (uint8_t buttonId)  { network.sendTransportButton (buttonId); }
 
+    // Creative Sequencer Pack — WiFi only. Timing lives on the server, driven
+    // by DAW MIDI clock, so there is no Local path to route to.
+    void sendSeqStepSet (uint8_t step, uint8_t degree, uint8_t velocity, uint8_t gate, uint8_t mod, bool rest)
+        { network.sendSeqStepSet (step, degree, velocity, gate, mod, rest); }
+    void sendSeqConfig (uint8_t patternLength, uint8_t rate, uint8_t direction, uint8_t swing,
+                        uint8_t scaleIndex, uint8_t rootNote, uint8_t baseOctave, uint8_t octaveRange)
+        { network.sendSeqConfig (patternLength, rate, direction, swing, scaleIndex, rootNote, baseOctave, octaveRange); }
+    void sendSeqTransport (MidiMorf::SeqCommand c)            { network.sendSeqTransport (c); }
+    void sendSeqRatchet (MidiMorf::SeqRatchetDiv d, bool on)  { network.sendSeqRatchet (d, on); }
+
     //==========================================================================
     // Morf-Pad
 
@@ -180,15 +190,15 @@ public:
     //==========================================================================
     // Rose-Chord
 
-    void sendRoseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint8_t modBits, int8_t voicingOffset)
+    void sendRoseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset)
     {
         if (mode.load() == Mode::WiFi)
         {
-            network.sendRoseChordNoteOn (rootIdx, typeBits, modBits, voicingOffset);
+            network.sendRoseChordNoteOn (rootIdx, typeBits, modBits, voicingOffset, octaveOffset);
         }
         else
         {
-            roseChord.setConfig (typeBits, modBits, voicingOffset);
+            roseChord.setConfig (typeBits, modBits, voicingOffset, octaveOffset);
             roseChord.noteOn (rootIdx);
         }
     }
@@ -199,12 +209,12 @@ public:
         else                            roseChord.noteOff();
     }
 
-    void sendRoseChordConfig (uint8_t typeBits, uint8_t modBits, int8_t voicingOffset)
+    void sendRoseChordConfig (uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset)
     {
         // Always send config to network so the server stays in sync.
-        network.sendRoseChordConfig (typeBits, modBits, voicingOffset);
+        network.sendRoseChordConfig (typeBits, modBits, voicingOffset, octaveOffset);
         // Always apply locally so the handler is configured when the next noteOn arrives.
-        roseChord.setConfig (typeBits, modBits, voicingOffset);
+        roseChord.setConfig (typeBits, modBits, voicingOffset, octaveOffset);
     }
 
 private:

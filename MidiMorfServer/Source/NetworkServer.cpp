@@ -95,6 +95,22 @@ void NetworkServer::sendSlotConfig (int slotIndex, const juce::String& name)
     clientSocket->write (packet.data(), (int) packet.size());
 }
 
+void NetworkServer::sendSeqPlayhead (uint8_t currentStep)
+{
+    juce::ScopedLock lock (clientLock);
+
+    if (clientSocket == nullptr || ! clientSocket->isConnected())
+        return;
+
+    const uint8_t packet[MidiMorf::HEADER_SIZE + MidiMorf::SEQ_PLAYHEAD_PAYLOAD_SIZE] =
+    {
+        static_cast<uint8_t> (MidiMorf::PluginMessage::SeqPlayhead),
+        currentStep
+    };
+
+    clientSocket->write (packet, (int) sizeof (packet));
+}
+
 void NetworkServer::run()
 {
     while (! threadShouldExit())
@@ -200,6 +216,11 @@ void NetworkServer::handleClientConnection (juce::StreamingSocket& client)
                 case MidiMorf::PhoneMessage::RoseChordNoteOn:      payloadSize = MidiMorf::ROSECHORD_NOTEON_PAYLOAD_SIZE; break;
                 case MidiMorf::PhoneMessage::RoseChordNoteOff:     payloadSize = MidiMorf::ROSECHORD_NOTEOFF_PAYLOAD_SIZE; break;
                 case MidiMorf::PhoneMessage::RoseChordConfig:      payloadSize = MidiMorf::ROSECHORD_CONFIG_PAYLOAD_SIZE; break;
+                case MidiMorf::PhoneMessage::PackEntitlement:      payloadSize = MidiMorf::PACK_ENTITLEMENT_PAYLOAD_SIZE; break;
+                case MidiMorf::PhoneMessage::SeqStepSet:           payloadSize = MidiMorf::SEQ_STEP_SET_PAYLOAD_SIZE; break;
+                case MidiMorf::PhoneMessage::SeqConfig:            payloadSize = MidiMorf::SEQ_CONFIG_PAYLOAD_SIZE; break;
+                case MidiMorf::PhoneMessage::SeqTransport:         payloadSize = MidiMorf::SEQ_TRANSPORT_PAYLOAD_SIZE; break;
+                case MidiMorf::PhoneMessage::SeqRatchet:           payloadSize = MidiMorf::SEQ_RATCHET_PAYLOAD_SIZE; break;
                 default:
                     DBG ("NetworkServer: unknown message type " << (int) buffer[offset] << " — resync, discarding " << remaining << " bytes");
                     offset = buffered;
@@ -423,7 +444,8 @@ void NetworkServer::processPacket (const uint8_t* data, int size)
         case MidiMorf::PhoneMessage::RoseChordNoteOn:
         {
             int8_t voicing = static_cast<int8_t> (payload[3]);
-            listener->roseChordNoteOn (payload[0], payload[1], payload[2], voicing);
+            int8_t octave  = static_cast<int8_t> (payload[4]);
+            listener->roseChordNoteOn (payload[0], payload[1], payload[2], voicing, octave);
             break;
         }
 
@@ -436,7 +458,39 @@ void NetworkServer::processPacket (const uint8_t* data, int size)
         case MidiMorf::PhoneMessage::RoseChordConfig:
         {
             int8_t voicing = static_cast<int8_t> (payload[2]);
-            listener->roseChordConfig (payload[0], payload[1], voicing);
+            int8_t octave  = static_cast<int8_t> (payload[3]);
+            listener->roseChordConfig (payload[0], payload[1], voicing, octave);
+            break;
+        }
+
+        case MidiMorf::PhoneMessage::PackEntitlement:
+        {
+            listener->packEntitlement (payload[0], payload[1] != 0);
+            break;
+        }
+
+        case MidiMorf::PhoneMessage::SeqStepSet:
+        {
+            listener->seqStepSet (payload[0], payload[1], payload[2], payload[3], payload[4], payload[5]);
+            break;
+        }
+
+        case MidiMorf::PhoneMessage::SeqConfig:
+        {
+            listener->seqConfig (payload[0], payload[1], payload[2], payload[3],
+                                 payload[4], payload[5], payload[6], payload[7]);
+            break;
+        }
+
+        case MidiMorf::PhoneMessage::SeqTransport:
+        {
+            listener->seqTransport (payload[0]);
+            break;
+        }
+
+        case MidiMorf::PhoneMessage::SeqRatchet:
+        {
+            listener->seqRatchet (payload[0], payload[1] != 0);
             break;
         }
     }

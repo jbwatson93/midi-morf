@@ -4,9 +4,20 @@
 #include "EventRouter.h"
 #include "MidiMorfColors.h"
 #include "PianoKeySelector.h"
-#include "MorfPadPage.h"  // for scale name array used by panel
+#include "Glassmorphism.h"
 #include <vector>
 #include <algorithm>
+
+// Deep plum — related to Morf-Pad's burgundy but a touch cooler/violet so
+// the two pad pages read as siblings. Same translucent-black edge as the
+// other pages.
+static const PagePalette dualMPadPagePalette {
+    juce::Colour (0xff1F0D24),       // substrate top — deep plum
+    juce::Colour (0xff0F0512),       // substrate bottom — near-black
+    juce::Colour (0xCC401A40),       // acrylic top — translucent plum
+    juce::Colour (0xD8200D24),       // acrylic bottom — deeper translucent
+    juce::Colour (0xCC000000)        // edge — translucent black
+};
 
 //==============================================================================
 // A single morfPad pad with its own config strip — used twice in DualMPadPage
@@ -16,21 +27,20 @@ public:
     DualMPadPanel (EventRouter& client, uint8_t padIdx)
         : networkClient (client), padIndex (padIdx)
     {
-        // Scale selector
+        // Scale picker — single ComboBox replaces the old 5-button row.
         for (int i = 0; i < numScales; ++i)
+            scaleCombo.addItem (scaleNames[i], i + 1);
+        scaleCombo.setSelectedId (1, juce::dontSendNotification);
+        scaleCombo.setColour (juce::ComboBox::backgroundColourId, dualMPadPagePalette.substrateTop);
+        scaleCombo.setColour (juce::ComboBox::textColourId,       MidiMorfColors::textLight);
+        scaleCombo.setColour (juce::ComboBox::outlineColourId,    dualMPadPagePalette.edgeGlow);
+        scaleCombo.setColour (juce::ComboBox::arrowColourId,      MidiMorfColors::accent);
+        scaleCombo.onChange = [this]
         {
-            auto* btn = new juce::TextButton (scaleNames[i]);
-            btn->setRadioGroupId (100 + padIdx * 10 + 1);
-            btn->setClickingTogglesState (true);
-            btn->setColour (juce::TextButton::buttonColourId, MidiMorfColors::buttonFace);
-            btn->setColour (juce::TextButton::buttonOnColourId, MidiMorfColors::accent);
-            btn->setColour (juce::TextButton::textColourOnId, MidiMorfColors::textLight);
-            btn->setColour (juce::TextButton::textColourOffId, MidiMorfColors::textDark);
-            btn->onClick = [this, i] { scaleIndex = (uint8_t) i; sendScaleConfig(); };
-            if (i == 0) btn->setToggleState (true, juce::dontSendNotification);
-            scaleButtons.add (btn);
-            addAndMakeVisible (btn);
-        }
+            scaleIndex = (uint8_t) juce::jmax (0, scaleCombo.getSelectedId() - 1);
+            sendScaleConfig();
+        };
+        addAndMakeVisible (scaleCombo);
 
         // Piano key selector for root note
         pianoKeys.onNoteSelected = [this] (int note) { rootNote = (uint8_t) note; sendScaleConfig(); };
@@ -38,8 +48,9 @@ public:
 
         // Base octave +/- buttons
         octaveDownBtn.setButtonText ("-");
-        octaveDownBtn.setColour (juce::TextButton::buttonColourId, MidiMorfColors::buttonFace);
-        octaveDownBtn.setColour (juce::TextButton::textColourOffId, MidiMorfColors::textDark);
+        octaveDownBtn.setColour (juce::TextButton::textColourOffId, MidiMorfColors::textLight);
+        octaveDownBtn.setColour (juce::TextButton::textColourOnId,  MidiMorfColors::textLight);
+        octaveDownBtn.setLookAndFeel (&glassLnf);
         octaveDownBtn.onClick = [this] {
             if (baseOctave > 0) { --baseOctave; updateOctaveLabel(); sendScaleConfig(); }
         };
@@ -47,12 +58,13 @@ public:
 
         octaveLabel.setText ("C2", juce::dontSendNotification);
         octaveLabel.setJustificationType (juce::Justification::centred);
-        octaveLabel.setColour (juce::Label::textColourId, MidiMorfColors::textDark);
+        octaveLabel.setColour (juce::Label::textColourId, MidiMorfColors::textLight);
         addAndMakeVisible (octaveLabel);
 
         octaveUpBtn.setButtonText ("+");
-        octaveUpBtn.setColour (juce::TextButton::buttonColourId, MidiMorfColors::buttonFace);
-        octaveUpBtn.setColour (juce::TextButton::textColourOffId, MidiMorfColors::textDark);
+        octaveUpBtn.setColour (juce::TextButton::textColourOffId, MidiMorfColors::textLight);
+        octaveUpBtn.setColour (juce::TextButton::textColourOnId,  MidiMorfColors::textLight);
+        octaveUpBtn.setLookAndFeel (&glassLnf);
         octaveUpBtn.onClick = [this] {
             if (baseOctave < 8) { ++baseOctave; updateOctaveLabel(); sendScaleConfig(); }
         };
@@ -64,15 +76,21 @@ public:
             auto* btn = new juce::TextButton (juce::String (i));
             btn->setRadioGroupId (100 + padIdx * 10 + 3);
             btn->setClickingTogglesState (true);
-            btn->setColour (juce::TextButton::buttonColourId, MidiMorfColors::buttonFace);
-            btn->setColour (juce::TextButton::buttonOnColourId, MidiMorfColors::accent);
-            btn->setColour (juce::TextButton::textColourOnId, MidiMorfColors::textLight);
-            btn->setColour (juce::TextButton::textColourOffId, MidiMorfColors::textDark);
+            btn->setColour (juce::TextButton::textColourOnId,  MidiMorfColors::textLight);
+            btn->setColour (juce::TextButton::textColourOffId, MidiMorfColors::textLight);
+            btn->setLookAndFeel (&glassLnf);
             btn->onClick = [this, i] { octaveRange = (uint8_t) i; sendScaleConfig(); };
             if (i == 2) btn->setToggleState (true, juce::dontSendNotification);
             octaveButtons.add (btn);
             addAndMakeVisible (btn);
         }
+    }
+
+    ~DualMPadPanel() override
+    {
+        octaveDownBtn.setLookAndFeel (nullptr);
+        octaveUpBtn.setLookAndFeel   (nullptr);
+        for (auto* b : octaveButtons) b->setLookAndFeel (nullptr);
     }
 
     void paint (juce::Graphics& g) override
@@ -109,41 +127,38 @@ public:
     {
         auto area = getLocalBounds();
 
-        // Config strip on top
-        auto configStrip = area.removeFromTop (70);
+        // Single-row config strip — dropped the old top scale-button row so
+        // the XY pad gets more vertical room. Layout: combo on left, piano
+        // keys in the middle, octave -/+ on the right top half, range 1..4
+        // on the right bottom half.
+        auto configStrip = area.removeFromTop (52);
 
-        // Row 1: scale buttons
-        auto scaleRow = configStrip.removeFromTop (26);
-        int scaleBtnW = scaleRow.getWidth() / numScales;
-        for (int i = 0; i < scaleButtons.size(); ++i)
-            scaleButtons[i]->setBounds (scaleRow.getX() + i * scaleBtnW, scaleRow.getY(),
-                                        scaleBtnW - 1, 24);
+        // Combo on the far left
+        auto comboArea = configStrip.removeFromLeft (90);
+        scaleCombo.setBounds (comboArea.reduced (2));
 
-        configStrip.removeFromTop (2);
+        configStrip.removeFromLeft (4);
 
-        // Row 2: piano keys | octave +/- | range 1-4
-        auto row2 = configStrip;
-
-        // Octave controls on right
-        auto octArea = row2.removeFromRight (64);
+        // Octave + range stacked on the right (existing 2-row layout preserved)
+        auto octArea = configStrip.removeFromRight (96);
         auto octTop = octArea.removeFromTop (octArea.getHeight() / 2);
         auto octBot = octArea;
 
-        int btnW = 22;
+        int btnW = 30;
         int labelW = octTop.getWidth() - btnW * 2;
         octaveDownBtn.setBounds (octTop.getX(), octTop.getY(), btnW, octTop.getHeight());
-        octaveLabel.setBounds (octTop.getX() + btnW, octTop.getY(), labelW, octTop.getHeight());
-        octaveUpBtn.setBounds (octTop.getX() + btnW + labelW, octTop.getY(), btnW, octTop.getHeight());
+        octaveLabel  .setBounds (octTop.getX() + btnW, octTop.getY(), labelW, octTop.getHeight());
+        octaveUpBtn  .setBounds (octTop.getX() + btnW + labelW, octTop.getY(), btnW, octTop.getHeight());
 
         int octBtnW = octBot.getWidth() / 4;
         for (int i = 0; i < octaveButtons.size(); ++i)
             octaveButtons[i]->setBounds (octBot.getX() + i * octBtnW, octBot.getY(),
                                          octBtnW - 1, octBot.getHeight());
 
-        row2.removeFromRight (2);
+        configStrip.removeFromRight (4);
 
-        // Piano keys fill remaining space
-        pianoKeys.setBounds (row2);
+        // Piano keys fill the middle
+        pianoKeys.setBounds (configStrip);
 
         area.removeFromTop (2);
 
@@ -241,8 +256,7 @@ public:
         octaveRange = (uint8_t) props.getIntValue (prefix + "octaveRange", 2);
         baseOctave = (uint8_t) props.getIntValue (prefix + "baseOctave", 2);
 
-        for (int i = 0; i < numScales; ++i)
-            scaleButtons[i]->setToggleState (i == scaleIndex, juce::dontSendNotification);
+        scaleCombo.setSelectedId ((int) scaleIndex + 1, juce::dontSendNotification);
         pianoKeys.setSelectedNote (rootNote);
         for (int i = 0; i < octaveButtons.size(); ++i)
             octaveButtons[i]->setToggleState (i + 1 == octaveRange, juce::dontSendNotification);
@@ -286,7 +300,10 @@ private:
     static constexpr int numScales = 5;
     const juce::String scaleNames[5] = { "Major", "Minor", "Penta", "Blues", "Chrom" };
 
-    juce::OwnedArray<juce::TextButton> scaleButtons;
+    // Must outlive the buttons it skins — declared first so it's destroyed last.
+    GlassButtonLookAndFeel glassLnf { dualMPadPagePalette, MidiMorfColors::accent, 6.0f };
+
+    juce::ComboBox scaleCombo;
     PianoKeySelector pianoKeys;
     juce::TextButton octaveDownBtn, octaveUpBtn;
     juce::Label octaveLabel;
@@ -347,32 +364,18 @@ public:
         addAndMakeVisible (content);
     }
 
+    void paint (juce::Graphics& g) override
+    {
+        Glassmorphism::paintPanel (g, getLocalBounds().toFloat(), dualMPadPagePalette);
+    }
+
     void saveState (juce::PropertiesFile& props) { content.saveState (props); }
     void restoreState (const juce::PropertiesFile& props) { content.restoreState (props); }
 
     void resized() override
     {
-        int pw = getWidth();   // portrait width  (~400)
-        int ph = getHeight();  // portrait height (~600)
-
-        // Size content to landscape: width=ph, height=pw
-        content.setSize (ph, pw);
-
-        // Rotate 90° CW so landscape content fits portrait frame.
-        // rotation(+halfPi) maps (x,y) → (-y, x).
-        // Then translate(pw, 0) → (pw - y, x) to keep it in positive coords.
-        // Content corners (ph x pw):
-        //   (0, 0)    → (pw, 0)    = portrait top-right
-        //   (ph, 0)   → (pw, ph)   = portrait bottom-right
-        //   (ph, pw)  → (0, ph)    = portrait bottom-left
-        //   (0, pw)   → (0, 0)     = portrait top-left
-        // When phone is rotated CW to landscape, portrait top-left becomes
-        // landscape bottom-left, which makes content (0, pw) the landscape origin.
-        // This matches: content left-to-right = landscape left-to-right.
-        content.setTransform (
-            juce::AffineTransform::rotation (
-                juce::MathConstants<float>::halfPi, 0.0f, 0.0f)
-            .translated ((float) pw, 0.0f));
+        // App is now native landscape — no rotation needed.
+        content.setBounds (getLocalBounds().reduced (12));
     }
 
 private:

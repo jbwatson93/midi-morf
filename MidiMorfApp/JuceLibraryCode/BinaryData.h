@@ -14,11 +14,17 @@ namespace BinaryData
     extern const char*   DSEG14ModernMiniRegular_ttf;
     const int            DSEG14ModernMiniRegular_ttfSize = 27792;
 
+    extern const char*   wood2_jpg;
+    const int            wood2_jpgSize = 1010990;
+
     extern const char*   inBloom_png;
     const int            inBloom_pngSize = 1038506;
 
+    extern const char*   Icon_png;
+    const int            Icon_pngSize = 2135024;
+
     // Number of elements in the namedResourceList and originalFileNames arrays.
-    const int namedResourceListSize = 3;
+    const int namedResourceListSize = 5;
 
     // Points to the start of a list of resource names.
     extern const char* namedResourceList[];

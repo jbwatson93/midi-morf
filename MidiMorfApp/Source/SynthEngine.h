@@ -15,7 +15,16 @@ public:
                     juce::SynthesiserSound*, int /*currentPitchWheelPosition*/) override
     {
         level = velocity;
-        frequency = juce::MidiMessage::getMidiNoteInHertz (midiNoteNumber);
+
+        // Per-voice analog-style pitch drift: ±1.5¢ random offset, frozen for
+        // the duration of the note. Keeps voices in a chord just-detuned enough
+        // to feel "alive" without sounding wrong.
+        float driftCents = (driftRandom.nextFloat() * 2.0f - 1.0f) * 1.5f;
+        float driftRatio = std::pow (2.0f, driftCents / 1200.0f);
+        frequency = juce::MidiMessage::getMidiNoteInHertz (midiNoteNumber) * driftRatio;
+
+        // Reset ladder filter state
+        ls1 = ls2 = ls3 = ls4 = 0.0f;
         ampAdsr.noteOn();
         filterAdsr.noteOn();
     }
@@ -42,8 +51,9 @@ public:
         filterAdsr.setSampleRate (sampleRate);
         currentSampleRate = sampleRate;
         phase = 0.0;
-        filterZ1 = 0.0f;
-        filterZ2 = 0.0f;
+        phase2 = 0.0;
+        subPhase = 0.0;
+        ls1 = ls2 = ls3 = ls4 = 0.0f;
         updateAmpADSR();
         updateFilterADSR();
     }
@@ -67,8 +77,23 @@ public:
         filterEnvAmount = envAmount;
     }
 
-    void setSawSquareMix (float saw) { sawMix = saw; }
+    // OSC 1
+    void setMainWaveform (int w) { mainWave = juce::jlimit (0, 3, w); }
+    void setOsc1Level (float lvl) { osc1Level = juce::jlimit (0.0f, 1.0f, lvl); }
+
+    // OSC 2
+    void setOsc2Waveform (int w)        { osc2Wave = juce::jlimit (0, 3, w); }
+    void setOsc2Level (float lvl)       { osc2Level = juce::jlimit (0.0f, 1.0f, lvl); }
+    void setOsc2DetuneCents (float c)
+    {
+        osc2DetuneCents = juce::jlimit (-100.0f, 100.0f, c);
+        osc2DetuneRatio = std::pow (2.0, (double) osc2DetuneCents / 1200.0);
+    }
+
+    void setSubLevel    (float lvl) { subLevel = juce::jlimit (0.0f, 1.0f, lvl); }
     void setGain (float g) { gain = g; }
+    void setDrive (float d) { drive = juce::jlimit (0.0f, 1.0f, d); }
+    void setPitchMod (float semitones) { pitchModSemi = semitones; }
 
     void renderNextBlock (juce::AudioBuffer<float>& outputBuffer,
                           int startSample, int numSamples) override
@@ -76,30 +101,82 @@ public:
         if (! isVoiceActive())
             return;
 
-        double phaseIncrement = frequency / currentSampleRate;
-        float currentSaw = sawMix;
-        float currentGain = gain;
+        // Apply per-block pitch modulation (from the routing matrix's Pitch dest).
+        double effectiveFreq  = frequency * std::pow (2.0, pitchModSemi / 12.0);
+        double phaseIncrement  = effectiveFreq / currentSampleRate;
+        double phaseIncrement2 = effectiveFreq * osc2DetuneRatio / currentSampleRate;
+        double subIncrement    = phaseIncrement * 0.5;
+        float  dt              = (float) phaseIncrement;
+        float  dt2             = (float) phaseIncrement2;
+        int    currentWave1    = mainWave;
+        int    currentWave2    = osc2Wave;
+        float  currentL1       = osc1Level;
+        float  currentL2       = osc2Level;
+        float  currentSub      = subLevel;
+        float  currentGain     = gain;
+        float  currentDrive    = drive;
+        constexpr double twoPi = juce::MathConstants<double>::twoPi;
+
+        auto renderWave = [&] (int wave, double ph, float bdt) -> double
+        {
+            switch (wave)
+            {
+                case 0: return std::sin (ph * twoPi);                                                // Sine
+                case 1: return (ph < 0.5) ? (4.0 * ph - 1.0) : (3.0 - 4.0 * ph);                     // Triangle
+                case 2: return (2.0 * ph - 1.0) - polyBLEP ((float) ph, bdt);                        // Saw
+                default:
+                {
+                    double s = (ph < 0.5) ? 1.0 : -1.0;
+                    s += polyBLEP ((float) ph, bdt);
+                    float pp = (float) ph + 0.5f;
+                    if (pp >= 1.0f) pp -= 1.0f;
+                    s -= polyBLEP (pp, bdt);
+                    return s;
+                }
+            }
+        };
 
         for (int sample = startSample; sample < startSample + numSamples; ++sample)
         {
-            double sawValue = 2.0 * phase - 1.0;
-            double squareValue = (phase < 0.5) ? 1.0 : -1.0;
-            float osc = (float) (sawValue * currentSaw + squareValue * (1.0f - currentSaw)) * level;
+            double main1 = renderWave (currentWave1, phase,  dt);
+            double main2 = renderWave (currentWave2, phase2, dt2);
 
+            // Sub oscillator (square at -1 octave, also BLEP'd)
+            float subDt = (float) subIncrement;
+            double sub = (subPhase < 0.5) ? 1.0 : -1.0;
+            sub += polyBLEP ((float) subPhase, subDt);
+            float sp2 = (float) subPhase + 0.5f;
+            if (sp2 >= 1.0f) sp2 -= 1.0f;
+            sub -= polyBLEP (sp2, subDt);
+
+            float osc = (float) ((main1 * currentL1 + main2 * currentL2 + sub * currentSub) * level);
+
+            // Soft tube saturation (tanh waveshaper, drive 0..1 → ~1..7x gain
+            // into tanh, output renormalised). Adds harmonic warmth pre-filter.
+            if (currentDrive > 0.0001f)
+            {
+                float k = 1.0f + currentDrive * 6.0f;
+                osc = std::tanh (osc * k) * (1.0f / std::tanh (k));
+            }
+
+            // Filter envelope adds to the (already-modulated) cutoff supplied
+            // by setFilterParams. Velocity is now a routing source rather than
+            // a baked-in offset.
             float filtEnv = filterAdsr.getNextSample();
             float modulatedCutoff = filterCutoff + filterEnvAmount * filtEnv;
             modulatedCutoff = juce::jlimit (20.0f, 20000.0f, modulatedCutoff);
 
-            float w = 2.0f * std::tan (juce::MathConstants<float>::pi * modulatedCutoff / (float) currentSampleRate);
-            float q = juce::jlimit (0.5f, 20.0f, filterReso);
-
-            float hp = (osc - (1.0f / q + w) * filterZ1 - filterZ2) / (1.0f + w / q + w * w);
-            float bp = w * hp + filterZ1;
-            float lp = w * bp + filterZ2;
-            filterZ1 = w * hp + bp;
-            filterZ2 = w * bp + lp;
-
-            osc = lp;
+            // 4-pole Moog-style ladder filter (Stilson model, linear feedback).
+            // g = 1 - exp(-2π·fc/fs). Resonance up to ~4 self-oscillates.
+            float g = 1.0f - std::exp (-juce::MathConstants<float>::twoPi *
+                                       modulatedCutoff / (float) currentSampleRate);
+            float reso = juce::jlimit (0.0f, 4.0f, filterReso);
+            float input = osc - reso * ls4;
+            ls1 += g * (input - ls1);
+            ls2 += g * (ls1   - ls2);
+            ls3 += g * (ls2   - ls3);
+            ls4 += g * (ls3   - ls4);
+            osc = ls4;
 
             float ampEnv = ampAdsr.getNextSample();
             osc *= ampEnv * currentGain;
@@ -108,8 +185,11 @@ public:
                 outputBuffer.addSample (channel, sample, osc);
 
             phase += phaseIncrement;
-            if (phase >= 1.0)
-                phase -= 1.0;
+            if (phase >= 1.0) phase -= 1.0;
+            phase2 += phaseIncrement2;
+            if (phase2 >= 1.0) phase2 -= 1.0;
+            subPhase += subIncrement;
+            if (subPhase >= 1.0) subPhase -= 1.0;
 
             if (! ampAdsr.isActive())
             {
@@ -120,6 +200,24 @@ public:
     }
 
 private:
+    // PolyBLEP correction: subtract from saw at each phase wrap; add at square
+    // rising edge / subtract at falling edge. Eliminates high-frequency aliasing
+    // for cheap (1 polynomial evaluation per wrap per sample).
+    static float polyBLEP (float t, float dt)
+    {
+        if (t < dt)
+        {
+            t /= dt;
+            return t + t - t * t - 1.0f;
+        }
+        if (t > 1.0f - dt)
+        {
+            t = (t - 1.0f) / dt;
+            return t * t + t + t + 1.0f;
+        }
+        return 0.0f;
+    }
+
     void updateAmpADSR()
     {
         juce::ADSR::Parameters p;
@@ -137,23 +235,35 @@ private:
     }
 
     double phase = 0.0;
+    double phase2 = 0.0;
+    double subPhase = 0.0;
     double frequency = 440.0;
+    double osc2DetuneRatio = 1.0;
     double currentSampleRate = 44100.0;
     float level = 0.0f;
-    float sawMix = 0.6f;
+    int   mainWave = 2;     // 0=Sine, 1=Triangle, 2=Saw, 3=Square — default Saw
+    int   osc2Wave = 0;     // default Sine
+    float osc1Level = 1.0f;
+    float osc2Level = 0.0f;
+    float osc2DetuneCents = 0.0f;
+    float subLevel = 0.3f;  // 0..1 — sub adds low-end warmth to the default patch
     float gain = 0.15f;
+    float drive = 0.0f;     // 0..1 — soft saturation (post-osc)
+    float pitchModSemi = 0.0f; // pitch modulation in semitones (set per block)
+    juce::Random driftRandom;
 
-    float ampAttack = 0.02f, ampDecay = 0.3f, ampSustain = 0.6f, ampRelease = 0.4f;
+    float ampAttack = 0.02f, ampDecay = 0.3f, ampSustain = 0.6f, ampRelease = 0.7f;
     juce::ADSR ampAdsr;
 
     float filtAttack = 0.01f, filtDecay = 0.4f, filtSustain = 0.3f, filtRelease = 0.5f;
     juce::ADSR filterAdsr;
 
-    float filterCutoff = 2000.0f;
+    float filterCutoff = 1400.0f;   // slightly darker start so mod wheel/velocity/tilt sweep is audibly obvious
     float filterReso = 1.0f;
     float filterEnvAmount = 3000.0f;
-    float filterZ1 = 0.0f;
-    float filterZ2 = 0.0f;
+
+    // 4-pole ladder filter state
+    float ls1 = 0.0f, ls2 = 0.0f, ls3 = 0.0f, ls4 = 0.0f;
 };
 
 //==============================================================================
@@ -173,7 +283,19 @@ public:
 class SynthEngine : public juce::AudioSource
 {
 public:
-    // Modulation destinations for both the LFO and the mod-wheel routing slots.
+    // Modulation sources — any can be picked per routing slot.
+    enum ModSource
+    {
+        ModSrcOff      = 0,
+        ModSrcModWheel = 1,   // 0..1 (CC1, raw)
+        ModSrcVelocity = 2,   // 0..1 (last note velocity)
+        ModSrcAccelX   = 3,   // -1..+1 (device tilt X)
+        ModSrcAccelY   = 4,   // -1..+1 (device tilt Y)
+        ModSrcLFO      = 5,   // -depth..+depth
+        NumModSources  = 6
+    };
+
+    // Modulation destinations.
     enum ModDest
     {
         ModDestOff       = 0,
@@ -182,7 +304,11 @@ public:
         ModDestEnvAmount = 3,
         ModDestGain      = 4,
         ModDestReverbMix = 5,
-        NumModDests      = 6
+        ModDestPitch     = 6,
+        ModDestDistDrive = 7,
+        ModDestDelayMix  = 8,
+        ModDestDelayTime = 9,
+        NumModDests      = 10
     };
 
     enum LFOWaveform { LFOSine = 0, LFOTri = 1, LFOSaw = 2, LFOSquare = 3, NumLFOWaves = 4 };
@@ -203,10 +329,17 @@ public:
         reverbParams.width    = 1.0f;
         reverb.setParameters (reverbParams);
 
-        // Default: mod wheel (Morf-Pad Y axis) drives filter cutoff at +0.5.
-        // Other slots start disabled.
+        // Default routings: mod wheel + device tilt both open the filter.
+        // The tilt routing is what makes the very first launch feel alive —
+        // pick up the phone, tap a chord, tilt it, hear the filter sweep.
+        // Both slots are reassignable on the Routing tab.
+        routings[0].source = ModSrcModWheel;
         routings[0].dest   = ModDestCutoff;
         routings[0].amount = 0.5f;
+
+        routings[1].source = ModSrcAccelY;
+        routings[1].dest   = ModDestCutoff;
+        routings[1].amount = 0.5f;
     }
 
     //==========================================================================
@@ -223,6 +356,10 @@ public:
 
         reverb.setSampleRate (sampleRate);
         currentSampleRate = sampleRate;
+
+        // Delay buffer: 2-second max @ current sample rate (mono).
+        delayBuf.assign ((size_t) (sampleRate * 2.0), 0.0f);
+        delayWritePos = 0;
     }
 
     void releaseResources() override {}
@@ -254,18 +391,57 @@ public:
                                bufferToFill.startSample,
                                bufferToFill.numSamples);
 
-        if (bufferToFill.buffer->getNumChannels() >= 2)
+        const int numCh = bufferToFill.buffer->getNumChannels();
+        const int start = bufferToFill.startSample;
+        const int n     = bufferToFill.numSamples;
+        float* L = numCh > 0 ? bufferToFill.buffer->getWritePointer (0, start) : nullptr;
+        float* R = numCh > 1 ? bufferToFill.buffer->getWritePointer (1, start) : L;
+
+        // Master distortion (post-mix, pre-delay).
+        if (distEnabled && effDistDrive > 0.001f && L != nullptr)
         {
-            reverb.processStereo (
-                bufferToFill.buffer->getWritePointer (0, bufferToFill.startSample),
-                bufferToFill.buffer->getWritePointer (1, bufferToFill.startSample),
-                bufferToFill.numSamples);
+            float k    = 1.0f + effDistDrive * 8.0f;
+            float norm = 1.0f / std::tanh (k);
+            for (int i = 0; i < n; ++i)
+            {
+                L[i] = std::tanh (L[i] * k) * norm;
+                if (R != L) R[i] = std::tanh (R[i] * k) * norm;
+            }
         }
-        else if (bufferToFill.buffer->getNumChannels() == 1)
+
+        // Mono-feed stereo delay.
+        if (delayEnabled && effDelayMix > 0.001f && ! delayBuf.empty() && L != nullptr)
         {
-            reverb.processMono (
-                bufferToFill.buffer->getWritePointer (0, bufferToFill.startSample),
-                bufferToFill.numSamples);
+            const int bufSize = (int) delayBuf.size();
+            // Use the post-modulation delay time so routings like LFO → Delay
+            // Time produce moving echoes / dub sweeps.
+            float delayTimeSec = juce::jlimit (0.005f, 1.99f, effDelayTimeMs * 0.001f);
+            int   delaySamples = juce::jlimit (1, bufSize - 1,
+                                                (int) (delayTimeSec * (float) currentSampleRate));
+
+            for (int i = 0; i < n; ++i)
+            {
+                int readPos = delayWritePos - delaySamples;
+                if (readPos < 0) readPos += bufSize;
+
+                float delayed = delayBuf[(size_t) readPos];
+                float inMix   = (R != L) ? (L[i] + R[i]) * 0.5f : L[i];
+
+                delayBuf[(size_t) delayWritePos] = inMix + delayed * delayFeedback;
+                delayWritePos = (delayWritePos + 1) % bufSize;
+
+                float dry = 1.0f - effDelayMix;
+                L[i] = L[i] * dry + delayed * effDelayMix;
+                if (R != L) R[i] = R[i] * dry + delayed * effDelayMix;
+            }
+        }
+
+        if (reverbEnabled)
+        {
+            if (numCh >= 2)
+                reverb.processStereo (L, R, n);
+            else if (numCh == 1 && L != nullptr)
+                reverb.processMono (L, n);
         }
     }
 
@@ -276,6 +452,8 @@ public:
     {
         if (midiNote < 0 || midiNote > 127) return;
         int vel = juce::jlimit (1, 127, (int) std::round (velocity * 127.0f));
+        // Track most-recent velocity for the modulation matrix (Velocity source).
+        lastVelocity.store (juce::jlimit (0.0f, 1.0f, velocity));
         midiQueue.enqueue ({ midiNote, vel, juce::jlimit (1, 16, channel), true });
     }
 
@@ -305,14 +483,73 @@ public:
     float getSustain() const { return adsrSustain; }
     float getRelease() const { return adsrRelease; }
 
-    void setWaveformMix (float sawAmount)
+    // Main oscillator waveform: 0=Sine, 1=Triangle, 2=Saw, 3=Square.
+    void setMainWaveform (int wave)
     {
-        sawMix = juce::jlimit (0.0f, 1.0f, sawAmount);
+        mainWaveform = juce::jlimit (0, 3, wave);
         for (int i = 0; i < synth.getNumVoices(); ++i)
             if (auto* v = dynamic_cast<SynthVoice*> (synth.getVoice (i)))
-                v->setSawSquareMix (sawMix);
+                v->setMainWaveform (mainWaveform);
     }
-    float getWaveformMix() const { return sawMix; }
+    int getMainWaveform() const { return mainWaveform; }
+
+    // Sub oscillator level (square wave, one octave below the main pitch).
+    void setSubLevel (float lvl)
+    {
+        subLevel = juce::jlimit (0.0f, 1.0f, lvl);
+        for (int i = 0; i < synth.getNumVoices(); ++i)
+            if (auto* v = dynamic_cast<SynthVoice*> (synth.getVoice (i)))
+                v->setSubLevel (subLevel);
+    }
+    float getSubLevel() const { return subLevel; }
+
+    // OSC 1 level
+    void setOsc1Level (float lvl)
+    {
+        osc1Level = juce::jlimit (0.0f, 1.0f, lvl);
+        for (int i = 0; i < synth.getNumVoices(); ++i)
+            if (auto* v = dynamic_cast<SynthVoice*> (synth.getVoice (i)))
+                v->setOsc1Level (osc1Level);
+    }
+    float getOsc1Level() const { return osc1Level; }
+
+    // OSC 2 wave + level + detune
+    void setOsc2Waveform (int w)
+    {
+        osc2Waveform = juce::jlimit (0, 3, w);
+        for (int i = 0; i < synth.getNumVoices(); ++i)
+            if (auto* v = dynamic_cast<SynthVoice*> (synth.getVoice (i)))
+                v->setOsc2Waveform (osc2Waveform);
+    }
+    int getOsc2Waveform() const { return osc2Waveform; }
+
+    void setOsc2Level (float lvl)
+    {
+        osc2Level = juce::jlimit (0.0f, 1.0f, lvl);
+        for (int i = 0; i < synth.getNumVoices(); ++i)
+            if (auto* v = dynamic_cast<SynthVoice*> (synth.getVoice (i)))
+                v->setOsc2Level (osc2Level);
+    }
+    float getOsc2Level() const { return osc2Level; }
+
+    void setOsc2DetuneCents (float cents)
+    {
+        osc2DetuneCents = juce::jlimit (-100.0f, 100.0f, cents);
+        for (int i = 0; i < synth.getNumVoices(); ++i)
+            if (auto* v = dynamic_cast<SynthVoice*> (synth.getVoice (i)))
+                v->setOsc2DetuneCents (osc2DetuneCents);
+    }
+    float getOsc2DetuneCents() const { return osc2DetuneCents; }
+
+    // Drive: soft tanh saturation post-oscillator, pre-filter.
+    void setDrive (float d)
+    {
+        drive = juce::jlimit (0.0f, 1.0f, d);
+        for (int i = 0; i < synth.getNumVoices(); ++i)
+            if (auto* v = dynamic_cast<SynthVoice*> (synth.getVoice (i)))
+                v->setDrive (drive);
+    }
+    float getDrive() const { return drive; }
 
     void setGain (float g)
     {
@@ -340,6 +577,26 @@ public:
     }
     float getReverbSize() const { return reverbSize; }
 
+    // Master distortion (post-mix tanh waveshaper).
+    void setDistDrive (float d) { distDrive = juce::jlimit (0.0f, 1.0f, d); }
+    float getDistDrive() const { return distDrive; }
+    void setDistEnabled (bool on) { distEnabled = on; }
+    bool getDistEnabled() const { return distEnabled; }
+
+    // Delay
+    void setDelayTimeMs  (float ms)   { delayTimeMs  = juce::jlimit (5.0f, 2000.0f, ms); }
+    void setDelayFeedback (float fb)  { delayFeedback = juce::jlimit (0.0f, 0.95f, fb); }
+    void setDelayMix     (float mix)  { delayMix     = juce::jlimit (0.0f, 1.0f, mix); }
+    float getDelayTimeMs() const { return delayTimeMs; }
+    float getDelayFeedback() const { return delayFeedback; }
+    float getDelayMix() const { return delayMix; }
+    void setDelayEnabled (bool on) { delayEnabled = on; }
+    bool getDelayEnabled() const { return delayEnabled; }
+
+    // Reverb (bypassable like the others)
+    void setReverbEnabled (bool on) { reverbEnabled = on; }
+    bool getReverbEnabled() const { return reverbEnabled; }
+
     void setFilterCutoff (float hz)
     {
         filterCutoff = juce::jlimit (20.0f, 20000.0f, hz);
@@ -347,9 +604,10 @@ public:
     }
     float getFilterCutoff() const { return filterCutoff; }
 
+    // Ladder filter resonance: 0..4. Self-oscillates near 4.
     void setFilterResonance (float q)
     {
-        filterReso = juce::jlimit (0.5f, 20.0f, q);
+        filterReso = juce::jlimit (0.0f, 4.0f, q);
         applyFilterToVoices();
     }
     float getFilterResonance() const { return filterReso; }
@@ -366,35 +624,100 @@ public:
     void setFilterSustain (float v) { filtSustain = v; applyFilterADSRToVoices(); }
     void setFilterRelease (float v) { filtRelease = v; applyFilterADSRToVoices(); }
 
+    //==========================================================================
+    // Reset everything to the construction defaults — used by the "CLEAR"
+    // button on the synth page to wipe the patch back to a sane init state.
+    void resetToDefaults()
+    {
+        // Amp env — slightly longer release so chord tails ring out
+        setAttack  (0.02f); setDecay   (0.3f);
+        setSustain (0.6f);  setRelease (0.7f);
+
+        // Filter — slightly darker start so modulation sweeps read as musical
+        setFilterCutoff    (1400.0f);
+        setFilterResonance (1.0f);
+        setFilterEnvAmount (3000.0f);
+        setFilterAttack  (0.01f); setFilterDecay (0.4f);
+        setFilterSustain (0.3f);  setFilterRelease (0.5f);
+
+        // OSC — sub at 0.3 for low-end warmth on the default patch
+        setMainWaveform     (2);   // Saw
+        setOsc1Level        (1.0f);
+        setOsc2Waveform     (0);   // Sine
+        setOsc2Level        (0.0f);
+        setOsc2DetuneCents  (0.0f);
+        setSubLevel         (0.3f);
+        setDrive            (0.0f);
+        setGain             (0.15f);
+
+        // LFO
+        setLFORate     (1.0f);
+        setLFODepth    (0.0f);
+        setLFOWaveform (LFOSine);
+
+        // FX — subtle default delay so taps feel spacious
+        setReverbMix     (0.2f); setReverbSize (0.5f);
+        setDistDrive     (0.0f);
+        setDelayTimeMs   (350.0f);
+        setDelayFeedback (0.4f);
+        setDelayMix      (0.18f);
+        setDistEnabled   (true);
+        setDelayEnabled  (true);
+        setReverbEnabled (true);
+
+        // Routing — factory defaults: mod wheel + accel Y both wired to filter
+        // cutoff. Slots 2 and 3 stay free for the user's own routing.
+        for (int i = 0; i < NumRoutingSlots; ++i)
+        {
+            setRoutingSource (i, ModSrcOff);
+            setRoutingDest   (i, ModDestOff);
+            setRoutingAmount (i, 0.0f);
+        }
+        setRoutingSource (0, ModSrcModWheel);
+        setRoutingDest   (0, ModDestCutoff);
+        setRoutingAmount (0, 0.5f);
+        setRoutingSource (1, ModSrcAccelY);
+        setRoutingDest   (1, ModDestCutoff);
+        setRoutingAmount (1, 0.5f);
+    }
+
     float getFilterAttack()  const { return filtAttack; }
     float getFilterDecay()   const { return filtDecay; }
     float getFilterSustain() const { return filtSustain; }
     float getFilterRelease() const { return filtRelease; }
 
     //==========================================================================
-    // LFO parameters (single LFO, per-block update, applied via lfoTarget)
+    // LFO parameters. LFO no longer has its own target picker — it's a routing
+    // source like Mod Wheel and Accelerometer.
 
     void setLFORate     (float hz)  { lfoRate     = juce::jlimit (0.05f, 20.0f, hz); }
     void setLFODepth    (float d)   { lfoDepth    = juce::jlimit (0.0f, 1.0f, d); }
     void setLFOWaveform (int w)     { lfoWaveform = juce::jlimit (0, NumLFOWaves - 1, w); }
-    void setLFOTarget   (int dest)  { lfoTarget   = juce::jlimit (0, NumModDests - 1, dest); }
 
     float getLFORate()     const { return lfoRate; }
     float getLFODepth()    const { return lfoDepth; }
     int   getLFOWaveform() const { return lfoWaveform; }
-    int   getLFOTarget()   const { return lfoTarget; }
 
     //==========================================================================
-    // Mod wheel (CC1) — updated by PhoneMidiSink whenever a controller sends
-    // CC1 (e.g. Morf-Pad's Y axis). Atomic so it's safe across threads.
+    // Modulation sources updated from external inputs.
 
     void setModWheel (float value01) { modWheel.store (juce::jlimit (0.0f, 1.0f, value01)); }
     float getModWheel() const { return modWheel.load(); }
 
-    //==========================================================================
-    // Mod wheel routing matrix (4 slots, each: destination + amount).
+    void setAccelX (float xMinus1to1) { accelX.store (juce::jlimit (-1.0f, 1.0f, xMinus1to1)); }
+    void setAccelY (float yMinus1to1) { accelY.store (juce::jlimit (-1.0f, 1.0f, yMinus1to1)); }
+    float getAccelX() const { return accelX.load(); }
+    float getAccelY() const { return accelY.load(); }
 
-    void setRoutingDest   (int slot, int dest)
+    //==========================================================================
+    // Routing matrix (4 slots, each: source + destination + depth).
+
+    void setRoutingSource (int slot, int source)
+    {
+        if (slot < 0 || slot >= NumRoutingSlots) return;
+        routings[slot].source = juce::jlimit (0, NumModSources - 1, source);
+    }
+    void setRoutingDest (int slot, int dest)
     {
         if (slot < 0 || slot >= NumRoutingSlots) return;
         routings[slot].dest = juce::jlimit (0, NumModDests - 1, dest);
@@ -404,14 +727,10 @@ public:
         if (slot < 0 || slot >= NumRoutingSlots) return;
         routings[slot].amount = juce::jlimit (-1.0f, 1.0f, amount);
     }
-    int   getRoutingDest   (int slot) const
-    {
-        return (slot >= 0 && slot < NumRoutingSlots) ? routings[slot].dest : 0;
-    }
-    float getRoutingAmount (int slot) const
-    {
-        return (slot >= 0 && slot < NumRoutingSlots) ? routings[slot].amount : 0.0f;
-    }
+
+    int   getRoutingSource (int slot) const { return (slot >= 0 && slot < NumRoutingSlots) ? routings[slot].source : 0; }
+    int   getRoutingDest   (int slot) const { return (slot >= 0 && slot < NumRoutingSlots) ? routings[slot].dest   : 0; }
+    float getRoutingAmount (int slot) const { return (slot >= 0 && slot < NumRoutingSlots) ? routings[slot].amount : 0.0f; }
 
 private:
     //==========================================================================
@@ -423,11 +742,10 @@ private:
     {
         if (currentSampleRate <= 0.0) return;
 
-        // Advance LFO phase
+        // Advance LFO phase + compute LFO output (-1..+1 scaled by depth).
         lfoPhase += (double) lfoRate * (double) numSamples / currentSampleRate;
-        lfoPhase -= std::floor (lfoPhase);  // wrap to [0..1)
+        lfoPhase -= std::floor (lfoPhase);
 
-        // Compute LFO output in [-1, +1]
         float lfoRaw = 0.0f;
         switch (lfoWaveform)
         {
@@ -438,26 +756,39 @@ private:
         }
         float lfoOut = lfoRaw * lfoDepth;
 
-        // mod-wheel source in [-1, +1] (centred at 0.5 input → 0 mod, full up → +1)
-        float modW = (modWheel.load() * 2.0f - 1.0f);
+        // Pre-fetch all source values (cheap atomic loads).
+        float srcVals[NumModSources];
+        srcVals[ModSrcOff]      = 0.0f;
+        srcVals[ModSrcModWheel] = modWheel.load();        // 0..1
+        srcVals[ModSrcVelocity] = lastVelocity.load();    // 0..1
+        srcVals[ModSrcAccelX]   = accelX.load();          // -1..+1
+        srcVals[ModSrcAccelY]   = accelY.load();          // -1..+1
+        srcVals[ModSrcLFO]      = lfoOut;                  // -depth..+depth
 
-        // Sum modulation per destination
+        // Sum modulation per destination.
         float modPerDest[NumModDests] = { 0 };
-
         for (int i = 0; i < NumRoutingSlots; ++i)
-            modPerDest[routings[i].dest] += modW * routings[i].amount;
+        {
+            const auto& r = routings[i];
+            modPerDest[r.dest] += srcVals[r.source] * r.amount;
+        }
 
-        modPerDest[lfoTarget] += lfoOut;
-
-        // Apply to params (linear add with per-dest scale)
-        float effCutoff = filterCutoff   + modPerDest[ModDestCutoff]    * 5000.0f;
-        float effReso   = filterReso     + modPerDest[ModDestResonance] * 5.0f;
+        // Apply with per-destination scaling.
+        float effCutoff = filterCutoff    + modPerDest[ModDestCutoff]    * 5000.0f;
+        float effReso   = filterReso      + modPerDest[ModDestResonance] * 4.0f;
         float effEnvAmt = filterEnvAmount + modPerDest[ModDestEnvAmount] * 5000.0f;
-        float effGain   = masterGain     + modPerDest[ModDestGain]      * 0.2f;
-        float effRevWet = reverbWet      + modPerDest[ModDestReverbMix] * 1.0f;
+        float effGain   = masterGain      + modPerDest[ModDestGain]      * 0.2f;
+        float effRevWet = reverbWet       + modPerDest[ModDestReverbMix] * 1.0f;
+        float pitchSemi = modPerDest[ModDestPitch] * 7.0f; // ±7 semitones at full mod
+
+        effDistDrive    = juce::jlimit (0.0f, 1.0f, distDrive + modPerDest[ModDestDistDrive] * 1.0f);
+        effDelayMix     = juce::jlimit (0.0f, 1.0f, delayMix  + modPerDest[ModDestDelayMix]  * 1.0f);
+        // ±1000 ms at full mod — wide enough for dub-style sweeps without
+        // wrapping past the buffer's 2 s capacity.
+        effDelayTimeMs  = juce::jlimit (5.0f, 2000.0f, delayTimeMs + modPerDest[ModDestDelayTime] * 1000.0f);
 
         effCutoff = juce::jlimit (20.0f,  20000.0f, effCutoff);
-        effReso   = juce::jlimit (0.5f,    20.0f,   effReso);
+        effReso   = juce::jlimit (0.0f,    4.0f,    effReso);
         effEnvAmt = juce::jlimit (0.0f,   10000.0f, effEnvAmt);
         effGain   = juce::jlimit (0.0f,    0.6f,    effGain);
         effRevWet = juce::jlimit (0.0f,    1.0f,    effRevWet);
@@ -469,10 +800,10 @@ private:
             {
                 v->setFilterParams (effCutoff, effReso, effEnvAmt);
                 v->setGain (effGain);
+                v->setPitchMod (pitchSemi);
             }
         }
 
-        // Push to reverb if changed meaningfully
         if (std::abs (effRevWet - lastEffectiveReverbWet) > 0.001f)
         {
             reverbParams.wetLevel = effRevWet;
@@ -550,10 +881,34 @@ private:
     float adsrDecay   = 0.3f;
     float adsrSustain = 0.6f;
     float adsrRelease = 0.4f;
-    float sawMix      = 0.6f;
+    int   mainWaveform = 2;    // 0=Sine, 1=Triangle, 2=Saw, 3=Square
+    float osc1Level    = 1.0f; // 0..1
+    int   osc2Waveform = 0;    // default Sine
+    float osc2Level    = 0.0f; // 0..1 — off by default
+    float osc2DetuneCents = 0.0f; // -100..+100
+    float subLevel    = 0.0f;
+    float drive       = 0.0f;  // per-voice osc drive (OSC tab)
     float masterGain  = 0.15f;
     float reverbWet   = 0.2f;
     float reverbSize  = 0.5f;
+
+    // FX bus: master distortion + delay (apply post-mix in getNextAudioBlock).
+    float distDrive    = 0.0f;
+    bool  distEnabled  = true;
+
+    float delayTimeMs  = 350.0f;
+    float delayFeedback = 0.4f;
+    float delayMix     = 0.18f;      // subtle default delay so single-note taps feel spacious
+    bool  delayEnabled = true;
+    std::vector<float> delayBuf;
+    int   delayWritePos = 0;
+
+    bool  reverbEnabled = true;
+
+    // Effective (modulated) FX values pushed by processModulation each block.
+    float effDistDrive = 0.0f;
+    float effDelayMix  = 0.0f;
+    float effDelayTimeMs = 350.0f;
 
     float filterCutoff    = 2000.0f;
     float filterReso      = 1.0f;
@@ -566,15 +921,23 @@ private:
     // LFO state
     float lfoRate = 1.0f;        // Hz
     float lfoDepth = 0.0f;       // 0..1
-    int   lfoWaveform = LFOSine; // index into NumLFOWaves
-    int   lfoTarget = ModDestOff;
+    int   lfoWaveform = LFOSine;
     double lfoPhase = 0.0;
 
-    // Mod wheel (CC1) — updated by PhoneMidiSink, read on audio thread
-    std::atomic<float> modWheel { 0.5f };
+    // Modulation sources updated externally — atomic for cross-thread reads.
+    std::atomic<float> modWheel     { 0.5f };  // 0..1
+    std::atomic<float> lastVelocity { 0.0f };  // 0..1
+    std::atomic<float> accelX       { 0.0f };  // -1..+1
+    std::atomic<float> accelY       { 0.0f };  // -1..+1
 
-    // Routing matrix
-    struct Routing { int dest = ModDestOff; float amount = 0.0f; };
+    // Routing matrix: each slot picks any source → any destination, scaled
+    // by depth (-1..+1).
+    struct Routing
+    {
+        int   source = ModSrcOff;
+        int   dest   = ModDestOff;
+        float amount = 0.0f;
+    };
     Routing routings[NumRoutingSlots];
 
     // Track last reverb wet value applied so we only push to reverb on change

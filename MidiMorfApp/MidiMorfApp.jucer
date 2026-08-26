@@ -71,6 +71,7 @@
       <FILE id="NVfyJV" name="wood2.jpg" compile="0" resource="1" file="../../../../../Downloads/simple-realistic-wood-texture/wood2.jpg"/>
       <FILE id="aInBlm" name="inBloom.png" compile="0" resource="1" file="../inBloom.png"/>
       <FILE id="aAppIc" name="Icon.png" compile="0" resource="1" file="../MidiMorfServer/Icon.png"/>
+      <FILE id="sqPg01" name="StepSequencerPage.h" compile="0" resource="0" file="Source/StepSequencerPage.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>
@@ -94,7 +95,7 @@
   <EXPORTFORMATS>
     <XCODE_IPHONE targetFolder="Builds/iOS" extraDefs="JUCE_IOS_AUDIO_EXPLICIT_SAMPLERATES=48000.0" localNetworkPermissionNeeded="1" localNetworkPermissionText="Midi-Morf needs local network access to connect to your DAW&lt;"
                   customPList="&lt;key&gt;NSLocalNetworkUsageDescription&lt;/key&gt;&#10;  &lt;string&gt;Midi-Morf needs local network access to connect to your DAW&lt;/string&gt;&#10;  &lt;key&gt;NSBonjourServices&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;_midimorf._tcp&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UISupportedInterfaceOrientations&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;UIInterfaceOrientationLandscapeRight&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UIRequiresFullScreen&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;CFBundleIconName&lt;/key&gt;&#10;  &lt;string&gt;AppIcon&lt;/string&gt;&#10;"
-                  iosDevelopmentTeamID=" 69KM48W4T" extraCustomFrameworks="CoreMotion"
+                  iosDevelopmentTeamID="69KM48W4TU" extraCustomFrameworks="CoreMotion"
                   iosScreenOrientation="UIInterfaceOrientationLandscapeRight" iPadScreenOrientation="UIInterfaceOrientationLandscapeRight">
       <CONFIGURATIONS>
         <CONFIGURATION isDebug="1" name="Debug" iosDeploymentTarget="17.5" iosCompatibility="17.5"/>

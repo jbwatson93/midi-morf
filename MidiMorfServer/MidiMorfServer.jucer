@@ -36,6 +36,8 @@
           file="Source/MorfChordHandler.h"/>
     <FILE id="aRcHdS" name="RoseChordHandler.h" compile="0" resource="0"
           file="Source/RoseChordHandler.h"/>
+    <FILE id="mcRx01" name="MidiClockReceiver.h" compile="0" resource="0" file="Source/MidiClockReceiver.h"/>
+    <FILE id="sqEn01" name="StepSequencerEngine.h" compile="0" resource="0" file="Source/StepSequencerEngine.h"/>
   </MAINGROUP>
   <MODULES>
     <MODULE id="juce_audio_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>

@@ -16,6 +16,10 @@ public:
     void sendNoteOn (int channel, int note, int velocity);
     void sendNoteOff (int channel, int note);
 
+    // 0..16383, centre 8192. Native in Simpler/Sampler — no MIDI mapping needed,
+    // which is why the slicer's first ribbon defaults to it.
+    void sendPitchBend (int channel, int value);
+
 private:
     std::unique_ptr<juce::MidiOutput> midiOutput;
 

@@ -12,6 +12,7 @@ class TransportHandler;
 #include "RoseChordHandler.h"
 #include "MidiClockReceiver.h"
 #include "StepSequencerEngine.h"
+#include "SliceSequencerEngine.h"
 
 class MidiMorfEngine : public NetworkServer::Listener,
                        private juce::Timer
@@ -31,6 +32,7 @@ public:
     OmnichordHandler& getOmnichordHandler() { return *omnichordHandler; }
     RoseChordHandler& getRoseChordHandler() { return *roseChordHandler; }
     StepSequencerEngine& getStepSequencer() { return *stepSequencer; }
+    SliceSequencerEngine& getSliceSequencer() { return *sliceSequencer; }
     MidiClockReceiver& getMidiClock() { return midiClock; }
 
     void sendTiltAssignBurst (bool isXAxis);
@@ -121,6 +123,7 @@ private:
     // Creative Sequencer Pack — DAW clock in, sequencer engines out
     MidiClockReceiver midiClock;
     std::unique_ptr<StepSequencerEngine> stepSequencer;
+    std::unique_ptr<SliceSequencerEngine> sliceSequencer;
     int lastSentPlayhead = -2;   // -2 = never sent
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MidiMorfEngine)

@@ -15,6 +15,7 @@ MidiMorfEngine::MidiMorfEngine()
     morfChordHandler   = std::make_unique<MorfChordHandler> (virtualMidiPort);
     roseChordHandler = std::make_unique<RoseChordHandler> (virtualMidiPort, 7);
     stepSequencer = std::make_unique<StepSequencerEngine> (virtualMidiPort, 8);
+    sliceSequencer = std::make_unique<SliceSequencerEngine> (virtualMidiPort, 9);
 
     networkServer.setListener (this);
     loadState();
@@ -31,6 +32,7 @@ void MidiMorfEngine::start()
 
     // DAW clock in on a second virtual port, driving the sequencer engines.
     midiClock.addListener (stepSequencer.get());
+    midiClock.addListener (sliceSequencer.get());
     midiClock.open();
     startTimerHz (30);
 
@@ -49,7 +51,9 @@ void MidiMorfEngine::stop()
     stopTimer();
     midiClock.close();
     midiClock.removeListener (stepSequencer.get());
+    midiClock.removeListener (sliceSequencer.get());
     stepSequencer->allNotesOff();
+    sliceSequencer->allNotesOff();
 
     virtualMidiPort.close();
 }
@@ -283,6 +287,7 @@ void MidiMorfEngine::clientConnected (const juce::String&)
 void MidiMorfEngine::clientDisconnected()
 {
     stepSequencer->allNotesOff();
+    sliceSequencer->allNotesOff();
 
     int mask = activeSlotMask.exchange (0);
     for (int i = 0; i < MidiMorf::NUM_SLOTS; ++i)
@@ -544,7 +549,7 @@ void MidiMorfEngine::packEntitlement (uint8_t packId, bool valid)
 void MidiMorfEngine::seqStepSet (uint8_t step, uint8_t degree, uint8_t velocity, uint8_t gate, uint8_t mod, uint8_t flags)
 {
     StepSequencerEngine::Step s;
-    s.degree   = degree;
+    s.index    = degree;
     s.velocity = velocity;
     s.gate     = gate;
     s.mod      = mod;

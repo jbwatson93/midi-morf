@@ -201,7 +201,10 @@ private:
 class StepBox : public juce::Component
 {
 public:
-    std::function<void()> onTapped;
+    // Reports the finger position in PARENT coordinates so the parent can paint
+    // across the whole row. isStart marks the press that decides the direction:
+    // a sweep either clears a run or fills it, based on the box it began on.
+    std::function<void (juce::Point<int>, bool /*isStart*/)> onPaint;
 
     void setNoteName (const juce::String& n) { noteName = n; repaint(); }
     void setOn (bool o)        { if (o != isOn) { isOn = o; repaint(); } }
@@ -243,9 +246,19 @@ public:
         }
     }
 
-    void mouseDown (const juce::MouseEvent&) override { if (onTapped) onTapped(); }
+    void mouseDown (const juce::MouseEvent& e) override { report (e, true); }
+    void mouseDrag (const juce::MouseEvent& e) override { report (e, false); }
 
 private:
+    void report (const juce::MouseEvent& e, bool isStart)
+    {
+        if (onPaint == nullptr)
+            return;
+
+        if (auto* parent = getParentComponent())
+            onPaint (e.getEventRelativeTo (parent).getPosition(), isStart);
+    }
+
     juce::String noteName;
     bool isOn = true;
     bool playing = false;
@@ -326,13 +339,7 @@ public:
         for (int i = 0; i < NUM_STEPS; ++i)
         {
             auto* box = stepBoxes.add (new StepBox());
-            box->onTapped = [this, i]
-            {
-                steps[(size_t) i].rest = ! steps[(size_t) i].rest;
-                refreshStepBox (i);
-                refreshLaneRests();
-                pushStep (i);
-            };
+            box->onPaint = [this] (juce::Point<int> pos, bool isStart) { paintStepAt (pos, isStart); };
             addAndMakeVisible (box);
         }
 
@@ -657,6 +664,30 @@ private:
         pushStep (step);
     }
 
+    // Drag across the row to knock out a run of steps or bring one back in.
+    // The box under the initial press decides the direction for the whole
+    // sweep, so a drag never leaves a checkerboard behind.
+    void paintStepAt (juce::Point<int> pos, bool isStart)
+    {
+        for (int i = 0; i < NUM_STEPS; ++i)
+        {
+            if (! stepBoxes[i]->getBounds().contains (pos))
+                continue;
+
+            if (isStart)
+                paintRestState = ! steps[(size_t) i].rest;
+
+            if (steps[(size_t) i].rest == paintRestState)
+                return;   // already in the target state — nothing to send
+
+            steps[(size_t) i].rest = paintRestState;
+            refreshStepBox (i);
+            refreshLaneRests();
+            pushStep (i);
+            return;
+        }
+    }
+
     void refreshStepBox (int i)
     {
         stepBoxes[i]->setNoteName (noteNameFor (steps[(size_t) i].degree));
@@ -692,6 +723,7 @@ private:
     std::vector<int> noteTable;
 
     LaneMode laneMode = LaneMode::Pitch;
+    bool paintRestState = false;   // direction of the in-progress box sweep
     uint8_t direction = 0;
     int playhead = -1;
 

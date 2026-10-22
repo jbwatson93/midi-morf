@@ -274,8 +274,22 @@ public:
         ModDestReverbMix = 7,
         ModDestDelayMix  = 8,
         ModDestDistDrive = 9,
-        NumModDests      = 10
+        ModDestDelayTime = 10,
+        NumModDests      = 11
     };
+
+    // Menu names, indexed by the enums above. Append only — patches store
+    // the indices.
+    static juce::StringArray sourceNames()
+    {
+        return { "Off", "Mod Wheel", "Velocity", "Accel X", "Accel Y", "LFO" };
+    }
+
+    static juce::StringArray destNames()
+    {
+        return { "Off", "OSC A Position", "OSC B Position", "Filter Cutoff", "Resonance",
+                 "Pitch", "Gain", "Reverb Mix", "Delay Mix", "Dist Drive", "Delay Time" };
+    }
 
     enum LFOWaveform { LFOSine = 0, LFOTri = 1, LFOSaw = 2, LFOSquare = 3, NumLFOWaves = 4 };
 
@@ -559,7 +573,9 @@ private:
                 v->setBlockParams (a, b, subLevel, unison, unisonDetune,
                                    cutoff, reso, filterEnvAmount, envToPos, drive, g, pitch);
 
-        fx.setModulated (mod[ModDestDistDrive], mod[ModDestDelayMix], 0.0f, mod[ModDestReverbMix]);
+        // Delay time: ±1000 ms at full depth, same as the classic engine.
+        fx.setModulated (mod[ModDestDistDrive], mod[ModDestDelayMix],
+                         mod[ModDestDelayTime] * 1000.0f, mod[ModDestReverbMix]);
     }
 
     //==========================================================================

@@ -160,14 +160,18 @@ namespace WavetableLibrary
     //--------------------------------------------------------------------------
     // Helpers
 
-    // Spectrum from harmonic amplitudes, sine phase. amps[h] for h = 1..N.
-    inline Spectrum additive (const std::vector<float>& amps)
+    // Spectrum from harmonic amplitudes, amps[h] for h = 1..N. Sine phase by
+    // default; cosine phase for shapes whose series is written in cosines
+    // (a pulse built from sines comes out as a pair of spikes).
+    inline Spectrum additive (const std::vector<float>& amps, bool cosinePhase = false)
     {
-        // A unit sine at FrameSize points has bin value (0, -FrameSize/2).
+        // A unit sine at FrameSize points has bin value (0, -FrameSize/2); a
+        // unit cosine has (FrameSize/2, 0).
         constexpr float binScale = Wavetable::FrameSize * 0.5f;
         Spectrum s ((size_t) Wavetable::NumHarmonics + 1);
         for (size_t h = 1; h < amps.size() && h <= (size_t) Wavetable::NumHarmonics; ++h)
-            s[h] = { 0.0f, -amps[h] * binScale };
+            s[h] = cosinePhase ? std::complex<float> (amps[h] * binScale, 0.0f)
+                               : std::complex<float> (0.0f, -amps[h] * binScale);
         return s;
     }
 
@@ -252,7 +256,7 @@ namespace WavetableLibrary
                     float duty = lerp (0.5f, 0.03f, t);
                     for (int h = 1; h <= H; ++h)
                         amps[(size_t) h] = 2.0f / (float) (pi * h) * (float) std::sin (pi * h * duty);
-                    frames.push_back (additive (amps));
+                    frames.push_back (additive (amps, true));
                     break;
                 }
 

@@ -148,7 +148,7 @@ public:
         auto a = getContentArea();
         tableCombo.setBounds (a.removeFromTop (28));
         a.removeFromTop (6);
-        auto knobs = a.removeFromBottom (juce::jmin (78, a.getHeight() / 2));
+        auto knobs = a.removeFromBottom (juce::jlimit (78, 130, a.getHeight() / 3));
         display.setBounds (a.reduced (0, 2));
 
         const int w = knobs.getWidth() / 4;
@@ -270,17 +270,57 @@ private:
 };
 
 //==============================================================================
-// Landscape content: OSC A | OSC B | VOICE & FILTER, audition ribbon below.
-// Milestone 1 — envelopes, LFO, routing and FX run on the engine defaults
-// (tilt Y → OSC A position) until their tabs land.
-class WavetableSynthContent : public juce::Component
+// WtTab — shared plumbing for the wavetable page's tabs: every control writes
+// straight to the engine, then pings onChange so the patch gets saved.
+class WtTab : public juce::Component
 {
 public:
-    WavetableSynthContent (WavetableEngine& e, std::function<void()> notify)
-        : engine (e), onChange (notify),
+    WtTab (WavetableEngine& e, std::function<void()> notify)
+        : engine (e), onChange (std::move (notify)) {}
+
+    virtual void refresh() = 0;
+
+protected:
+    void wire (juce::Slider& s, std::function<void (float)> f)
+    {
+        s.onValueChange = [this, &s, f]
+        {
+            f ((float) s.getValue());
+            if (onChange) onChange();
+        };
+    }
+    void wire (Knob& k, std::function<void (float)> f)  { wire (k.getSlider(), std::move (f)); }
+    void wire (Fader& k, std::function<void (float)> f) { wire (k.getSlider(), std::move (f)); }
+
+    void changed() { if (onChange) onChange(); }
+
+    static void layoutInRow (juce::Rectangle<int> row, std::initializer_list<juce::Component*> components,
+                             int pad = 4)
+    {
+        const int n = (int) components.size();
+        if (n == 0) return;
+        const int w = row.getWidth() / n;
+        int i = 0;
+        for (auto* c : components)
+            c->setBounds (row.removeFromLeft (++i == n ? row.getWidth() : w).reduced (pad));
+    }
+
+    WavetableEngine& engine;
+    std::function<void()> onChange;
+};
+
+//==============================================================================
+// OSC tab — OSC A | OSC B | VOICE · FILTER. The filter lives here rather than
+// on its own tab: on a wavetable synth the oscillators and the filter are
+// what you tweak together.
+class WtOscTab : public WtTab
+{
+public:
+    WtOscTab (WavetableEngine& e, std::function<void()> notify)
+        : WtTab (e, notify),
           oscA ("OSC A", e, 0, notify),
           oscB ("OSC B", e, 1, notify),
-          voiceCard ("VOICE  ·  FILTER"),
+          voiceCard ("VOICE / FILTER"),
           unison  ("UNISON", 1.0f, (float) WavetableVoice::MaxUnison, (float) e.getUnison(), 1.0f),
           detune  ("DETUNE", 0.0f, 50.0f, e.getUnisonDetune(), 0.1f),
           sub     ("SUB",    0.0f, 1.0f,  e.getSubLevel()),
@@ -290,8 +330,6 @@ public:
           envAmt  ("ENV",    0.0f, 10000.0f, e.getFilterEnvAmount(), 1.0f, 2000.0f),
           envPos  ("ENV>POS", -1.0f, 1.0f, e.getEnvToPosition())
     {
-        setLookAndFeel (&laf);
-
         addAndMakeVisible (oscA);
         addAndMakeVisible (oscB);
         addAndMakeVisible (voiceCard);
@@ -306,11 +344,343 @@ public:
         wire (envPos, [this] (float v) { engine.setEnvToPosition (v); });
         for (auto* k : knobs())
             voiceCard.addAndMakeVisible (*k);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds();
+        const int gap = 6;
+        const int w = (area.getWidth() - 2 * gap) / 3;
+        oscA.setBounds (area.removeFromLeft (w));       area.removeFromLeft (gap);
+        oscB.setBounds (area.removeFromLeft (w));       area.removeFromLeft (gap);
+        voiceCard.setBounds (area);
+
+        // 4 × 2 knob grid inside the voice card.
+        auto c = voiceCard.getContentArea();
+        auto top = c.removeFromTop (c.getHeight() / 2);
+        layoutInRow (top, { &unison, &detune, &sub, &gain }, 2);
+        layoutInRow (c,   { &cutoff, &reso, &envAmt, &envPos }, 2);
+    }
+
+    void refresh() override
+    {
+        oscA.refresh();
+        oscB.refresh();
+        unison.getSlider().setValue ((double) engine.getUnison(),   juce::dontSendNotification);
+        detune.getSlider().setValue (engine.getUnisonDetune(),      juce::dontSendNotification);
+        sub.getSlider().setValue    (engine.getSubLevel(),          juce::dontSendNotification);
+        gain.getSlider().setValue   (engine.getGain(),              juce::dontSendNotification);
+        cutoff.getSlider().setValue (engine.getFilterCutoff(),      juce::dontSendNotification);
+        reso.getSlider().setValue   (engine.getFilterResonance(),   juce::dontSendNotification);
+        envAmt.getSlider().setValue (engine.getFilterEnvAmount(),   juce::dontSendNotification);
+        envPos.getSlider().setValue (engine.getEnvToPosition(),     juce::dontSendNotification);
+    }
+
+private:
+    std::vector<Knob*> knobs() { return { &unison, &detune, &sub, &gain, &cutoff, &reso, &envAmt, &envPos }; }
+
+    OscCard oscA, oscB;
+    SectionCard voiceCard;
+    Knob unison, detune, sub, gain, cutoff, reso, envAmt, envPos;
+};
+
+//==============================================================================
+// ENV & LFO tab — AMP envelope | FILTER · POS envelope | LFO.
+// The second envelope drives both the filter (ENV on the OSC tab) and the
+// table position (ENV>POS), so it's named for both.
+class WtEnvLfoTab : public WtTab
+{
+public:
+    WtEnvLfoTab (WavetableEngine& e, std::function<void()> notify)
+        : WtTab (e, notify),
+          ampCard ("AMP ENV"), modCard ("FILTER / POS ENV"), lfoCard ("LFO"),
+          aA ("A", 0.001f, 2.0f, 0.01f, 0.001f, 0.2f), aD ("D", 0.01f, 2.0f, 0.4f, 0.01f, 0.3f),
+          aS ("S", 0.0f, 1.0f, 0.7f),                   aR ("R", 0.01f, 3.0f, 0.6f, 0.01f, 0.5f),
+          fA ("A", 0.001f, 2.0f, 0.01f, 0.001f, 0.2f), fD ("D", 0.01f, 2.0f, 0.5f, 0.01f, 0.3f),
+          fS ("S", 0.0f, 1.0f, 0.3f),                   fR ("R", 0.01f, 3.0f, 0.5f, 0.01f, 0.5f),
+          rate  ("RATE",  0.05f, 20.0f, e.getLFORate(), 0.01f, 2.0f),
+          depth ("DEPTH", 0.0f,  1.0f,  e.getLFODepth()),
+          wave  ("WAVE")
+    {
+        for (auto* f : { &aA, &aD, &aS, &aR })
+        {
+            wire (*f, [this] (float) { pushAmp(); });
+            ampCard.addAndMakeVisible (*f);
+        }
+        for (auto* f : { &fA, &fD, &fS, &fR })
+        {
+            wire (*f, [this] (float) { pushFilter(); });
+            modCard.addAndMakeVisible (*f);
+        }
+
+        wire (rate,  [this] (float v) { engine.setLFORate (v); });
+        wire (depth, [this] (float v) { engine.setLFODepth (v); });
+        wave.getCombo().addItemList ({ "Sine", "Triangle", "Saw", "Square" }, 1);
+        wave.getCombo().onChange = [this]
+        {
+            engine.setLFOWaveform (wave.getCombo().getSelectedId() - 1);
+            changed();
+        };
+        lfoCard.addAndMakeVisible (rate);
+        lfoCard.addAndMakeVisible (depth);
+        lfoCard.addAndMakeVisible (wave);
+
+        addAndMakeVisible (ampCard);
+        addAndMakeVisible (modCard);
+        addAndMakeVisible (lfoCard);
+        refresh();
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds();
+        const int gap = 6;
+        const int w = (int) (area.getWidth() * 0.36f);
+        ampCard.setBounds (area.removeFromLeft (w)); area.removeFromLeft (gap);
+        modCard.setBounds (area.removeFromLeft (w)); area.removeFromLeft (gap);
+        lfoCard.setBounds (area);
+
+        layoutInRow (ampCard.getContentArea(), { &aA, &aD, &aS, &aR });
+        layoutInRow (modCard.getContentArea(), { &fA, &fD, &fS, &fR });
+
+        auto l = lfoCard.getContentArea();
+        wave.setBounds (l.removeFromBottom (56));
+        layoutInRow (l, { &rate, &depth });
+    }
+
+    void refresh() override
+    {
+        float a, d, s, r;
+        engine.getAmpADSR (a, d, s, r);
+        setFaders ({ &aA, &aD, &aS, &aR }, a, d, s, r);
+        engine.getFilterADSR (a, d, s, r);
+        setFaders ({ &fA, &fD, &fS, &fR }, a, d, s, r);
+        rate.getSlider().setValue  (engine.getLFORate(),  juce::dontSendNotification);
+        depth.getSlider().setValue (engine.getLFODepth(), juce::dontSendNotification);
+        wave.getCombo().setSelectedId (engine.getLFOWaveform() + 1, juce::dontSendNotification);
+    }
+
+private:
+    static void setFaders (std::initializer_list<Fader*> faders, float a, float d, float s, float r)
+    {
+        const float v[] = { a, d, s, r };
+        int i = 0;
+        for (auto* f : faders)
+            f->getSlider().setValue (v[i++], juce::dontSendNotification);
+    }
+
+    static float val (Fader& f) { return (float) f.getSlider().getValue(); }
+    void pushAmp()    { engine.setAmpADSR    (val (aA), val (aD), val (aS), val (aR)); }
+    void pushFilter() { engine.setFilterADSR (val (fA), val (fD), val (fS), val (fR)); }
+
+    SectionCard ampCard, modCard, lfoCard;
+    Fader aA, aD, aS, aR, fA, fD, fS, fR;
+    Knob rate, depth;
+    LabeledCombo wave;
+};
+
+//==============================================================================
+// ROUTING tab — 4 slots of [source] → [destination] [depth], same model as
+// the classic synth, with the two table positions as destinations.
+class WtRoutingTab : public WtTab
+{
+public:
+    WtRoutingTab (WavetableEngine& e, std::function<void()> notify)
+        : WtTab (e, notify)
+    {
+        header.setText ("MODULATION ROUTING", juce::dontSendNotification);
+        header.setColour (juce::Label::textColourId, MidiMorfColors::accent);
+        header.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        addAndMakeVisible (header);
+
+        for (int i = 0; i < WavetableEngine::NumRoutingSlots; ++i)
+        {
+            auto& s = slots[i];
+            s.number.setText (juce::String (i + 1), juce::dontSendNotification);
+            s.number.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+            s.number.setJustificationType (juce::Justification::centred);
+            addAndMakeVisible (s.number);
+
+            s.source.addItemList (WavetableEngine::sourceNames(), 1);
+            s.source.onChange = [this, i]
+            {
+                engine.setRoutingSource (i, slots[i].source.getSelectedId() - 1);
+                changed();
+            };
+            addAndMakeVisible (s.source);
+
+            s.dest.addItemList (WavetableEngine::destNames(), 1);
+            s.dest.onChange = [this, i]
+            {
+                engine.setRoutingDest (i, slots[i].dest.getSelectedId() - 1);
+                changed();
+            };
+            addAndMakeVisible (s.dest);
+
+            s.amount.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+            s.amount.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 50, 16);
+            s.amount.setRange (-1.0, 1.0, 0.01);
+            s.amount.setColour (juce::Slider::rotarySliderFillColourId,    MidiMorfColors::accent);
+            s.amount.setColour (juce::Slider::rotarySliderOutlineColourId, MidiMorfColors::padBorder);
+            s.amount.setColour (juce::Slider::thumbColourId,               MidiMorfColors::textLight);
+            s.amount.setColour (juce::Slider::textBoxTextColourId,         MidiMorfColors::textLight);
+            s.amount.setColour (juce::Slider::textBoxBackgroundColourId,   juce::Colours::transparentBlack);
+            s.amount.setColour (juce::Slider::textBoxOutlineColourId,      juce::Colours::transparentBlack);
+            wire (s.amount, [this, i] (float v) { engine.setRoutingAmount (i, v); });
+            addAndMakeVisible (s.amount);
+        }
+        refresh();
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (4);
+        header.setBounds (area.removeFromTop (22));
+        area.removeFromTop (4);
+
+        const int slotH = area.getHeight() / WavetableEngine::NumRoutingSlots;
+        for (auto& s : slots)
+        {
+            auto row = area.removeFromTop (slotH).reduced (2, 3);
+            s.number.setBounds (row.removeFromLeft (22));
+            row.removeFromLeft (4);
+            s.amount.setBounds (row.removeFromRight (juce::jmin (110, row.getHeight() + 50)));
+            row.removeFromRight (6);
+            const int half = row.getWidth() / 2;
+            s.source.setBounds (row.removeFromLeft (half - 4).withSizeKeepingCentre (half - 4, 28));
+            row.removeFromLeft (6);
+            s.dest.setBounds (row.withSizeKeepingCentre (row.getWidth(), 28));
+        }
+    }
+
+    void refresh() override
+    {
+        for (int i = 0; i < WavetableEngine::NumRoutingSlots; ++i)
+        {
+            slots[i].source.setSelectedId (engine.getRoutingSource (i) + 1, juce::dontSendNotification);
+            slots[i].dest.setSelectedId   (engine.getRoutingDest (i) + 1,   juce::dontSendNotification);
+            slots[i].amount.setValue      (engine.getRoutingAmount (i),     juce::dontSendNotification);
+        }
+    }
+
+private:
+    struct Slot
+    {
+        juce::Label    number;
+        juce::ComboBox source, dest;
+        juce::Slider   amount;
+    };
+
+    juce::Label header;
+    Slot slots[WavetableEngine::NumRoutingSlots];
+};
+
+//==============================================================================
+// FX tab — DISTORTION | DELAY | REVERB on MasterFx, each with ON/OFF.
+// DISTORTION also carries the per-voice PRE drive (before the filter) next to
+// the bus's POST drive, so both kinds of dirt sit in one place.
+class WtFxTab : public WtTab
+{
+public:
+    WtFxTab (WavetableEngine& e, std::function<void()> notify)
+        : WtTab (e, notify),
+          distModule   ("DISTORTION", [this] { return fx().distEnabled; },   [this] (bool on) { fx().distEnabled = on; }),
+          delayModule  ("DELAY",      [this] { return fx().delayEnabled; },  [this] (bool on) { fx().delayEnabled = on; }),
+          reverbModule ("REVERB",     [this] { return fx().reverbEnabled; }, [this] (bool on) { fx().reverbEnabled = on; }),
+          pre     ("PRE",     0.0f, 1.0f,    e.getDrive()),
+          post    ("POST",    0.0f, 1.0f,    e.getFx().distDrive),
+          dlyTime ("TIME ms", 5.0f, 2000.0f, e.getFx().delayTimeMs, 1.0f, 250.0f),
+          dlyFb   ("FB",      0.0f, 0.95f,   e.getFx().delayFeedback),
+          dlyMix  ("MIX",     0.0f, 1.0f,    e.getFx().delayMix),
+          revMix  ("MIX",     0.0f, 1.0f,    e.getFx().reverbWet),
+          revSize ("ROOM",    0.0f, 1.0f,    e.getFx().reverbSize)
+    {
+        wire (pre,     [this] (float v) { engine.setDrive (v); });
+        wire (post,    [this] (float v) { fx().distDrive     = v; });
+        wire (dlyTime, [this] (float v) { fx().delayTimeMs   = v; });
+        wire (dlyFb,   [this] (float v) { fx().delayFeedback = v; });
+        wire (dlyMix,  [this] (float v) { fx().delayMix      = v; });
+        wire (revMix,  [this] (float v) { fx().reverbWet     = v; });
+        wire (revSize, [this] (float v) { fx().reverbSize    = v; });
+
+        for (auto* m : { &distModule, &delayModule, &reverbModule })
+        {
+            m->onEnabledChanged = [this] { changed(); };
+            addAndMakeVisible (*m);
+        }
+
+        distModule.addAndMakeVisible (pre);
+        distModule.addAndMakeVisible (post);
+        delayModule.addAndMakeVisible (dlyTime);
+        delayModule.addAndMakeVisible (dlyFb);
+        delayModule.addAndMakeVisible (dlyMix);
+        reverbModule.addAndMakeVisible (revMix);
+        reverbModule.addAndMakeVisible (revSize);
+    }
+
+    void resized() override
+    {
+        // Widths follow knob count: 2 · 3 · 2.
+        auto area = getLocalBounds();
+        const int gap = 6;
+        const int unit = (area.getWidth() - 2 * gap) / 7;
+        distModule.setBounds (area.removeFromLeft (unit * 2));  area.removeFromLeft (gap);
+        delayModule.setBounds (area.removeFromLeft (unit * 3)); area.removeFromLeft (gap);
+        reverbModule.setBounds (area);
+
+        layoutInRow (distModule.getContentArea(),   { &pre, &post });
+        layoutInRow (delayModule.getContentArea(),  { &dlyTime, &dlyFb, &dlyMix });
+        layoutInRow (reverbModule.getContentArea(), { &revMix, &revSize });
+    }
+
+    void refresh() override
+    {
+        distModule.refreshFromModel();
+        delayModule.refreshFromModel();
+        reverbModule.refreshFromModel();
+        pre.getSlider().setValue     (engine.getDrive(),    juce::dontSendNotification);
+        post.getSlider().setValue    (fx().distDrive,       juce::dontSendNotification);
+        dlyTime.getSlider().setValue (fx().delayTimeMs,     juce::dontSendNotification);
+        dlyFb.getSlider().setValue   (fx().delayFeedback,   juce::dontSendNotification);
+        dlyMix.getSlider().setValue  (fx().delayMix,        juce::dontSendNotification);
+        revMix.getSlider().setValue  (fx().reverbWet,       juce::dontSendNotification);
+        revSize.getSlider().setValue (fx().reverbSize,      juce::dontSendNotification);
+    }
+
+private:
+    MasterFx& fx() { return engine.getFx(); }
+
+    FxModule distModule, delayModule, reverbModule;
+    Knob pre, post, dlyTime, dlyFb, dlyMix, revMix, revSize;
+};
+
+//==============================================================================
+// Landscape content: title + tab bar + CLEAR, the active tab, audition ribbon.
+class WavetableSynthContent : public juce::Component
+{
+public:
+    WavetableSynthContent (WavetableEngine& e, std::function<void()> notify)
+        : engine (e), onChange (notify),
+          oscTab (e, notify), envTab (e, notify), routingTab (e, notify), fxTab (e, notify)
+    {
+        setLookAndFeel (&laf);
 
         title.setText ("WAVETABLE", juce::dontSendNotification);
-        title.setFont (juce::FontOptions (15.0f, juce::Font::bold));
-        title.setColour (juce::Label::textColourId, MidiMorfColors::textLight);
+        // Accent, not textLight: it sits straight on the panel, which is light
+        // in some themes and dark in others.
+        title.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+        title.setColour (juce::Label::textColourId, MidiMorfColors::accent);
         addAndMakeVisible (title);
+
+        const juce::StringArray names { "OSC", "ENV & LFO", "ROUTING", "FX" };
+        for (int i = 0; i < names.size(); ++i)
+        {
+            auto* b = tabButtons.add (new juce::TextButton (names[i]));
+            b->setRadioGroupId (1002);
+            b->setClickingTogglesState (true);
+            b->onClick = [this, i] { showTab (i); };
+            addAndMakeVisible (b);
+        }
 
         clearButton.setButtonText ("CLEAR");
         clearButton.onClick = [this]
@@ -321,16 +691,29 @@ public:
         };
         addAndMakeVisible (clearButton);
 
+        for (auto* t : tabs())
+            addChildComponent (t);
+
         // Plays this engine directly, whatever mode / engine is active, so
         // edits are always audible.
         auditionStrip.onNoteOn  = [this] (int n, float v) { engine.noteOn (n, v); };
         auditionStrip.onNoteOff = [this] (int n)          { engine.noteOff (n); };
         addAndMakeVisible (auditionStrip);
+
+        tabButtons[0]->setToggleState (true, juce::dontSendNotification);
+        showTab (0);
     }
 
     ~WavetableSynthContent() override
     {
         setLookAndFeel (nullptr);
+    }
+
+    void showTab (int idx)
+    {
+        auto ts = tabs();
+        for (int i = 0; i < (int) ts.size(); ++i)
+            ts[(size_t) i]->setVisible (i == idx);
     }
 
     void paint (juce::Graphics& g) override
@@ -364,67 +747,41 @@ public:
 
         auto bar = area.removeFromTop (36);
         clearButton.setBounds (bar.removeFromRight (64).reduced (3));
-        title.setBounds (bar.reduced (6, 0));
-        area.removeFromTop (4);
+        bar.removeFromRight (4);
+        title.setBounds (bar.removeFromLeft (juce::jmin (110, bar.getWidth() / 5)));
+        const int n = tabButtons.size();
+        const int w = bar.getWidth() / n;
+        for (int i = 0; i < n; ++i)
+            tabButtons[i]->setBounds (bar.removeFromLeft (i == n - 1 ? bar.getWidth() : w).reduced (3));
+        area.removeFromTop (6);
 
         auditionStrip.setBounds (area.removeFromBottom (42).reduced (2));
         area.removeFromBottom (6);
 
-        const int gap = 6;
-        const int w = (area.getWidth() - 2 * gap) / 3;
-        oscA.setBounds (area.removeFromLeft (w));       area.removeFromLeft (gap);
-        oscB.setBounds (area.removeFromLeft (w));       area.removeFromLeft (gap);
-        voiceCard.setBounds (area);
-
-        // 4 × 2 knob grid inside the voice card.
-        auto c = voiceCard.getContentArea();
-        auto rows = { c.removeFromTop (c.getHeight() / 2), c };
-        auto ks = knobs();
-        int i = 0;
-        for (auto row : rows)
-        {
-            const int kw = row.getWidth() / 4;
-            for (int j = 0; j < 4; ++j)
-                ks[(size_t) i++]->setBounds (row.removeFromLeft (kw).reduced (2));
-        }
+        for (auto* t : tabs())
+            t->setBounds (area);
     }
 
     void refreshAll()
     {
-        oscA.refresh();
-        oscB.refresh();
-        unison.getSlider().setValue ((double) engine.getUnison(),   juce::dontSendNotification);
-        detune.getSlider().setValue (engine.getUnisonDetune(),      juce::dontSendNotification);
-        sub.getSlider().setValue    (engine.getSubLevel(),          juce::dontSendNotification);
-        gain.getSlider().setValue   (engine.getGain(),              juce::dontSendNotification);
-        cutoff.getSlider().setValue (engine.getFilterCutoff(),      juce::dontSendNotification);
-        reso.getSlider().setValue   (engine.getFilterResonance(),   juce::dontSendNotification);
-        envAmt.getSlider().setValue (engine.getFilterEnvAmount(),   juce::dontSendNotification);
-        envPos.getSlider().setValue (engine.getEnvToPosition(),     juce::dontSendNotification);
+        for (auto* t : tabs())
+            t->refresh();
     }
 
 private:
-    std::vector<Knob*> knobs() { return { &unison, &detune, &sub, &gain, &cutoff, &reso, &envAmt, &envPos }; }
-
-    void wire (Knob& k, std::function<void (float)> f)
-    {
-        auto& s = k.getSlider();
-        s.onValueChange = [this, &s, f]
-        {
-            f ((float) s.getValue());
-            if (onChange) onChange();
-        };
-    }
+    std::vector<WtTab*> tabs() { return { &oscTab, &envTab, &routingTab, &fxTab }; }
 
     WavetableEngine& engine;
     std::function<void()> onChange;
     SynthLookAndFeel laf;   // declared before the children so it outlives them
 
-    OscCard oscA, oscB;
-    SectionCard voiceCard;
-    Knob unison, detune, sub, gain, cutoff, reso, envAmt, envPos;
     juce::Label title;
+    juce::OwnedArray<juce::TextButton> tabButtons;
     juce::TextButton clearButton;
+    WtOscTab     oscTab;
+    WtEnvLfoTab  envTab;
+    WtRoutingTab routingTab;
+    WtFxTab      fxTab;
     AuditionStrip auditionStrip;
 };
 

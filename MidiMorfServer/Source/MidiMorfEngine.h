@@ -86,6 +86,11 @@ public:
                     uint8_t scaleIndex, uint8_t rootNote, uint8_t baseOctave, uint8_t octaveRange) override;
     void seqTransport (uint8_t command) override;
     void seqRatchet (uint8_t division, bool active) override;
+    void seqSliceConfig (uint8_t bars, uint8_t division, uint8_t sliceCount,
+                         uint8_t rootNote, uint8_t direction, uint8_t swing) override;
+    void seqLooper (uint8_t division, bool active, bool randomOn) override;
+    void seqRibbon (uint8_t ribbonIndex, int value14bit) override;
+    void seqRibbonAssign (uint8_t ribbonIndex, uint8_t target, uint8_t ccNumber) override;
 
     // Local UI interaction
     void localXYUpdated (float x, float y);
@@ -125,6 +130,18 @@ private:
     std::unique_ptr<StepSequencerEngine> stepSequencer;
     std::unique_ptr<SliceSequencerEngine> sliceSequencer;
     int lastSentPlayhead = -2;   // -2 = never sent
+
+    // SeqStepSet / SeqTransport / SeqRatchet are shared messages — they target
+    // whichever engine matches the page the phone is on.
+    ClockedSequencer& activeSequencer();
+
+    // Slice-page ribbons: per-ribbon routing (pitch bend or a CC), applied on
+    // the slice sequencer's channel. -1 grid state forces the first
+    // SeqSliceConfig to re-slice regardless of what it asks for.
+    static constexpr int NUM_RIBBONS = 2;
+    uint8_t ribbonTargets[NUM_RIBBONS] = { 0, 1 };   // 0=pitchbend, 1=CC
+    uint8_t ribbonCCs[NUM_RIBBONS]     = { 1, 1 };
+    int lastSliceBars = -1, lastSliceDivision = -1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MidiMorfEngine)
 };

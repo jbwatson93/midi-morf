@@ -70,6 +70,13 @@ public:
     void sendSeqTransport (MidiMorf::SeqCommand command);
     void sendSeqRatchet (MidiMorf::SeqRatchetDiv division, bool active);
 
+    // Slice sequencer (steps go via sendSeqStepSet, degree = slice number)
+    void sendSeqSliceConfig (uint8_t bars, uint8_t division, uint8_t sliceCount,
+                             uint8_t rootNote, uint8_t direction, uint8_t swing);
+    void sendSeqLooper (uint8_t division, bool active, bool randomOn);
+    void sendSeqRibbon (uint8_t ribbonIndex, int value14bit);
+    void sendSeqRibbonAssign (uint8_t ribbonIndex, MidiMorf::RibbonTarget target, uint8_t ccNumber);
+
     void setListener (Listener* l) { listener = l; }
 
 private:

@@ -71,6 +71,15 @@ public:
         { network.sendSeqConfig (patternLength, rate, direction, swing, scaleIndex, rootNote, baseOctave, octaveRange); }
     void sendSeqTransport (MidiMorf::SeqCommand c)            { network.sendSeqTransport (c); }
     void sendSeqRatchet (MidiMorf::SeqRatchetDiv d, bool on)  { network.sendSeqRatchet (d, on); }
+    void sendSeqSliceConfig (uint8_t bars, uint8_t division, uint8_t sliceCount,
+                             uint8_t rootNote, uint8_t direction, uint8_t swing)
+        { network.sendSeqSliceConfig (bars, division, sliceCount, rootNote, direction, swing); }
+    void sendSeqLooper (uint8_t division, bool active, bool randomOn)
+        { network.sendSeqLooper (division, active, randomOn); }
+    void sendSeqRibbon (uint8_t ribbonIndex, int value14bit)
+        { network.sendSeqRibbon (ribbonIndex, value14bit); }
+    void sendSeqRibbonAssign (uint8_t ribbonIndex, MidiMorf::RibbonTarget target, uint8_t ccNumber)
+        { network.sendSeqRibbonAssign (ribbonIndex, target, ccNumber); }
 
     //==========================================================================
     // Morf-Pad

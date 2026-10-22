@@ -16,11 +16,31 @@ _Written 2026-08-27 by the previous session. Read alongside `midi-morf-next-plan
 | `StepSequencerEngine` | **Done.** Working on device. JB: *"incredibly fun and playable."* |
 | `StepSequencerPage` | **Done.** 16 lanes, 4 modes, 909 boxes, roller, drag-paint. |
 | Protocol for step seq | **Done.** Both `MidiMorfProtocol.h` copies byte-identical. |
-| `SliceSequencerEngine` | **Done server-side. NOT wired to protocol or page.** ← next work |
-| `SliceSequencerPage` | **Not started.** |
+| `SliceSequencerEngine` | **Done and wired** — protocol `0x74`–`0x77`, server dispatch, page. |
+| `SliceSequencerPage` | **Done, builds. NOT yet run on device.** ← test next |
 | IAP / entitlement | Plumbed but inert. Engines default to enabled. |
 
-**The immediate next task:** protocol messages for the slicer, then its page.
+**The immediate next task:** play the slice page against Live on device —
+grid drag feel, 32×32 usability, beat repeat, ribbons → Simpler pitch bend.
+Slicer wiring (2026-08-27): shared messages `SeqStepSet`/`SeqTransport`/
+`SeqRatchet` now route to whichever engine matches the phone's page
+(`MidiMorfEngine::activeSequencer()`), as does the playhead stream.
+`ControllerMode::DrumGrid` was renamed `SliceSequencer` (= 8);
+`NUM_CONTROLLERS` is 9. `LaneStrip` gained variable column count + a Cell
+render mode; `StepBox` gained `setStyle()`. Slice page state: identity
+pattern per grid, fixed vel 100 / gate 95, root combo uses Live's octave
+naming (C1 = 36).
+
+First device-test round (2026-08-27, JB: "pretty fun"): looper is now one
+slideable `LooperStrip` (buttons dropped holds when the finger drifted),
+fastest division at top; RST button restores the identity pattern; and a
+looper window shorter than a step was silent (no step boundary inside the
+window) — those divisions now ride the base-class roller. New: ribbon 2
+defaults to a per-step repeater (`RibbonTarget::StepRepeat = 2`,
+`ClockedSequencer::setStepRepeat`) — zoned x1/x2/x3/x4/x6/x8, springs back
+to x1 on release; SeqRibbon's value carries the count itself for that
+target. x8 caps at one hit per tick (6 ticks/step at 1/16). Not yet
+re-tested on device.
 
 ---
 

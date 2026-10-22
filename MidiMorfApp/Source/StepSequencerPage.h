@@ -72,14 +72,32 @@ private:
 class LaneStrip : public juce::Component
 {
 public:
-    static constexpr int NUM_STEPS = 16;
+    // Sized for the slicer's largest grid; the step page uses 16 of them.
+    static constexpr int MAX_STEPS = 32;
+
+    // How a lane draws its value: a bar growing from the bottom (step
+    // sequencer), or a single shaded cell at the quantised row (slicer — a
+    // column's value is a slice index, so the marker moves rather than fills).
+    enum class RenderMode { Bar, Cell };
 
     // Called with (step, normalised value 0..1) as the finger moves.
     std::function<void (int, float)> onValueChanged;
 
+    void setNumSteps (int n)
+    {
+        numSteps = juce::jlimit (1, MAX_STEPS, n);
+        repaint();
+    }
+
+    int getNumSteps() const { return numSteps; }
+
+    void setRenderMode (RenderMode m) { renderMode = m; repaint(); }
+    void setFillColour (juce::Colour c) { fillColour = c; repaint(); }
+    void setPlayheadColour (juce::Colour c) { playheadColour = c; repaint(); }
+
     void setValue (int step, float normalised)
     {
-        if (juce::isPositiveAndBelow (step, NUM_STEPS))
+        if (juce::isPositiveAndBelow (step, MAX_STEPS))
         {
             values[(size_t) step] = juce::jlimit (0.0f, 1.0f, normalised);
             repaint();
@@ -88,13 +106,13 @@ public:
 
     float getValue (int step) const
     {
-        return values[(size_t) juce::jlimit (0, NUM_STEPS - 1, step)];
+        return values[(size_t) juce::jlimit (0, MAX_STEPS - 1, step)];
     }
 
     // Steps beyond the pattern length are dimmed — they exist but never play.
-    void setPatternLength (int len)  { patternLength = juce::jlimit (1, NUM_STEPS, len); repaint(); }
+    void setPatternLength (int len)  { patternLength = juce::jlimit (1, MAX_STEPS, len); repaint(); }
     void setPlayhead (int step)      { if (step != playhead) { playhead = step; repaint(); } }
-    void setRests (const std::array<bool, NUM_STEPS>& r) { rests = r; repaint(); }
+    void setRests (const std::array<bool, MAX_STEPS>& r) { rests = r; repaint(); }
 
     // Quantised lanes draw tick marks so degree boundaries are visible.
     void setQuantiseSteps (int n) { quantiseSteps = juce::jmax (0, n); repaint(); }
@@ -102,9 +120,9 @@ public:
     void paint (juce::Graphics& g) override
     {
         const auto b = getLocalBounds().toFloat();
-        const float laneW = b.getWidth() / (float) NUM_STEPS;
+        const float laneW = b.getWidth() / (float) numSteps;
 
-        for (int i = 0; i < NUM_STEPS; ++i)
+        for (int i = 0; i < numSteps; ++i)
         {
             auto lane = juce::Rectangle<float> (b.getX() + laneW * i, b.getY(),
                                                 laneW, b.getHeight()).reduced (laneW * 0.16f, 0.0f);
@@ -137,12 +155,9 @@ public:
                 }
             }
 
-            // Value bar, growing from the bottom
             const float v = values[(size_t) i];
-            const float h = juce::jmax (3.0f, lane.getHeight() * v);
-            auto fill = lane.withTop (lane.getBottom() - h);
 
-            auto colour = stepSeqLaneFill;
+            auto colour = fillColour;
 
             if (! active)      colour = colour.withAlpha (0.20f);
             else if (rested)   colour = colour.withAlpha (0.35f);
@@ -150,16 +165,40 @@ public:
             if (isPlaying && active)
                 colour = colour.brighter (0.55f);
 
-            g.setColour (colour);
-            g.fillRoundedRectangle (fill, 3.0f);
+            if (renderMode == RenderMode::Cell && quantiseSteps > 1)
+            {
+                // One shaded cell at the quantised row — dragging moves the
+                // marker up and down the column instead of filling it.
+                const float cellH = lane.getHeight() / (float) quantiseSteps;
+                const int   row   = juce::roundToInt (v * (float) (quantiseSteps - 1));
 
-            // Cap — the thing the eye actually tracks while dragging
-            g.setColour (colour.brighter (0.5f));
-            g.fillRoundedRectangle (fill.withHeight (3.0f), 1.5f);
+                auto cell = juce::Rectangle<float> (lane.getX(),
+                                                    lane.getBottom() - cellH * (float) (row + 1),
+                                                    lane.getWidth(), cellH).reduced (0.5f, 1.0f);
+
+                g.setColour (colour);
+                g.fillRoundedRectangle (cell, 2.5f);
+
+                g.setColour (colour.brighter (0.5f));
+                g.drawRoundedRectangle (cell, 2.5f, 1.0f);
+            }
+            else
+            {
+                // Value bar, growing from the bottom
+                const float h = juce::jmax (3.0f, lane.getHeight() * v);
+                auto fill = lane.withTop (lane.getBottom() - h);
+
+                g.setColour (colour);
+                g.fillRoundedRectangle (fill, 3.0f);
+
+                // Cap — the thing the eye actually tracks while dragging
+                g.setColour (colour.brighter (0.5f));
+                g.fillRoundedRectangle (fill.withHeight (3.0f), 1.5f);
+            }
 
             if (isPlaying && active)
             {
-                g.setColour (stepSeqPlayhead.withAlpha (0.85f));
+                g.setColour (playheadColour.withAlpha (0.85f));
                 g.drawRoundedRectangle (lane.reduced (0.5f), 3.0f, 1.5f);
             }
         }
@@ -176,8 +215,8 @@ private:
         if (b.getWidth() <= 0.0f || b.getHeight() <= 0.0f)
             return;
 
-        const int step = juce::jlimit (0, NUM_STEPS - 1,
-                                       (int) ((float) e.position.x / (b.getWidth() / (float) NUM_STEPS)));
+        const int step = juce::jlimit (0, numSteps - 1,
+                                       (int) ((float) e.position.x / (b.getWidth() / (float) numSteps)));
 
         const float v = juce::jlimit (0.0f, 1.0f,
                                       1.0f - ((float) e.position.y / b.getHeight()));
@@ -189,11 +228,15 @@ private:
             onValueChanged (step, v);
     }
 
-    std::array<float, NUM_STEPS> values { };
-    std::array<bool, NUM_STEPS> rests { };
-    int patternLength = NUM_STEPS;
+    std::array<float, MAX_STEPS> values { };
+    std::array<bool, MAX_STEPS> rests { };
+    int numSteps = 16;
+    int patternLength = MAX_STEPS;
     int playhead = -1;
     int quantiseSteps = 0;
+    RenderMode renderMode = RenderMode::Bar;
+    juce::Colour fillColour = stepSeqLaneFill;
+    juce::Colour playheadColour = stepSeqPlayhead;
 };
 
 //==============================================================================
@@ -211,13 +254,22 @@ public:
     void setPlaying (bool p)   { if (p != playing) { playing = p; repaint(); } }
     void setActive (bool a)    { if (a != withinLength) { withinLength = a; repaint(); } }
 
+    // Defaults are the step page's look; the slice page restyles to its palette.
+    void setStyle (const PagePalette& p, juce::Colour accentC, juce::Colour ledC)
+    {
+        palette = &p;
+        accent  = accentC;
+        led     = ledC;
+        repaint();
+    }
+
     bool getOn() const { return isOn; }
 
     void paint (juce::Graphics& g) override
     {
         auto b = getLocalBounds().toFloat().reduced (1.5f);
 
-        Glassmorphism::paintButton (g, b, stepSeqPagePalette, stepSeqAccent,
+        Glassmorphism::paintButton (g, b, *palette, accent,
                                     playing, false, 4.0f);
 
         g.setColour (juce::Colours::white.withAlpha (withinLength ? (isOn ? 0.92f : 0.35f) : 0.18f));
@@ -226,23 +278,23 @@ public:
                     juce::Justification::centred, false);
 
         // The LED — lit when the step will sound.
-        auto led = juce::Rectangle<float> (b.getCentreX() - b.getWidth() * 0.26f,
-                                           b.getBottom() - b.getHeight() * 0.26f,
-                                           b.getWidth() * 0.52f,
-                                           b.getHeight() * 0.13f);
+        auto ledRect = juce::Rectangle<float> (b.getCentreX() - b.getWidth() * 0.26f,
+                                               b.getBottom() - b.getHeight() * 0.26f,
+                                               b.getWidth() * 0.52f,
+                                               b.getHeight() * 0.13f);
 
         if (isOn && withinLength)
         {
-            g.setColour (stepSeqStepLed.withAlpha (playing ? 1.0f : 0.85f));
-            g.fillRoundedRectangle (led, 2.0f);
+            g.setColour (led.withAlpha (playing ? 1.0f : 0.85f));
+            g.fillRoundedRectangle (ledRect, 2.0f);
 
-            g.setColour (stepSeqStepLed.withAlpha (playing ? 0.55f : 0.25f));
-            g.drawRoundedRectangle (led.expanded (1.6f), 3.0f, 1.4f);
+            g.setColour (led.withAlpha (playing ? 0.55f : 0.25f));
+            g.drawRoundedRectangle (ledRect.expanded (1.6f), 3.0f, 1.4f);
         }
         else
         {
             g.setColour (juce::Colour (0x66000000));
-            g.fillRoundedRectangle (led, 2.0f);
+            g.fillRoundedRectangle (ledRect, 2.0f);
         }
     }
 
@@ -263,13 +315,17 @@ private:
     bool isOn = true;
     bool playing = false;
     bool withinLength = true;
+
+    const PagePalette* palette = &stepSeqPagePalette;
+    juce::Colour accent = stepSeqAccent;
+    juce::Colour led    = stepSeqStepLed;
 };
 
 //==============================================================================
 class StepSequencerContent : public juce::Component
 {
 public:
-    static constexpr int NUM_STEPS = LaneStrip::NUM_STEPS;
+    static constexpr int NUM_STEPS = 16;
 
     enum class LaneMode { Pitch, Velocity, Mod, Gate };
 
@@ -632,7 +688,7 @@ private:
 
     void refreshLaneRests()
     {
-        std::array<bool, NUM_STEPS> r { };
+        std::array<bool, LaneStrip::MAX_STEPS> r { };
 
         for (int i = 0; i < NUM_STEPS; ++i)
             r[(size_t) i] = steps[(size_t) i].rest;

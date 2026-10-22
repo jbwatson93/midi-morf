@@ -221,6 +221,10 @@ void NetworkServer::handleClientConnection (juce::StreamingSocket& client)
                 case MidiMorf::PhoneMessage::SeqConfig:            payloadSize = MidiMorf::SEQ_CONFIG_PAYLOAD_SIZE; break;
                 case MidiMorf::PhoneMessage::SeqTransport:         payloadSize = MidiMorf::SEQ_TRANSPORT_PAYLOAD_SIZE; break;
                 case MidiMorf::PhoneMessage::SeqRatchet:           payloadSize = MidiMorf::SEQ_RATCHET_PAYLOAD_SIZE; break;
+                case MidiMorf::PhoneMessage::SeqSliceConfig:       payloadSize = MidiMorf::SEQ_SLICE_CONFIG_PAYLOAD_SIZE; break;
+                case MidiMorf::PhoneMessage::SeqLooper:            payloadSize = MidiMorf::SEQ_LOOPER_PAYLOAD_SIZE; break;
+                case MidiMorf::PhoneMessage::SeqRibbon:            payloadSize = MidiMorf::SEQ_RIBBON_PAYLOAD_SIZE; break;
+                case MidiMorf::PhoneMessage::SeqRibbonAssign:      payloadSize = MidiMorf::SEQ_RIBBON_ASSIGN_PAYLOAD_SIZE; break;
                 default:
                     DBG ("NetworkServer: unknown message type " << (int) buffer[offset] << " — resync, discarding " << remaining << " bytes");
                     offset = buffered;
@@ -491,6 +495,32 @@ void NetworkServer::processPacket (const uint8_t* data, int size)
         case MidiMorf::PhoneMessage::SeqRatchet:
         {
             listener->seqRatchet (payload[0], payload[1] != 0);
+            break;
+        }
+
+        case MidiMorf::PhoneMessage::SeqSliceConfig:
+        {
+            listener->seqSliceConfig (payload[0], payload[1], payload[2],
+                                      payload[3], payload[4], payload[5]);
+            break;
+        }
+
+        case MidiMorf::PhoneMessage::SeqLooper:
+        {
+            listener->seqLooper (payload[0], payload[1] != 0, payload[2] != 0);
+            break;
+        }
+
+        case MidiMorf::PhoneMessage::SeqRibbon:
+        {
+            const int value = (int (payload[1]) << 8) | int (payload[2]);
+            listener->seqRibbon (payload[0], juce::jlimit (0, 16383, value));
+            break;
+        }
+
+        case MidiMorf::PhoneMessage::SeqRibbonAssign:
+        {
+            listener->seqRibbonAssign (payload[0], payload[1], payload[2]);
             break;
         }
     }

@@ -72,6 +72,7 @@
       <FILE id="aInBlm" name="inBloom.png" compile="0" resource="1" file="../inBloom.png"/>
       <FILE id="aAppIc" name="Icon.png" compile="0" resource="1" file="../MidiMorfServer/Icon.png"/>
       <FILE id="sqPg01" name="StepSequencerPage.h" compile="0" resource="0" file="Source/StepSequencerPage.h"/>
+      <FILE id="slPg01" name="SliceSequencerPage.h" compile="0" resource="0" file="Source/SliceSequencerPage.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>

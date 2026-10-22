@@ -57,6 +57,16 @@ namespace MidiMorf
         SeqConfig       = 0x71,  // u8 patternLength, u8 rate, u8 direction, u8 swing, u8 scale, u8 root, u8 baseOctave, u8 octaveRange
         SeqTransport    = 0x72,  // u8 command (0=panic, 1=run, 2=reset)
         SeqRatchet      = 0x73,  // u8 division (0=1/4, 1=1/8, 2=1/16, 3=1/32), u8 active
+
+        // Slice sequencer (mlr / Re:Mix style). Its steps reuse SeqStepSet —
+        // the degree byte is an index into the note table, which for the
+        // slicer is a slice number. SeqStepSet/SeqTransport/SeqRatchet are
+        // routed to whichever engine matches the phone's current page.
+        SeqSliceConfig  = 0x74,  // u8 bars, u8 division, u8 sliceCount, u8 rootNote, u8 direction, u8 swing
+        SeqLooper       = 0x75,  // u8 division (0=1/4..3=1/32), u8 active, u8 randomOn
+        SeqRibbon       = 0x76,  // u8 ribbonIndex, u16 value (big-endian hi/lo; 14-bit for
+                                 //   pitchbend/CC, repeat count 1..16 for stepRepeat)
+        SeqRibbonAssign = 0x77,  // u8 ribbonIndex, u8 target (0=pitchbend, 1=CC, 2=stepRepeat), u8 ccNumber
     };
 
     // Messages sent from plugin/server -> phone
@@ -79,9 +89,9 @@ namespace MidiMorf
         RoseChord  = 6,
 
         // Creative Sequencer Pack
-        StepSequencer = 7,
-        DrumGrid      = 8,
-        Physics       = 9,
+        StepSequencer  = 7,
+        SliceSequencer = 8,
+        Physics        = 9,
     };
 
     // Packet format: [1 byte type][payload bytes]
@@ -91,7 +101,7 @@ namespace MidiMorf
     // MUST equal the number of controller pages registered in PageContainer —
     // MainComponent uses it as the index base for the synth/about/settings
     // pages and to bound controllerNames[]. Bump only when a page ships.
-    static constexpr int NUM_CONTROLLERS = 8;
+    static constexpr int NUM_CONTROLLERS = 9;
     static constexpr int DEFAULT_PORT = 17405;    // TCP connection port
     static constexpr int DISCOVERY_PORT = 17406;  // UDP broadcast port for service discovery
 
@@ -139,6 +149,12 @@ namespace MidiMorf
     static constexpr int SEQ_RATCHET_PAYLOAD_SIZE      = 2;  // division, active
     static constexpr int SEQ_PLAYHEAD_PAYLOAD_SIZE     = 1;  // currentStep
 
+    // Slice sequencer payload sizes
+    static constexpr int SEQ_SLICE_CONFIG_PAYLOAD_SIZE  = 6;  // bars, division, sliceCount, rootNote, direction, swing
+    static constexpr int SEQ_LOOPER_PAYLOAD_SIZE        = 3;  // division, active, randomOn
+    static constexpr int SEQ_RIBBON_PAYLOAD_SIZE        = 3;  // ribbonIndex, value hi, value lo
+    static constexpr int SEQ_RIBBON_ASSIGN_PAYLOAD_SIZE = 3;  // ribbonIndex, target, ccNumber
+
     // SeqStepSet flag bits
     static constexpr uint8_t SEQ_FLAG_REST = 1 << 0;
 
@@ -150,6 +166,10 @@ namespace MidiMorf
 
     // Momentary note-repeat divisions, matching the Beatstep Pro roller
     enum class SeqRatchetDiv : uint8_t { Quarter = 0, Eighth = 1, Sixteenth = 2, ThirtySecond = 3 };
+
+    // SeqRibbonAssign targets. StepRepeat retriggers every step N times
+    // within its own step length — a per-step ratchet performance control.
+    enum class RibbonTarget : uint8_t { PitchBend = 0, CC = 1, StepRepeat = 2 };
 
     // Pack identifiers for PackEntitlement
     enum class PackId : uint8_t { CreativeSequencer = 1 };

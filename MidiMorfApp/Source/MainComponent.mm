@@ -12,7 +12,8 @@ static const juce::String controllerNames[] = {
     "Dual M-Pad",
     "Morf-Chord",
     "Rose-Chord",
-    "Step-Seq"
+    "Step-Seq",
+    "Slice-Seq"
 };
 
 // Guards the invariant that broke once already: NUM_CONTROLLERS is the index
@@ -33,7 +34,8 @@ MainComponent::MainComponent()
       dualMPadPage (eventRouter),
       morfChordPage (eventRouter),
       roseChordPage (eventRouter),
-      stepSequencerPage (eventRouter)
+      stepSequencerPage (eventRouter),
+      sliceSequencerPage (eventRouter)
 {
     // App properties for state persistence
     juce::PropertiesFile::Options options;
@@ -59,6 +61,7 @@ MainComponent::MainComponent()
     pageContainer.addPage (&morfChordPage);
     pageContainer.addPage (&roseChordPage);
     pageContainer.addPage (&stepSequencerPage);
+    pageContainer.addPage (&sliceSequencerPage);
     pageContainer.addPage (&synthSettingsPage);
     pageContainer.addPage (&aboutPage);
     pageContainer.addPage (&settingsPage);
@@ -315,10 +318,12 @@ void MainComponent::pageChanged (int newPageIndex)
         auto mode = static_cast<MidiMorf::ControllerMode> (newPageIndex);
         eventRouter.sendScreenMode (mode);
 
-        // The server keeps no per-page memory, so the sequencer has to resend
-        // its whole pattern whenever the page comes back into focus.
+        // The server keeps no per-page memory, so the sequencers have to
+        // resend their whole state whenever their page comes back into focus.
         if (mode == MidiMorf::ControllerMode::StepSequencer)
             stepSequencerPage.pushFullState();
+        else if (mode == MidiMorf::ControllerMode::SliceSequencer)
+            sliceSequencerPage.pushFullState();
     }
 
     // Persist current state whenever page changes
@@ -381,5 +386,8 @@ void MainComponent::restoreState()
 
 void MainComponent::seqPlayheadChanged (int step)
 {
+    // The server only streams the playhead for the page it thinks the phone
+    // is on; applying it to both pages is harmless and keeps this simple.
     stepSequencerPage.setPlayhead (step);
+    sliceSequencerPage.setPlayhead (step);
 }

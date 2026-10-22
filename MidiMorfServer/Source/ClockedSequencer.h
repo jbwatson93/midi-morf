@@ -100,6 +100,12 @@ public:
 
     bool isRatcheting() const { return ratchetActive; }
 
+    // Per-step repeater: every step retriggers `times` within its own step
+    // length (the slice page's repeat ribbon). 1 = off. Counts beyond the
+    // tick resolution of a step are capped at one hit per tick.
+    void setStepRepeat (int times) { stepRepeat = juce::jlimit (1, 16, times); }
+    int  getStepRepeat() const     { return stepRepeat; }
+
     int getNoteTableSize() const { return (int) noteTable.size(); }
     int getCurrentStep()  const  { return currentStep.load(); }
 
@@ -168,7 +174,17 @@ public:
         {
             const int index = patternIndexFor (slot);
             currentStep.store (index);
-            fireIndex (index, tps);
+            fireIndex (index, repeatGateBasis (tps));
+        }
+        else if (stepRepeat > 1 && posInStep > offset && isRepeatHit (posInStep - offset, tps))
+        {
+            // Retrigger the step that just fired, evenly spread across the
+            // step. resolveIndex still applies, so the slicer's random-per-
+            // repeat behaves here too.
+            const int index = currentStep.load();
+
+            if (index >= 0)
+                fireIndex (index, repeatGateBasis (tps));
         }
 
         ++tickCounter;
@@ -247,6 +263,20 @@ private:
         }
     }
 
+    // The repeat hits sit at j*tps/k for j in 0..k-1 (integer-rounded, so an
+    // awkward k over few ticks lands slightly uneven rather than dropping).
+    bool isRepeatHit (int rel, int tps) const
+    {
+        const int k = juce::jmin (stepRepeat, tps);
+        const int j = (rel * k) / tps;
+        return j > 0 && (j * tps) / k == rel;
+    }
+
+    int repeatGateBasis (int tps) const
+    {
+        return juce::jmax (1, tps / juce::jmin (stepRepeat, tps));
+    }
+
     int patternIndexFor (int slot)
     {
         const int len = patternLength;
@@ -314,6 +344,7 @@ private:
 
     int ratchetDivision = 2;   // 1/16
     bool ratchetActive  = false;
+    int stepRepeat      = 1;   // 1 = off
 
     int activeNote         = -1;
     int gateTicksRemaining = 0;

@@ -313,6 +313,52 @@ void NetworkClient::sendSeqTransport (MidiMorf::SeqCommand command)
     queuePacket (packet, sizeof (packet));
 }
 
+void NetworkClient::sendSeqSliceConfig (uint8_t bars, uint8_t division, uint8_t sliceCount,
+                                        uint8_t rootNote, uint8_t direction, uint8_t swing)
+{
+    uint8_t packet[MidiMorf::HEADER_SIZE + MidiMorf::SEQ_SLICE_CONFIG_PAYLOAD_SIZE];
+    packet[0] = static_cast<uint8_t> (MidiMorf::PhoneMessage::SeqSliceConfig);
+    packet[1] = bars;
+    packet[2] = division;
+    packet[3] = sliceCount;
+    packet[4] = rootNote;
+    packet[5] = direction;
+    packet[6] = swing;
+    queuePacket (packet, sizeof (packet));
+}
+
+void NetworkClient::sendSeqLooper (uint8_t division, bool active, bool randomOn)
+{
+    uint8_t packet[MidiMorf::HEADER_SIZE + MidiMorf::SEQ_LOOPER_PAYLOAD_SIZE];
+    packet[0] = static_cast<uint8_t> (MidiMorf::PhoneMessage::SeqLooper);
+    packet[1] = division;
+    packet[2] = active ? 1 : 0;
+    packet[3] = randomOn ? 1 : 0;
+    queuePacket (packet, sizeof (packet));
+}
+
+void NetworkClient::sendSeqRibbon (uint8_t ribbonIndex, int value14bit)
+{
+    const int v = juce::jlimit (0, 16383, value14bit);
+
+    uint8_t packet[MidiMorf::HEADER_SIZE + MidiMorf::SEQ_RIBBON_PAYLOAD_SIZE];
+    packet[0] = static_cast<uint8_t> (MidiMorf::PhoneMessage::SeqRibbon);
+    packet[1] = ribbonIndex;
+    packet[2] = static_cast<uint8_t> (v >> 8);
+    packet[3] = static_cast<uint8_t> (v & 0xFF);
+    queuePacket (packet, sizeof (packet));
+}
+
+void NetworkClient::sendSeqRibbonAssign (uint8_t ribbonIndex, MidiMorf::RibbonTarget target, uint8_t ccNumber)
+{
+    uint8_t packet[MidiMorf::HEADER_SIZE + MidiMorf::SEQ_RIBBON_ASSIGN_PAYLOAD_SIZE];
+    packet[0] = static_cast<uint8_t> (MidiMorf::PhoneMessage::SeqRibbonAssign);
+    packet[1] = ribbonIndex;
+    packet[2] = static_cast<uint8_t> (target);
+    packet[3] = ccNumber;
+    queuePacket (packet, sizeof (packet));
+}
+
 void NetworkClient::queuePacket (const uint8_t* data, int size)
 {
     juce::ScopedLock lock (outgoingLock);

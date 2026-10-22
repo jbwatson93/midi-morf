@@ -53,6 +53,13 @@ public:
                                 uint8_t /*octaveRange*/) {}
         virtual void seqTransport (uint8_t /*command*/) {}
         virtual void seqRatchet (uint8_t /*division*/, bool /*active*/) {}
+
+        // Slice sequencer
+        virtual void seqSliceConfig (uint8_t /*bars*/, uint8_t /*division*/, uint8_t /*sliceCount*/,
+                                     uint8_t /*rootNote*/, uint8_t /*direction*/, uint8_t /*swing*/) {}
+        virtual void seqLooper (uint8_t /*division*/, bool /*active*/, bool /*randomOn*/) {}
+        virtual void seqRibbon (uint8_t /*ribbonIndex*/, int /*value14bit*/) {}
+        virtual void seqRibbonAssign (uint8_t /*ribbonIndex*/, uint8_t /*target*/, uint8_t /*ccNumber*/) {}
     };
 
     NetworkServer();

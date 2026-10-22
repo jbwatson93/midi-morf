@@ -10,6 +10,7 @@
 #include "MorfChordPage.h"
 #include "RoseChordPage.h"
 #include "StepSequencerPage.h"
+#include "SliceSequencerPage.h"
 #include "SynthSettingsPage.h"
 #include "AboutPage.h"
 #include "SettingsPage.h"
@@ -76,6 +77,7 @@ private:
     MorfChordPage morfChordPage;
     RoseChordPage roseChordPage;
     StepSequencerPage stepSequencerPage;
+    SliceSequencerPage sliceSequencerPage;
     SynthSettingsPage synthSettingsPage { audioEngine.getSynth() };
     AboutPage aboutPage;
     SettingsPage settingsPage { eventRouter };

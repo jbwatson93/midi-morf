@@ -66,6 +66,12 @@ public:
         }
 
         looperActive = active;
+
+        // A repeat window shorter than one step never crosses a step
+        // boundary, so the window transform alone would fall silent. Those
+        // divisions ride the roller instead: it retriggers the held step at
+        // the division rate, which is the stutter the gesture means anyway.
+        setRatchet (looperDivision, active && looperTicks() < ticksPerStep());
     }
 
     void setLooperRandom (bool shouldRandomise) { looperRandom = shouldRandomise; }

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "SynthEngine.h"
+#include "ActiveSynth.h"
 
-// PhoneMidiSink — adapter around SynthEngine that matches the server's
+// PhoneMidiSink — adapter around the active built-in synth that matches the server's
 // VirtualMidiPort API. Per-controller handlers (MorfPadHandler etc.) target
 // this so their internal note-mapping logic stays identical to the server.
 // MIDI channel is recorded but doesn't affect the synth (single global patch).
@@ -10,7 +10,7 @@
 class PhoneMidiSink
 {
 public:
-    PhoneMidiSink (SynthEngine& s) : synth (s) {}
+    PhoneMidiSink (ActiveSynth& s) : synth (s) {}
 
     void sendNoteOn (int channel, int note, int velocity)
     {
@@ -31,5 +31,5 @@ public:
     }
 
 private:
-    SynthEngine& synth;
+    ActiveSynth& synth;
 };

@@ -34,6 +34,11 @@
       <FILE id="aStmPl" name="StrumPlate.h" compile="0" resource="0" file="Source/StrumPlate.h"/>
       <FILE id="aTrPg1" name="TransportPage.h" compile="0" resource="0" file="Source/TransportPage.h"/>
       <FILE id="aSnEn1" name="SynthEngine.h" compile="0" resource="0" file="Source/SynthEngine.h"/>
+      <FILE id="wTbl01" name="Wavetable.h" compile="0" resource="0" file="Source/Wavetable.h"/>
+      <FILE id="wTEng1" name="WavetableEngine.h" compile="0" resource="0" file="Source/WavetableEngine.h"/>
+      <FILE id="wTPge1" name="WavetableSynthPage.h" compile="0" resource="0" file="Source/WavetableSynthPage.h"/>
+      <FILE id="aSyn01" name="ActiveSynth.h" compile="0" resource="0" file="Source/ActiveSynth.h"/>
+      <FILE id="mFx001" name="MasterFx.h" compile="0" resource="0" file="Source/MasterFx.h"/>
       <FILE id="aAuEn1" name="AudioEngine.h" compile="0" resource="0" file="Source/AudioEngine.h"/>
       <FILE id="aMdSk1" name="MidiSink.h" compile="0" resource="0" file="Source/MidiSink.h"/>
       <FILE id="aMpHd1" name="MorfPadHandler.h" compile="0" resource="0"

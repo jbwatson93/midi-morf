@@ -21,7 +21,7 @@ class EventRouter
 public:
     enum class Mode { WiFi, Local };
 
-    EventRouter (NetworkClient& nc, SynthEngine& synthRef)
+    EventRouter (NetworkClient& nc, ActiveSynth& synthRef)
         : network (nc),
           sink (synthRef),
           morfPad (sink, 3),

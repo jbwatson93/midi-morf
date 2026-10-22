@@ -12,6 +12,7 @@
 #include "StepSequencerPage.h"
 #include "SliceSequencerPage.h"
 #include "SynthSettingsPage.h"
+#include "WavetableSynthPage.h"
 #include "AboutPage.h"
 #include "SettingsPage.h"
 #include "NetworkClient.h"
@@ -57,7 +58,7 @@ private:
 
     AudioEngine audioEngine;
     NetworkClient networkClient;
-    EventRouter eventRouter { networkClient, audioEngine.getSynth() };
+    EventRouter eventRouter { networkClient, audioEngine.getActiveSynth() };
     AccelerometerManager accelerometer;
 
 public:
@@ -81,6 +82,9 @@ private:
     SynthSettingsPage synthSettingsPage { audioEngine.getSynth() };
     AboutPage aboutPage;
     SettingsPage settingsPage { eventRouter };
+    // Appended after Settings (not next to Synth) so saved page indices for
+    // About / Settings / favourites stay valid.
+    WavetableSynthPage wavetablePage { audioEngine.getWavetable() };
 
     PianoKeysButton menuButton;
     SynthShortcutButton synthButton;

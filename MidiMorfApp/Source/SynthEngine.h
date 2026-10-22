@@ -368,6 +368,9 @@ public:
     {
         bufferToFill.clearActiveBufferRegion();
 
+        if (killAll.exchange (false))
+            synth.allNotesOff (0, false);
+
         juce::MidiBuffer incomingMidi;
 
         MidiEvent event;
@@ -465,9 +468,10 @@ public:
 
     void allNotesOff()
     {
-        for (int ch = 1; ch <= 16; ++ch)
-            for (int note = 0; note < 128; ++note)
-                midiQueue.enqueue ({ note, 0, ch, false });
+        // A flag, not queued note-offs: 16 x 128 events into the 1024-slot
+        // FIFO wrapped the write index back onto the read index, so the queue
+        // looked empty and every note-off was dropped.
+        killAll.store (true);
     }
 
     //==========================================================================
@@ -871,6 +875,7 @@ private:
     };
 
     LockFreeFifo midiQueue;
+    std::atomic<bool> killAll { false };
 
     juce::Synthesiser synth;
     juce::Reverb reverb;

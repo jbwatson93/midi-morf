@@ -2,7 +2,7 @@
 
 #include <JuceHeader.h>
 #include "WavetableEngine.h"
-#include "SynthSettingsPage.h"   // Knob, LabeledCombo, SectionCard, AuditionStrip
+#include "SynthWidgets.h"
 #include "SynthLookAndFeel.h"
 #include "MidiMorfColors.h"
 
@@ -172,7 +172,13 @@ private:
     void rebuildCombo()
     {
         tableCombo.clear (juce::dontSendNotification);
-        tableCombo.addItemList (WavetableLibrary::builtInNames(), 1);
+        const auto& names = WavetableLibrary::builtInNames();
+        tableCombo.addSectionHeading ("ANALOG");
+        for (int i = 0; i < WavetableLibrary::NumAnalogWaves; ++i)
+            tableCombo.addItem (names[i], i + 1);
+        tableCombo.addSectionHeading ("WAVETABLE");
+        for (int i = WavetableLibrary::NumAnalogWaves; i < names.size(); ++i)
+            tableCombo.addItem (names[i], i + 1);
         tableCombo.addSeparator();
 
         auto imported = engine.getImportedFile (osc);
@@ -183,6 +189,11 @@ private:
         tableCombo.setSelectedId (engine.getBuiltInIndex (osc) >= 0 ? engine.getBuiltInIndex (osc) + 1
                                                                     : ImportedId,
                                   juce::dontSendNotification);
+
+        // An analog wave is a single frame, so POS has nothing to scan.
+        const auto* table = engine.getTable (osc);
+        pos.setEnabled (table == nullptr || table->getNumFrames() > 1);
+        pos.setAlpha (pos.isEnabled() ? 1.0f : 0.35f);
     }
 
     void tableChosen()
@@ -665,7 +676,7 @@ public:
     {
         setLookAndFeel (&laf);
 
-        title.setText ("WAVETABLE", juce::dontSendNotification);
+        title.setText ("SYNTH", juce::dontSendNotification);
         // Accent, not textLight: it sits straight on the panel, which is light
         // in some themes and dark in others.
         title.setFont (juce::FontOptions (14.0f, juce::Font::bold));
@@ -804,7 +815,8 @@ public:
         for (int o = 0; o < 2; ++o)
         {
             const juce::String p = "wt_osc" + juce::String (o) + "_";
-            props.setValue (p + "table",    engine.getBuiltInIndex (o));
+            const int builtIn = engine.getBuiltInIndex (o);
+            props.setValue (p + "tableName", builtIn >= 0 ? WavetableLibrary::builtInNames()[builtIn] : juce::String());
             props.setValue (p + "file",     engine.getImportedFile (o).getFullPathName());
             props.setValue (p + "level",    engine.getOscLevel (o));
             props.setValue (p + "pos",      engine.getOscPosition (o));
@@ -852,18 +864,25 @@ public:
     void restoreState (juce::PropertiesFile& props)
     {
         if (! props.containsKey ("wt_unison"))
-            return; // never saved — keep the engine defaults
+        {
+            // Nothing saved by this synth yet. Someone updating from the
+            // original subtractive synth gets their patch carried over;
+            // a fresh install keeps the engine defaults.
+            if (props.containsKey ("synth_mainWave"))
+                migrateClassicPatch (props);
+            return;
+        }
 
         for (int o = 0; o < 2; ++o)
         {
             const juce::String p = "wt_osc" + juce::String (o) + "_";
-            const int table = props.getIntValue (p + "table", engine.getBuiltInIndex (o));
+            const int table = WavetableLibrary::indexForName (props.getValue (p + "tableName"));
             const juce::File file (props.getValue (p + "file"));
             juce::String error;
             if (table >= 0)
                 engine.setBuiltInTable (o, table);
             else if (! file.existsAsFile() || ! engine.importTable (o, file, error))
-                engine.setBuiltInTable (o, 0); // imported file has gone — fall back
+                engine.setBuiltInTable (o, WavetableLibrary::indexForName ("Morph")); // imported file has gone
 
             engine.setOscLevel (o,      (float) props.getDoubleValue (p + "level", engine.getOscLevel (o)));
             engine.setOscPosition (o,   (float) props.getDoubleValue (p + "pos",   engine.getOscPosition (o)));
@@ -916,6 +935,78 @@ public:
     }
 
 private:
+    // Maps a patch saved by the original synth (SynthEngine, "synth_*" keys)
+    // onto this engine. Its four waveforms are this engine's analog tables in
+    // the same order, so OSC 1/2 come across as-is; unison is off and the
+    // env-to-position amount is zero, so the voice is the same shape.
+    // Fallbacks are that synth's factory defaults. The old keys are left in
+    // place; once this synth saves, its own keys take over.
+    void migrateClassicPatch (juce::PropertiesFile& props)
+    {
+        auto f = [&props] (const char* key, double def) { return (float) props.getDoubleValue (key, def); };
+
+        engine.setBuiltInTable  (0, juce::jlimit (0, 3, props.getIntValue ("synth_mainWave", 2)));
+        engine.setOscLevel      (0, f ("synth_osc1Level", 1.0));
+        engine.setOscPosition   (0, 0.0f);
+        engine.setOscSemitones  (0, 0);
+        engine.setOscFineCents  (0, 0.0f);
+        engine.setBuiltInTable  (1, juce::jlimit (0, 3, props.getIntValue ("synth_osc2Wave", 0)));
+        engine.setOscLevel      (1, f ("synth_osc2Level", 0.0));
+        engine.setOscPosition   (1, 0.0f);
+        engine.setOscSemitones  (1, 0);
+        engine.setOscFineCents  (1, f ("synth_osc2Detune", 0.0));
+
+        engine.setUnison (1);
+        engine.setUnisonDetune (0.0f);
+        engine.setSubLevel (f ("synth_subLevel", 0.3));
+        engine.setDrive    (f ("synth_drive", 0.0));
+        engine.setGain     (f ("synth_gain", 0.15));
+
+        engine.setFilterCutoff    (f ("synth_cutoff", 1400.0));
+        engine.setFilterResonance (f ("synth_reso", 1.0));
+        engine.setFilterEnvAmount (f ("synth_filtEnv", 3000.0));
+        engine.setEnvToPosition   (0.0f);
+        engine.setAmpADSR    (f ("synth_attack", 0.02),   f ("synth_decay", 0.3),
+                              f ("synth_sustain", 0.6),   f ("synth_release", 0.7));
+        engine.setFilterADSR (f ("synth_fAttack", 0.01),  f ("synth_fDecay", 0.4),
+                              f ("synth_fSustain", 0.3),  f ("synth_fRelease", 0.5));
+
+        engine.setLFORate     (f ("synth_lfoRate", 1.0));
+        engine.setLFODepth    (f ("synth_lfoDepth", 0.0));
+        engine.setLFOWaveform (props.getIntValue ("synth_lfoWave", 0));
+
+        // Old destination index -> this engine's. Env Amount has no
+        // equivalent here and becomes Off.
+        static const int destMap[] = {
+            WavetableEngine::ModDestOff,       WavetableEngine::ModDestCutoff,
+            WavetableEngine::ModDestResonance, WavetableEngine::ModDestOff,
+            WavetableEngine::ModDestGain,      WavetableEngine::ModDestReverbMix,
+            WavetableEngine::ModDestPitch,     WavetableEngine::ModDestDistDrive,
+            WavetableEngine::ModDestDelayMix,  WavetableEngine::ModDestDelayTime
+        };
+        for (int i = 0; i < WavetableEngine::NumRoutingSlots; ++i)
+        {
+            const juce::String n (i);
+            const int oldDest = props.getIntValue ("synth_routeDest_" + n, 0);
+            engine.setRoutingSource (i, props.getIntValue ("synth_routeSrc_" + n, 0));
+            engine.setRoutingDest   (i, oldDest >= 0 && oldDest < (int) std::size (destMap) ? destMap[oldDest] : 0);
+            engine.setRoutingAmount (i, (float) props.getDoubleValue ("synth_routeAmount_" + n, 0.0));
+        }
+
+        auto& fx = engine.getFx();
+        fx.distDrive     = f ("synth_distDrive", 0.0);
+        fx.distEnabled   = props.getBoolValue ("synth_distOn", true);
+        fx.delayTimeMs   = f ("synth_delayTimeMs", 350.0);
+        fx.delayFeedback = f ("synth_delayFeedback", 0.4);
+        fx.delayMix      = f ("synth_delayMix", 0.18);
+        fx.delayEnabled  = props.getBoolValue ("synth_delayOn", true);
+        fx.reverbWet     = f ("synth_reverbMix", 0.2);
+        fx.reverbSize    = f ("synth_reverbSize", 0.5);
+        fx.reverbEnabled = props.getBoolValue ("synth_reverbOn", true);
+
+        content.refreshAll();
+    }
+
     WavetableEngine& engine;
     WavetableSynthContent content;
 };

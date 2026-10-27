@@ -5,9 +5,8 @@
 
 //==============================================================================
 // MasterFx — the post-voice bus: tanh distortion → mono-fed delay → reverb,
-// each bypassable. Same DSP as the FX section inside SynthEngine; this copy
-// is shared so new engines don't each grow their own. SynthEngine can move
-// onto it later — it's left alone for now because it has already shipped.
+// each bypassable. Same DSP as the FX bus of the original (pre-wavetable)
+// synth, so carried-over patches sound the same.
 //
 // Base params are set from the UI thread. Each block the engine passes the
 // modulated values in via setModulated() before calling process().

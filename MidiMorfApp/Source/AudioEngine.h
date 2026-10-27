@@ -1,12 +1,11 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "ActiveSynth.h"
+#include "WavetableEngine.h"
 
 //==============================================================================
-// Owns the iOS audio device + both built-in engines (classic subtractive and
-// wavetable). ActiveSynth picks which one plays; it's what the AudioSourcePlayer
-// renders into the system AudioDeviceManager. Stereo out, no input.
+// Owns the iOS audio device + the built-in synth. Wires synth output through an
+// AudioSourcePlayer into the system AudioDeviceManager. Stereo out, no input.
 class AudioEngine
 {
 public:
@@ -37,7 +36,7 @@ public:
             deviceInitialised = true;
         }
 
-        sourcePlayer.setSource (&activeSynth);
+        sourcePlayer.setSource (&synth);
         deviceManager.addAudioCallback (&sourcePlayer);
         running = true;
     }
@@ -66,14 +65,10 @@ public:
         }
     }
 
-    SynthEngine& getSynth() noexcept { return synth; }
-    WavetableEngine& getWavetable() noexcept { return wavetable; }
-    ActiveSynth& getActiveSynth() noexcept { return activeSynth; }
+    WavetableEngine& getSynth() noexcept { return synth; }
 
 private:
-    SynthEngine synth;
-    WavetableEngine wavetable;
-    ActiveSynth activeSynth { synth, wavetable };
+    WavetableEngine synth;
     juce::AudioDeviceManager deviceManager;
     juce::AudioSourcePlayer sourcePlayer;
     bool running = false;

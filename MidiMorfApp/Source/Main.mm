@@ -57,7 +57,7 @@ public:
     {
         if (auto* main = getMainComponent())
         {
-            main->getAudioEngine().getActiveSynth().allNotesOff();
+            main->getAudioEngine().getSynth().allNotesOff();
             main->getAudioEngine().stop();
         }
     }

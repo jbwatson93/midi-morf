@@ -23,17 +23,14 @@ static_assert (juce::numElementsInArray (controllerNames) == MidiMorf::NUM_CONTR
                "controllerNames must have exactly NUM_CONTROLLERS entries");
 
 static const juce::String synthPageName    = "Synth";
-static const juce::String wavetablePageName = "Wavetable";
 static const juce::String settingsPageName = "Settings";
 static const juce::String aboutPageName    = "About";
 
-// Page indices after the controllers. Wavetable was added last so older saved
-// indices still point at the same pages.
+// Page indices after the controllers.
 static constexpr int synthPageIdx     = MidiMorf::NUM_CONTROLLERS;
 static constexpr int aboutPageIdx     = MidiMorf::NUM_CONTROLLERS + 1;
 static constexpr int settingsPageIdx  = MidiMorf::NUM_CONTROLLERS + 2;
-static constexpr int wavetablePageIdx = MidiMorf::NUM_CONTROLLERS + 3;
-static constexpr int numPages         = MidiMorf::NUM_CONTROLLERS + 4;
+static constexpr int numPages         = MidiMorf::NUM_CONTROLLERS + 3;
 
 MainComponent::MainComponent()
     : fxPage (eventRouter),
@@ -71,10 +68,9 @@ MainComponent::MainComponent()
     pageContainer.addPage (&roseChordPage);
     pageContainer.addPage (&stepSequencerPage);
     pageContainer.addPage (&sliceSequencerPage);
-    pageContainer.addPage (&synthSettingsPage);
+    pageContainer.addPage (&synthPage);
     pageContainer.addPage (&aboutPage);
     pageContainer.addPage (&settingsPage);
-    pageContainer.addPage (&wavetablePage);
     pageContainer.setListener (this);
     addAndMakeVisible (pageContainer);
 
@@ -87,9 +83,7 @@ MainComponent::MainComponent()
 
     synthButton.onClick = [this]
     {
-        // Opens the editor for whichever engine is currently playing.
-        pageContainer.setPage (audioEngine.getActiveSynth().getEngine() == ActiveSynth::Wavetable
-                                   ? wavetablePageIdx : synthPageIdx);
+        pageContainer.setPage (synthPageIdx);
     };
     addAndMakeVisible (synthButton);
 
@@ -105,8 +99,7 @@ MainComponent::MainComponent()
     favoriteButton.onLongPress = [this] { showFavoritePicker(); };
     addAndMakeVisible (favoriteButton);
 
-    synthSettingsPage.onPatchChanged = [this] { saveState(); };
-    wavetablePage.onPatchChanged = [this] { saveState(); };
+    synthPage.onPatchChanged = [this] { saveState(); };
 
     // Network
     networkClient.setListener (this);
@@ -229,7 +222,6 @@ void MainComponent::showNavigationMenu()
     menu.addSeparator();
     const int current = pageContainer.getCurrentPage();
     menu.addItem (synthPageIdx     + 1, synthPageName,     true, current == synthPageIdx);
-    menu.addItem (wavetablePageIdx + 1, wavetablePageName, true, current == wavetablePageIdx);
     menu.addItem (settingsPageIdx  + 1, settingsPageName,  true, current == settingsPageIdx);
     menu.addItem (aboutPageIdx     + 1, aboutPageName,     true, current == aboutPageIdx);
 
@@ -250,7 +242,6 @@ juce::String MainComponent::getPageDisplayName (int pageIndex) const
     if (pageIndex == synthPageIdx)     return synthPageName;
     if (pageIndex == aboutPageIdx)     return aboutPageName;
     if (pageIndex == settingsPageIdx)  return settingsPageName;
-    if (pageIndex == wavetablePageIdx) return wavetablePageName;
     return {};
 }
 
@@ -266,7 +257,6 @@ void MainComponent::showFavoritePicker()
 
     menu.addSeparator();
     menu.addItem (synthPageIdx     + 1, synthPageName,     true, synthPageIdx     == currentAssignment);
-    menu.addItem (wavetablePageIdx + 1, wavetablePageName, true, wavetablePageIdx == currentAssignment);
     menu.addItem (settingsPageIdx  + 1, settingsPageName,  true, settingsPageIdx  == currentAssignment);
     menu.addItem (aboutPageIdx     + 1, aboutPageName,     true, aboutPageIdx     == currentAssignment);
 
@@ -316,8 +306,8 @@ void MainComponent::tiltUpdated (float tiltX, float tiltY)
 {
     eventRouter.sendTiltUpdate (tiltX, tiltY);
     // Local modulation: accel feeds the routing matrix's AccelX/AccelY sources.
-    audioEngine.getActiveSynth().setAccelX (tiltX);
-    audioEngine.getActiveSynth().setAccelY (tiltY);
+    audioEngine.getSynth().setAccelX (tiltX);
+    audioEngine.getSynth().setAccelY (tiltY);
 }
 
 // PageContainer::Listener
@@ -335,12 +325,6 @@ void MainComponent::pageChanged (int newPageIndex)
         else if (mode == MidiMorf::ControllerMode::SliceSequencer)
             sliceSequencerPage.pushFullState();
     }
-
-    // Opening a synth editor makes that engine the one the controllers play.
-    if (newPageIndex == synthPageIdx)
-        audioEngine.getActiveSynth().setEngine (ActiveSynth::Classic);
-    else if (newPageIndex == wavetablePageIdx)
-        audioEngine.getActiveSynth().setEngine (ActiveSynth::Wavetable);
 
     // Persist current state whenever page changes
     saveState();
@@ -364,9 +348,7 @@ void MainComponent::saveState()
         dualMPadPage.saveState (*props);
         morfChordPage.saveState (*props);
         roseChordPage.saveState (*props);
-        synthSettingsPage.saveState (*props);
-        wavetablePage.saveState (*props);
-        props->setValue ("synthEngine", audioEngine.getActiveSynth().getEngine());
+        synthPage.saveState (*props);
         props->saveIfNeeded();
     }
 }
@@ -379,9 +361,7 @@ void MainComponent::restoreState()
         dualMPadPage.restoreState (*props);
         morfChordPage.restoreState (*props);
         roseChordPage.restoreState (*props);
-        synthSettingsPage.restoreState (*props);
-        wavetablePage.restoreState (*props);
-        audioEngine.getActiveSynth().setEngine (props->getIntValue ("synthEngine", ActiveSynth::Classic));
+        synthPage.restoreState (*props);
 
         // First-launch default: Local mode. New users hear the built-in
         // synth immediately when they tap a controller — no server setup

@@ -241,9 +241,11 @@ public:
 };
 
 //==============================================================================
-// WavetableEngine — second built-in synth. Same MIDI API and mod sources as
-// SynthEngine (noteOn / noteOff / allNotesOff / setModWheel / setAccelX/Y)
-// so the controllers drive either one through the same sink.
+// WavetableEngine — the built-in synth. Each oscillator plays a table: one of
+// the single-frame analog waves (Sine / Triangle / Saw / Square), a built-in
+// wavetable, or an imported .wav. Pure MIDI API (noteOn / noteOff /
+// allNotesOff) plus mod sources (setModWheel / setAccelX/Y); controllers
+// reach it through PhoneMidiSink.
 //
 // Table swaps are lock-free: the audio thread reads a raw pointer per block;
 // the UI thread swaps it atomically and keeps the old table alive for a
@@ -432,7 +434,7 @@ public:
     void getFilterADSR (float& a, float& d, float& s, float& r) const { a = filA; d = filD; s = filS; r = filR; }
 
     //==========================================================================
-    // LFO + routing (same model as SynthEngine)
+    // LFO + routing
     void  setLFORate (float hz)  { lfoRate = juce::jlimit (0.05f, 20.0f, hz); }
     void  setLFODepth (float d)  { lfoDepth = juce::jlimit (0.0f, 1.0f, d); }
     void  setLFOWaveform (int w) { lfoWaveform = juce::jlimit (0, NumLFOWaves - 1, w); }
@@ -452,8 +454,8 @@ public:
 
     void resetToDefaults()
     {
-        setBuiltInTable (0, 0);   // Analog
-        setBuiltInTable (1, 1);   // PWM
+        setBuiltInTable (0, WavetableLibrary::indexForName ("Morph"));
+        setBuiltInTable (1, WavetableLibrary::indexForName ("PWM"));
         setOscLevel (0, 1.0f);  setOscPosition (0, 0.6f);
         setOscLevel (1, 0.0f);  setOscPosition (1, 0.0f);
         setOscSemitones (0, 0); setOscFineCents (0, 0.0f);

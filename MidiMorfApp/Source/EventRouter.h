@@ -2,7 +2,7 @@
 
 #include <JuceHeader.h>
 #include "NetworkClient.h"
-#include "SynthEngine.h"
+#include "WavetableEngine.h"
 #include "MidiSink.h"
 #include "MorfPadHandler.h"
 #include "OmnichordHandler.h"
@@ -13,7 +13,7 @@
 // EventRouter sits between controller pages and the two MIDI backends:
 //   • WiFi mode  → forward semantic events to NetworkClient (existing behaviour).
 //   • Local mode → translate semantic events into MIDI notes via per-controller
-//                  Handlers, then call SynthEngine for audio.
+//                  Handlers, then call the built-in synth for audio.
 // FX Punch-in and Transport are always WiFi-only — they don't play notes that
 // the local synth model can sensibly render.
 class EventRouter
@@ -21,7 +21,7 @@ class EventRouter
 public:
     enum class Mode { WiFi, Local };
 
-    EventRouter (NetworkClient& nc, ActiveSynth& synthRef)
+    EventRouter (NetworkClient& nc, WavetableEngine& synthRef)
         : network (nc),
           sink (synthRef),
           morfPad (sink, 3),

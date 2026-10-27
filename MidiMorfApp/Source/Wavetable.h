@@ -142,20 +142,34 @@ private:
 // WavetableLibrary — the built-in tables (generated in code, no assets) plus
 // Serum-style .wav import. Built-ins are described by an index; call build()
 // to materialise one.
+//
+// The first NumAnalogWaves built-ins are the classic analog shapes as
+// single-frame tables. They go through the same band-limited mip levels, so
+// they're alias-free at every pitch with no PolyBLEP needed, and an
+// oscillator can flip between "analog" and "wavetable" just by picking a
+// different table. Patches store tables by name, so this list can be
+// reordered or extended freely.
 namespace WavetableLibrary
 {
     using Spectrum = Wavetable::Spectrum;
 
-    static constexpr int BuiltInFrames = 32;
+    static constexpr int BuiltInFrames  = 32;
+    static constexpr int NumAnalogWaves = 4;
 
     inline const juce::StringArray& builtInNames()
     {
         static const juce::StringArray names {
-            "Analog", "PWM", "Harmonics", "Vocal", "FM",
+            "Sine", "Triangle", "Saw", "Square",
+            "Morph", "PWM", "Harmonics", "Vocal", "FM",
             "Sync", "Fold", "Digital", "Organ", "Glass"
         };
         return names;
     }
+
+    inline bool isAnalog (int index) { return index >= 0 && index < NumAnalogWaves; }
+
+    // -1 if there's no built-in by that name.
+    inline int indexForName (const juce::String& name) { return builtInNames().indexOf (name); }
 
     //--------------------------------------------------------------------------
     // Helpers
@@ -216,8 +230,28 @@ namespace WavetableLibrary
     inline float lerp (float a, float b, float t) { return a + t * (b - a); }
 
     //--------------------------------------------------------------------------
-    // Generators. Each returns BuiltInFrames spectra, t = 0..1 across frames.
+    // Analog shapes: one frame each. Index 0..NumAnalogWaves-1.
+    inline Spectrum analogWave (int index)
+    {
+        constexpr int H = Wavetable::NumHarmonics;
+        constexpr double pi = juce::MathConstants<double>::pi;
+        std::vector<float> amps ((size_t) H + 1, 0.0f);
+        for (int h = 1; h <= H; ++h)
+        {
+            switch (index)
+            {
+                case 0:  amps[(size_t) h] = h == 1 ? 1.0f : 0.0f; break;                          // Sine
+                case 1:  amps[(size_t) h] = h % 2 == 1 ? ((h / 2) % 2 == 0 ? 1.0f : -1.0f)        // Triangle
+                                                          * 8.0f / (float) (pi * pi * h * h) : 0.0f; break;
+                case 2:  amps[(size_t) h] = -2.0f / (float) (pi * h); break;                      // Saw, rising like the classic osc
+                default: amps[(size_t) h] = h % 2 == 1 ? 4.0f / (float) (pi * h) : 0.0f; break;   // Square
+            }
+        }
+        return additive (amps);
+    }
 
+    // Wavetable generators. Each returns BuiltInFrames spectra, t = 0..1
+    // across frames. Index is into the wavetables only (0 = Morph).
     inline std::vector<Spectrum> generate (int index)
     {
         constexpr int F = BuiltInFrames;
@@ -234,7 +268,7 @@ namespace WavetableLibrary
 
             switch (index)
             {
-                case 0: // Analog: sine → triangle → saw → square
+                case 0: // Morph: sine → triangle → saw → square
                 {
                     for (int h = 1; h <= H; ++h)
                     {
@@ -380,7 +414,9 @@ namespace WavetableLibrary
     inline std::unique_ptr<Wavetable> build (int index)
     {
         index = juce::jlimit (0, builtInNames().size() - 1, index);
-        return std::make_unique<Wavetable> (builtInNames()[index], generate (index));
+        if (isAnalog (index))
+            return std::make_unique<Wavetable> (builtInNames()[index], std::vector<Spectrum> { analogWave (index) });
+        return std::make_unique<Wavetable> (builtInNames()[index], generate (index - NumAnalogWaves));
     }
 
     //--------------------------------------------------------------------------

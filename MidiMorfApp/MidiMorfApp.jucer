@@ -72,6 +72,7 @@
             file="../../../../../Downloads/fonts-DSEG_v046/DSEG14-Modern-MINI/DSEG14ModernMini-Regular.ttf"/>
       <FILE id="NVfyJV" name="wood2.jpg" compile="0" resource="1" file="../../../../../Downloads/simple-realistic-wood-texture/wood2.jpg"/>
       <FILE id="aInBlm" name="inBloom.png" compile="0" resource="1" file="../inBloom.png"/>
+      <FILE id="aAmen1" name="AmenBreak140.wav" compile="0" resource="1" file="Resources/Breaks/AmenBreak140.wav"/>
       <FILE id="aAppIc" name="Icon.png" compile="0" resource="1" file="../MidiMorfServer/Icon.png"/>
       <FILE id="sqPg01" name="StepSequencerPage.h" compile="0" resource="0" file="Source/StepSequencerPage.h"/>
       <FILE id="seqPlt" name="SequencerPlatform.h" compile="0" resource="0" file="Source/SequencerPlatform.h"/>

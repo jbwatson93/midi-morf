@@ -30,9 +30,9 @@ struct Break
 };
 
 //==============================================================================
-// Built-in breaks are synthesised at load time rather than shipped as audio:
-// nothing to license, nothing added to the bundle, and each one is a few
-// milliseconds to render. Every pattern here is original.
+// Built-in breaks come first as recorded loops bundled in BinaryData (played
+// by JB, so they ship), then synthesised ones, rendered at load time in a
+// few milliseconds each — every synthesised pattern here is original.
 namespace BreakLibrary
 {
     static constexpr double RenderRate = 44100.0;
@@ -99,9 +99,31 @@ namespace BreakLibrary
         return s;
     }
 
+    // Recorded loops in BinaryData. Listed only once Projucer has bundled the
+    // file, so a build from a stale project just doesn't offer them.
+    struct Recorded { const char* name; const char* resource; double beats; };
+
+    inline std::vector<Recorded> recorded()
+    {
+        static const Recorded all[] = {
+            { "Amen Break", "AmenBreak140_wav", 8.0 },   // 2 bars, 140 BPM
+        };
+
+        std::vector<Recorded> present;
+        for (auto& r : all)
+        {
+            int size = 0;
+            if (BinaryData::getNamedResource (r.resource, size) != nullptr)
+                present.push_back (r);
+        }
+        return present;
+    }
+
     inline juce::StringArray builtInNames()
     {
         juce::StringArray names;
+        for (auto& r : recorded())
+            names.add (r.name);
         for (auto& s : styles())
             names.add (s.name);
        #if MIDIMORF_DEV_BREAKS
@@ -228,6 +250,19 @@ namespace BreakLibrary
     inline std::unique_ptr<Break> generate (int index)
     {
         using namespace detail;
+
+        const auto rec = recorded();
+        if (juce::isPositiveAndBelow (index, (int) rec.size()))
+        {
+            const auto& r = rec[(size_t) index];
+            int size = 0;
+            const char* data = BinaryData::getNamedResource (r.resource, size);
+            juce::String error;
+            return fromReader (std::unique_ptr<juce::AudioFormatReader> (juce::WavAudioFormat().createReaderFor (
+                                   new juce::MemoryInputStream (data, (size_t) size, false), true)),
+                               r.name, r.beats, error);
+        }
+        index -= (int) rec.size();
 
         const auto& all = styles();
        #if MIDIMORF_DEV_BREAKS

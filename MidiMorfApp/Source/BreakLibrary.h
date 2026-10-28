@@ -3,6 +3,12 @@
 #include <JuceHeader.h>
 #include <vector>
 
+// Test-only loops (Tools/make_dev_breaks.py): Debug builds, never Release.
+#if JUCE_DEBUG && __has_include("DevBreaks.h")
+ #include "DevBreaks.h"
+ #define MIDIMORF_DEV_BREAKS 1
+#endif
+
 //==============================================================================
 // A drum loop for the slice sequencer to cut up in Local mode.
 //
@@ -98,6 +104,10 @@ namespace BreakLibrary
         juce::StringArray names;
         for (auto& s : styles())
             names.add (s.name);
+       #if MIDIMORF_DEV_BREAKS
+        for (auto& d : DevBreaks::items)
+            names.add (d.name);
+       #endif
         return names;
     }
 
@@ -211,6 +221,8 @@ namespace BreakLibrary
         }
     }
 
+    inline std::unique_ptr<Break> fromReader (std::unique_ptr<juce::AudioFormatReader>, const juce::String&, double, juce::String&);
+
     // Renders three passes of the bar and keeps the middle one, so the reverb
     // and the last hits' tails wrap into the start and the loop is seamless.
     inline std::unique_ptr<Break> generate (int index)
@@ -218,6 +230,16 @@ namespace BreakLibrary
         using namespace detail;
 
         const auto& all = styles();
+       #if MIDIMORF_DEV_BREAKS
+        if (const int dev = index - (int) all.size(); juce::isPositiveAndBelow (dev, (int) std::size (DevBreaks::items)))
+        {
+            const auto& d = DevBreaks::items[dev];
+            juce::String error;
+            return fromReader (std::unique_ptr<juce::AudioFormatReader> (juce::WavAudioFormat().createReaderFor (
+                                   new juce::MemoryInputStream (d.data, d.size, false), true)),
+                               d.name, d.beats, error);
+        }
+       #endif
         if (! juce::isPositiveAndBelow (index, (int) all.size()))
             return nullptr;
 
@@ -376,14 +398,13 @@ namespace BreakLibrary
         return best;
     }
 
-    inline std::unique_ptr<Break> importFile (const juce::File& file, juce::String& error)
+    // beats <= 0 means guess it from the length.
+    inline std::unique_ptr<Break> fromReader (std::unique_ptr<juce::AudioFormatReader> reader,
+                                              const juce::String& name, double beats, juce::String& error)
     {
-        juce::AudioFormatManager formats;
-        formats.registerBasicFormats();
-        std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
         if (reader == nullptr)
         {
-            error = "Couldn't read " + file.getFileName();
+            error = "Couldn't read " + name;
             return nullptr;
         }
 
@@ -392,24 +413,32 @@ namespace BreakLibrary
                                                            (juce::int64) (maxSeconds * reader->sampleRate));
         if (length < (int) (0.25 * reader->sampleRate))
         {
-            error = file.getFileName() + " is too short to slice";
+            error = name + " is too short to slice";
             return nullptr;
         }
 
         auto out = std::make_unique<Break>();
-        out->name       = file.getFileNameWithoutExtension();
+        out->name       = name;
         out->sampleRate = reader->sampleRate;
         out->audio.setSize (2, length);
         reader->read (&out->audio, 0, length, 0, true, true);
         if (reader->numChannels < 2)
             out->audio.copyFrom (1, 0, out->audio, 0, 0, length);
 
-        out->beats = estimateBeats (out->lengthSeconds());
+        out->beats = beats > 0.0 ? beats : estimateBeats (out->lengthSeconds());
 
         const float peak = out->audio.getMagnitude (0, length);
         if (peak > 0.0f && peak < 0.5f)
             out->audio.applyGain (0.8f / peak);   // lift quiet files, never clip loud ones
 
         return out;
+    }
+
+    inline std::unique_ptr<Break> importFile (const juce::File& file, juce::String& error)
+    {
+        juce::AudioFormatManager formats;
+        formats.registerBasicFormats();
+        return fromReader (std::unique_ptr<juce::AudioFormatReader> (formats.createReaderFor (file)),
+                           file.getFileNameWithoutExtension(), 0.0, error);
     }
 }

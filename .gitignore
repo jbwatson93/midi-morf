@@ -21,3 +21,8 @@ DerivedData/
 spikes/*
 !spikes/*.cpp
 !spikes/*.md
+
+# ── Test-only breaks ──────────────────────────────────────────────────────────
+# Uncleared samples embedded into Debug builds by Tools/make_dev_breaks.py.
+# Never commit them.
+MidiMorfApp/Source/DevBreaks.h

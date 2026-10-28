@@ -9,6 +9,7 @@
 #include "MorfChordHandler.h"
 #include "RoseChordHandler.h"
 #include "MidiMorfProtocol.h"
+#include "LocalSequencers.h"
 
 // EventRouter sits between controller pages and the two MIDI backends:
 //   • WiFi mode  → forward semantic events to NetworkClient (existing behaviour).
@@ -21,8 +22,9 @@ class EventRouter
 public:
     enum class Mode { WiFi, Local };
 
-    EventRouter (NetworkClient& nc, WavetableEngine& synthRef)
+    EventRouter (NetworkClient& nc, WavetableEngine& synthRef, LocalSequencers& seqs)
         : network (nc),
+          sequencers (seqs),
           sink (synthRef),
           morfPad (sink, 3),
           omnichord (sink),
@@ -46,6 +48,11 @@ public:
         morfChord.allNotesOff();
         roseChord.allNotesOff();
 
+        // The local sequencers keep their own clock; it has no business
+        // running once the DAW is meant to be driving.
+        if (m == Mode::WiFi)
+            sequencers.stopAll();
+
         mode.store (m);
     }
 
@@ -59,27 +66,65 @@ public:
     void sendButtonDown (int slotIndex)          { network.sendButtonDown (slotIndex); }
     void sendButtonUp (int slotIndex)            { network.sendButtonUp (slotIndex); }
     void sendTiltUpdate (float tx, float ty)     { network.sendTiltUpdate (tx, ty); }
-    void sendScreenMode (MidiMorf::ControllerMode m) { network.sendScreenMode (m); }
+    void sendScreenMode (MidiMorf::ControllerMode m) { network.sendScreenMode (m); sequencers.setActivePage (m); }
     void sendTransportButton (uint8_t buttonId)  { network.sendTransportButton (buttonId); }
 
-    // Creative Sequencer Pack — WiFi only. Timing lives on the server, driven
-    // by DAW MIDI clock, so there is no Local path to route to.
+    // Creative Sequencer Pack. In WiFi mode the server runs the sequencers on
+    // DAW clock; in Local mode LocalSequencers runs the same engines on the
+    // phone's own clock. Pattern and config edits go to both so either side
+    // is current the moment the mode flips; performance gestures go only to
+    // whichever side is playing.
     void sendSeqStepSet (uint8_t step, uint8_t degree, uint8_t velocity, uint8_t gate, uint8_t mod, bool rest)
-        { network.sendSeqStepSet (step, degree, velocity, gate, mod, rest); }
+    {
+        network.sendSeqStepSet (step, degree, velocity, gate, mod, rest);
+        sequencers.stepSet (step, degree, velocity, gate, mod, rest);
+    }
+
     void sendSeqConfig (uint8_t patternLength, uint8_t rate, uint8_t direction, uint8_t swing,
                         uint8_t scaleIndex, uint8_t rootNote, uint8_t baseOctave, uint8_t octaveRange)
-        { network.sendSeqConfig (patternLength, rate, direction, swing, scaleIndex, rootNote, baseOctave, octaveRange); }
-    void sendSeqTransport (MidiMorf::SeqCommand c)            { network.sendSeqTransport (c); }
-    void sendSeqRatchet (MidiMorf::SeqRatchetDiv d, bool on)  { network.sendSeqRatchet (d, on); }
+    {
+        network.sendSeqConfig (patternLength, rate, direction, swing, scaleIndex, rootNote, baseOctave, octaveRange);
+        sequencers.config (patternLength, rate, direction, swing, scaleIndex, rootNote, baseOctave, octaveRange);
+    }
+
+    void sendSeqTransport (MidiMorf::SeqCommand c)
+    {
+        if (mode.load() == Mode::WiFi) network.sendSeqTransport (c);
+        else                           sequencers.transport (c);
+    }
+
+    void sendSeqRatchet (MidiMorf::SeqRatchetDiv d, bool on)
+    {
+        if (mode.load() == Mode::WiFi) network.sendSeqRatchet (d, on);
+        else                           sequencers.ratchet ((uint8_t) d, on);
+    }
+
     void sendSeqSliceConfig (uint8_t bars, uint8_t division, uint8_t sliceCount,
                              uint8_t rootNote, uint8_t direction, uint8_t swing)
-        { network.sendSeqSliceConfig (bars, division, sliceCount, rootNote, direction, swing); }
+    {
+        network.sendSeqSliceConfig (bars, division, sliceCount, rootNote, direction, swing);
+        sequencers.sliceConfig (bars, division, sliceCount, rootNote, direction, swing);
+    }
+
     void sendSeqLooper (uint8_t division, bool active, bool randomOn)
-        { network.sendSeqLooper (division, active, randomOn); }
+    {
+        if (mode.load() == Mode::WiFi) network.sendSeqLooper (division, active, randomOn);
+        else                           sequencers.looper (division, active, randomOn);
+    }
+
     void sendSeqRibbon (uint8_t ribbonIndex, int value14bit)
-        { network.sendSeqRibbon (ribbonIndex, value14bit); }
+    {
+        if (mode.load() == Mode::WiFi) network.sendSeqRibbon (ribbonIndex, value14bit);
+        else                           sequencers.ribbon (ribbonIndex, value14bit);
+    }
+
     void sendSeqRibbonAssign (uint8_t ribbonIndex, MidiMorf::RibbonTarget target, uint8_t ccNumber)
-        { network.sendSeqRibbonAssign (ribbonIndex, target, ccNumber); }
+    {
+        network.sendSeqRibbonAssign (ribbonIndex, target, ccNumber);
+        sequencers.ribbonAssign (ribbonIndex, target, ccNumber);
+    }
+
+    LocalSequencers& getSequencers() noexcept { return sequencers; }
 
     //==========================================================================
     // Morf-Pad
@@ -228,6 +273,7 @@ public:
 
 private:
     NetworkClient& network;
+    LocalSequencers& sequencers;
     PhoneMidiSink sink;
 
     MorfPadHandler morfPad;

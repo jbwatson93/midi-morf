@@ -74,6 +74,14 @@
       <FILE id="aInBlm" name="inBloom.png" compile="0" resource="1" file="../inBloom.png"/>
       <FILE id="aAppIc" name="Icon.png" compile="0" resource="1" file="../MidiMorfServer/Icon.png"/>
       <FILE id="sqPg01" name="StepSequencerPage.h" compile="0" resource="0" file="Source/StepSequencerPage.h"/>
+      <FILE id="seqPlt" name="SequencerPlatform.h" compile="0" resource="0" file="Source/SequencerPlatform.h"/>
+      <FILE id="clkSqA" name="ClockedSequencer.h" compile="0" resource="0" file="Source/ClockedSequencer.h"/>
+      <FILE id="stpEnA" name="StepSequencerEngine.h" compile="0" resource="0" file="Source/StepSequencerEngine.h"/>
+      <FILE id="slcEnA" name="SliceSequencerEngine.h" compile="0" resource="0" file="Source/SliceSequencerEngine.h"/>
+      <FILE id="brkLib" name="BreakLibrary.h" compile="0" resource="0" file="Source/BreakLibrary.h"/>
+      <FILE id="brkPly" name="BreakPlayer.h" compile="0" resource="0" file="Source/BreakPlayer.h"/>
+      <FILE id="lclSeq" name="LocalSequencers.h" compile="0" resource="0" file="Source/LocalSequencers.h"/>
+      <FILE id="sqTrBr" name="SeqTransportBar.h" compile="0" resource="0" file="Source/SeqTransportBar.h"/>
       <FILE id="slPg01" name="SliceSequencerPage.h" compile="0" resource="0" file="Source/SliceSequencerPage.h"/>
     </GROUP>
   </MAINGROUP>

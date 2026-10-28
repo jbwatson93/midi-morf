@@ -1,22 +1,21 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "VirtualMidiPort.h"
-#include "MidiClockReceiver.h"
+#include "SequencerPlatform.h"
 #include <vector>
 #include <array>
 
 // Shared timing core for every sequencer in the Creative Sequencer Pack.
 //
 // Owns everything that is the same regardless of what the steps *mean*: tick
-// counting against DAW MIDI clock, rate division, swing, direction, gate,
+// counting against MIDI clock, rate division, swing, direction, gate,
 // rests, the momentary roller, and the playhead. Subclasses supply only a note
 // table — scale degrees for the step sequencer, sample slices for the slicer —
 // and the shared machinery does the rest.
 //
 // Everything is tick-based (24 PPQN), never wall-clock, so tempo changes need
 // no special handling: the clock simply arrives faster or slower.
-class ClockedSequencer : public MidiClockReceiver::Listener
+class ClockedSequencer : public SeqClockListener
 {
 public:
     // 2 bars of 1/16 is the longest grid the slicer offers.
@@ -34,7 +33,7 @@ public:
         bool    rest     = false;
     };
 
-    ClockedSequencer (VirtualMidiPort& port, int channel)
+    ClockedSequencer (SeqSink& port, int channel)
         : midiPort (port), seqChannel (channel) {}
 
     ~ClockedSequencer() override { allNotesOff(); }
@@ -109,7 +108,7 @@ public:
     int getNoteTableSize() const { return (int) noteTable.size(); }
     int getCurrentStep()  const  { return currentStep.load(); }
 
-    // ── MidiClockReceiver::Listener ──────────────────────────────────────────
+    // ── SeqClockListener ─────────────────────────────────────────────────────
 
     void clockStart() override
     {
@@ -130,7 +129,7 @@ public:
     void clockSongPosition (int sixteenths) override
     {
         allNotesOff();
-        tickCounter = sixteenths * (MidiClockReceiver::PPQN / 4);
+        tickCounter = sixteenths * (SeqPPQN / 4);
     }
 
     void clockTick() override
@@ -332,7 +331,7 @@ private:
         gateTicksRemaining = juce::jmax (1, (gateBasisTicks * (int) s.gate) / 100);
     }
 
-    VirtualMidiPort& midiPort;
+    SeqSink& midiPort;
     int seqChannel;
 
     int       patternLength = MAX_STEPS;

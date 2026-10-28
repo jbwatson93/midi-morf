@@ -18,7 +18,7 @@
 class SliceSequencerEngine : public ClockedSequencer
 {
 public:
-    SliceSequencerEngine (VirtualMidiPort& port, int channel = 9)
+    SliceSequencerEngine (SeqSink& port, int channel = 9)
         : ClockedSequencer (port, channel)
     {
         buildNoteTable();

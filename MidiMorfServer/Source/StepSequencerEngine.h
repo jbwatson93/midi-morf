@@ -13,7 +13,7 @@
 class StepSequencerEngine : public ClockedSequencer
 {
 public:
-    StepSequencerEngine (VirtualMidiPort& port, int channel = 8)
+    StepSequencerEngine (SeqSink& port, int channel = 8)
         : ClockedSequencer (port, channel)
     {
         buildNoteTable();

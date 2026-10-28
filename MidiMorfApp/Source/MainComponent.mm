@@ -100,6 +100,8 @@ MainComponent::MainComponent()
     addAndMakeVisible (favoriteButton);
 
     synthPage.onPatchChanged = [this] { saveState(); };
+    stepSequencerPage.setOnStateChanged ([this] { saveState(); });
+    sliceSequencerPage.setOnStateChanged ([this] { saveState(); });
 
     // Network
     networkClient.setListener (this);
@@ -349,6 +351,7 @@ void MainComponent::saveState()
         morfChordPage.saveState (*props);
         roseChordPage.saveState (*props);
         synthPage.saveState (*props);
+        audioEngine.getSequencers().saveState (*props);
         props->saveIfNeeded();
     }
 }
@@ -362,6 +365,7 @@ void MainComponent::restoreState()
         morfChordPage.restoreState (*props);
         roseChordPage.restoreState (*props);
         synthPage.restoreState (*props);
+        audioEngine.getSequencers().restoreState (*props);
 
         // First-launch default: Local mode. New users hear the built-in
         // synth immediately when they tap a controller — no server setup

@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "EventRouter.h"
+#include "SeqTransportBar.h"
 #include "MidiMorfColors.h"
 #include "Glassmorphism.h"
 #include <array>
@@ -399,11 +400,8 @@ public:
             addAndMakeVisible (box);
         }
 
-        addAndMakeVisible (clockLabel);
-        clockLabel.setJustificationType (juce::Justification::centredRight);
-        clockLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.45f));
-        clockLabel.setFont (juce::Font (juce::FontOptions (12.0f)));
-        clockLabel.setText ("Waiting for DAW clock", juce::dontSendNotification);
+        transport.onLocalPlayhead = [this] (int step) { showPlayhead (step); };
+        addAndMakeVisible (transport);
 
         loadDemoPattern();
         rebuildNoteTable();
@@ -418,21 +416,17 @@ public:
         setLookAndFeel (nullptr);
     }
 
-    // Server pushes the playhead as it advances; -1 when stopped.
+    // Server pushes the playhead as it advances; -1 when stopped. In Local
+    // mode the transport bar feeds the local one instead.
     void setPlayhead (int step)
     {
-        if (step == playhead)
-            return;
+        transport.setRemoteRunning (step >= 0);
 
-        playhead = step;
-        lanes.setPlayhead (step);
-
-        for (int i = 0; i < NUM_STEPS; ++i)
-            stepBoxes[i]->setPlaying (i == step);
-
-        clockLabel.setText (step < 0 ? "Waiting for DAW clock" : "Running",
-                            juce::dontSendNotification);
+        if (eventRouter.getMode() == EventRouter::Mode::WiFi)
+            showPlayhead (step);
     }
+
+    SeqTransportBar& getTransport() { return transport; }
 
     // Called when the page becomes visible — the server needs the full state,
     // since it has no idea what the phone was editing while away.
@@ -501,8 +495,9 @@ public:
         for (auto* b : rollerButtons)
             b->setBounds (rollerArea.removeFromLeft (rollerBtnW).reduced (1, 0));
 
-        // Bottom: step boxes, then the clock readout.
-        clockLabel.setBounds (area.removeFromBottom (16));
+        // Bottom: step boxes, then the transport strip.
+        transport.setBounds (area.removeFromBottom (30));
+        area.removeFromBottom (6);
         auto boxRow = area.removeFromBottom (juce::jlimit (34, 52, area.getHeight() / 5));
         area.removeFromBottom (6);
 
@@ -538,6 +533,18 @@ private:
         c.setTooltip (tooltip);
         c.onChange = [this] { configChanged(); };
         addAndMakeVisible (c);
+    }
+
+    void showPlayhead (int step)
+    {
+        if (step == playhead)
+            return;
+
+        playhead = step;
+        lanes.setPlayhead (step);
+
+        for (int i = 0; i < NUM_STEPS; ++i)
+            stepBoxes[i]->setPlaying (i == step);
     }
 
     // ── Config ───────────────────────────────────────────────────────────────
@@ -773,7 +780,7 @@ private:
     juce::OwnedArray<juce::TextButton> dirButtons, modeButtons;
     juce::OwnedArray<StepBox> stepBoxes;
     LaneStrip lanes;
-    juce::Label clockLabel;
+    SeqTransportBar transport { eventRouter, LocalSequencers::Step, false };
 
     std::array<StepState, NUM_STEPS> steps;
     std::vector<int> noteTable;
@@ -797,6 +804,7 @@ public:
 
     void setPlayhead (int step) { content.setPlayhead (step); }
     void pushFullState()        { content.pushFullState(); }
+    void setOnStateChanged (std::function<void()> f) { content.getTransport().onStateChanged = std::move (f); }
 
     void resized() override { content.setBounds (getLocalBounds()); }
 

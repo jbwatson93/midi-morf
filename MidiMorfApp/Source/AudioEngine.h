@@ -2,10 +2,12 @@
 
 #include <JuceHeader.h>
 #include "WavetableEngine.h"
+#include "LocalSequencers.h"
 
 //==============================================================================
-// Owns the iOS audio device + the built-in synth. Wires synth output through an
-// AudioSourcePlayer into the system AudioDeviceManager. Stereo out, no input.
+// Owns the iOS audio device + the built-in synth. The device plays
+// LocalSequencers, which renders the synth plus the break player and runs the
+// sequencers' Local-mode clock in between. Stereo out, no input.
 class AudioEngine
 {
 public:
@@ -36,7 +38,7 @@ public:
             deviceInitialised = true;
         }
 
-        sourcePlayer.setSource (&synth);
+        sourcePlayer.setSource (&sequencers);
         deviceManager.addAudioCallback (&sourcePlayer);
         running = true;
     }
@@ -66,9 +68,11 @@ public:
     }
 
     WavetableEngine& getSynth() noexcept { return synth; }
+    LocalSequencers& getSequencers() noexcept { return sequencers; }
 
 private:
     WavetableEngine synth;
+    LocalSequencers sequencers { synth };
     juce::AudioDeviceManager deviceManager;
     juce::AudioSourcePlayer sourcePlayer;
     bool running = false;

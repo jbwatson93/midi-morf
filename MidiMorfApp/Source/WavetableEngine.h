@@ -317,6 +317,7 @@ public:
             if (auto* v = dynamic_cast<WavetableVoice*> (synth.getVoice (i)))
                 v->prepareToPlay (sampleRate);
         fx.prepare (sampleRate);
+        audioThreadMidi.ensureSize (2048);
         adsrDirty = true;
     }
 
@@ -326,11 +327,16 @@ public:
     {
         info.clearActiveBufferRegion();
 
+        // juce::Synthesiser reads event positions in whole-buffer terms and
+        // skips anything before startSample, so events go at startSample —
+        // LocalSequencers renders in sub-blocks that start mid-buffer.
         juce::MidiBuffer midi;
         MidiEvent e;
         while (midiQueue.try_dequeue (e))
             midi.addEvent (e.isNoteOn ? juce::MidiMessage::noteOn (e.channel, e.note, (juce::uint8) e.velocity)
-                                      : juce::MidiMessage::noteOff (e.channel, e.note), 0);
+                                      : juce::MidiMessage::noteOff (e.channel, e.note), info.startSample);
+        midi.addEvents (audioThreadMidi, 0, -1, info.startSample);
+        audioThreadMidi.clear();
 
         processModulation (info.numSamples);
         synth.renderNextBlock (*info.buffer, midi, info.startSample, info.numSamples);
@@ -355,6 +361,23 @@ public:
     {
         if (midiNote < 0 || midiNote > 127) return;
         midiQueue.enqueue ({ midiNote, 0, juce::jlimit (1, 16, channel), false });
+    }
+
+    // Audio-thread twins of noteOn/noteOff, for the local sequencers, which
+    // fire from inside the audio callback. The FIFO above has one producer
+    // (the UI); these land at the start of the next getNextAudioBlock call.
+    void noteOnFromAudioThread (int midiNote, int velocity127)
+    {
+        if (midiNote < 0 || midiNote > 127) return;
+        const int v = juce::jlimit (1, 127, velocity127);
+        lastVelocity.store ((float) v / 127.0f);
+        audioThreadMidi.addEvent (juce::MidiMessage::noteOn (1, midiNote, (juce::uint8) v), 0);
+    }
+
+    void noteOffFromAudioThread (int midiNote)
+    {
+        if (midiNote < 0 || midiNote > 127) return;
+        audioThreadMidi.addEvent (juce::MidiMessage::noteOff (1, midiNote), 0);
     }
 
     void allNotesOff()
@@ -610,6 +633,7 @@ private:
     struct Retired { std::unique_ptr<Wavetable> table; juce::uint32 when; };
 
     LockFreeFifo midiQueue;
+    juce::MidiBuffer audioThreadMidi;
     juce::Synthesiser synth;
     MasterFx fx;
     double currentSampleRate = 44100.0;

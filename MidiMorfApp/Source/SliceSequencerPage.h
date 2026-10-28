@@ -4,7 +4,7 @@
 #include "EventRouter.h"
 #include "MidiMorfColors.h"
 #include "Glassmorphism.h"
-#include "StepSequencerPage.h"   // LaneStrip, StepBox, RollerButton
+#include "StepSequencerPage.h"   // LaneStrip, StepBox, RollerButton, SeqTransportBar
 #include <array>
 
 // Slice Sequencer — Creative Sequencer Pack, page 2 of 3. Monome mlr /
@@ -13,8 +13,10 @@
 // there — the identity diagonal (step N → slice N) is the untouched loop, and
 // remixing means dragging cells off that diagonal.
 //
-// Like the step sequencer this is a remote editor, not an instrument: all
-// timing lives on the server, driven by DAW MIDI clock. No Local mode.
+// In WiFi mode this is a remote editor: timing lives on the server, driven by
+// DAW MIDI clock, and the loop sits in Simpler. In Local mode the same engine
+// runs on the phone's clock and cuts up one of the built-in breaks (or an
+// imported loop) itself — picked from the transport strip along the bottom.
 //
 // Layout follows JB's wireframe (IMG_2223, 2026-08-27):
 //   • top         — two assignable ribbons side by side (ribbon 1 defaults to
@@ -357,11 +359,9 @@ public:
             addAndMakeVisible (box);
         }
 
-        addAndMakeVisible (clockLabel);
-        clockLabel.setJustificationType (juce::Justification::centredRight);
-        clockLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.45f));
-        clockLabel.setFont (juce::Font (juce::FontOptions (12.0f)));
-        clockLabel.setText ("Waiting for DAW clock", juce::dontSendNotification);
+        transport.onLocalPlayhead = [this] (int step) { showPlayhead (step); };
+        transport.onBreakChanged  = [this] { breakChanged(); };
+        addAndMakeVisible (transport);
 
         applyGrid (false);
     }
@@ -374,21 +374,17 @@ public:
         setLookAndFeel (nullptr);
     }
 
-    // Server pushes the playhead as it advances; -1 when stopped.
+    // Server pushes the playhead as it advances; -1 when stopped. In Local
+    // mode the transport bar feeds the local one instead.
     void setPlayhead (int step)
     {
-        if (step == playhead)
-            return;
+        transport.setRemoteRunning (step >= 0);
 
-        playhead = step;
-        lanes.setPlayhead (step);
-
-        for (int i = 0; i < MAX_STEPS; ++i)
-            stepBoxes[i]->setPlaying (i == step);
-
-        clockLabel.setText (step < 0 ? "Waiting for DAW clock" : "Running",
-                            juce::dontSendNotification);
+        if (eventRouter.getMode() == EventRouter::Mode::WiFi)
+            showPlayhead (step);
     }
+
+    SeqTransportBar& getTransport() { return transport; }
 
     // Called when the page becomes visible — the server keeps no per-page
     // memory, so config, pattern, and ribbon routing all go up together.
@@ -434,8 +430,9 @@ public:
         top.removeFromLeft (8);
         ribbons[1]->setBounds (top);
 
-        // Bottom: step boxes, then the clock readout.
-        clockLabel.setBounds (area.removeFromBottom (16));
+        // Bottom: step boxes, then the transport strip.
+        transport.setBounds (area.removeFromBottom (30));
+        area.removeFromBottom (6);
         auto boxRow = area.removeFromBottom (juce::jlimit (30, 46, area.getHeight() / 5));
         area.removeFromBottom (6);
 
@@ -460,6 +457,34 @@ private:
         int  slice = 0;
         bool rest  = false;
     };
+
+    void showPlayhead (int step)
+    {
+        if (step == playhead)
+            return;
+
+        playhead = step;
+        lanes.setPlayhead (step);
+
+        for (int i = 0; i < MAX_STEPS; ++i)
+            stepBoxes[i]->setPlaying (i == step);
+    }
+
+    // A loop of a different length re-grids to match it, so the untouched
+    // pattern plays the whole loop. Same length keeps the current remix —
+    // swapping breaks under a pattern is half the fun.
+    void breakChanged()
+    {
+        if (const auto* b = eventRouter.getSequencers().getBreak())
+        {
+            const int loopBars = juce::jlimit (1, 2, b->bars());
+            if (loopBars != bars)
+            {
+                bars = loopBars;
+                applyGrid (true);
+            }
+        }
+    }
 
     int numSteps() const
     {
@@ -769,7 +794,7 @@ private:
     LooperStrip looper;
     juce::OwnedArray<StepBox> stepBoxes;
     LaneStrip lanes;
-    juce::Label clockLabel;
+    SeqTransportBar transport { eventRouter, LocalSequencers::Slice, true };
 
     std::array<SliceStep, MAX_STEPS> steps;
 
@@ -803,6 +828,7 @@ public:
 
     void setPlayhead (int step) { content.setPlayhead (step); }
     void pushFullState()        { content.pushFullState(); }
+    void setOnStateChanged (std::function<void()> f) { content.getTransport().onStateChanged = std::move (f); }
 
     void resized() override { content.setBounds (getLocalBounds()); }
 

@@ -13,8 +13,8 @@
 // there — the identity diagonal (step N → slice N) is the untouched loop, and
 // remixing means dragging cells off that diagonal.
 //
-// In WiFi mode this is a remote editor: timing lives on the server, driven by
-// DAW MIDI clock, and the loop sits in Simpler. In Local mode the same engine
+// With DAW sync this is a remote editor: timing lives on the server, driven by
+// DAW MIDI clock, and the loop sits in Simpler. With Local sync the same engine
 // runs on the phone's clock and cuts up one of the built-in breaks (or an
 // imported loop) itself — picked from the transport strip along the bottom.
 //
@@ -364,6 +364,7 @@ public:
         addAndMakeVisible (transport);
 
         applyGrid (false);
+        breakChanged();   // the strip may have seen the break before this was wired
     }
 
     ~SliceSequencerContent() override
@@ -374,13 +375,13 @@ public:
         setLookAndFeel (nullptr);
     }
 
-    // Server pushes the playhead as it advances; -1 when stopped. In Local
-    // mode the transport bar feeds the local one instead.
+    // Server pushes the playhead as it advances; -1 when stopped. With Local
+    // sync the transport bar feeds the local one instead.
     void setPlayhead (int step)
     {
         transport.setRemoteRunning (step >= 0);
 
-        if (eventRouter.getMode() == EventRouter::Mode::WiFi)
+        if (! eventRouter.isLocalSync())
             showPlayhead (step);
     }
 

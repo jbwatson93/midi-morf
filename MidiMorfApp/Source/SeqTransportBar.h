@@ -7,13 +7,14 @@
 //==============================================================================
 // The strip along the bottom of both sequencer pages.
 //
-// WiFi mode: the DAW owns the clock, so it is just a status line.
-// Local mode: PLAY and BPM for the phone's own clock, plus (slice page only)
-// the BREAK picker — built-in breaks, a previously imported loop, or
-// "Import .wav...".
+// DAW sync: the DAW owns the clock, so it is just a status line.
+// Local sync: PLAY for this page's sequencer, plus (slice page only) the
+// BREAK picker — built-in breaks, a previously imported loop, or
+// "Import .wav...". Tempo and the sync source live on the Transport page,
+// the global transport; this strip just shows the tempo.
 //
-// Polls at 30 Hz: that covers the mode flipping from the Settings page, the
-// local playhead, and the tempo changing underneath it when a break is picked.
+// Polls at 30 Hz: that covers the sync source flipping on the Transport page,
+// the local playhead, and the tempo changing when a break is picked.
 class SeqTransportBar : public juce::Component, private juce::Timer
 {
 public:
@@ -23,20 +24,6 @@ public:
         playButton.setClickingTogglesState (true);
         playButton.onClick = [this] { seqs.setPlaying (which, playButton.getToggleState()); refreshPlayText(); };
         addAndMakeVisible (playButton);
-
-        for (auto* b : { &slowerButton, &fasterButton })
-        {
-            b->setRepeatSpeed (400, 60);
-            addAndMakeVisible (b);
-        }
-        slowerButton.onClick = [this] { nudgeBpm (-1.0); };
-        fasterButton.onClick = [this] { nudgeBpm (+1.0); };
-
-        bpmLabel.setJustificationType (juce::Justification::centred);
-        bpmLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.9f));
-        bpmLabel.setFont (juce::Font (juce::FontOptions (13.0f, juce::Font::bold)));
-        bpmLabel.addMouseListener (this, false);
-        addAndMakeVisible (bpmLabel);
 
         if (hasBreaks)
         {
@@ -59,10 +46,10 @@ public:
     std::function<void (int)> onLocalPlayhead;
     // A newly picked break — the slice page re-grids if its length differs.
     std::function<void()> onBreakChanged;
-    // BPM or break changed — worth saving.
+    // Break changed — worth saving.
     std::function<void()> onStateChanged;
 
-    // WiFi mode: the server's playhead says whether DAW clock is running.
+    // DAW sync: the server's playhead says whether DAW clock is running.
     void setRemoteRunning (bool isRunning)
     {
         remoteRunning = isRunning;
@@ -73,49 +60,28 @@ public:
     void resized() override
     {
         auto area = getLocalBounds();
-        statusLabel.setBounds (area.removeFromRight (juce::jmin (160, area.getWidth() / 4)));
+        statusLabel.setBounds (area.removeFromRight (juce::jmin (220, area.getWidth() / 3)));
 
         playButton.setBounds (area.removeFromLeft (70));
-        area.removeFromLeft (8);
-
-        slowerButton.setBounds (area.removeFromLeft (34));
-        bpmLabel.setBounds (area.removeFromLeft (76));
-        fasterButton.setBounds (area.removeFromLeft (34));
         area.removeFromLeft (8);
 
         if (hasBreaks)
             breakCombo.setBounds (area.removeFromLeft (juce::jmin (190, area.getWidth())));
     }
 
-    // Drag the BPM readout up or down, one BPM per 4 px.
-    void mouseDown (const juce::MouseEvent& e) override
-    {
-        if (e.eventComponent == &bpmLabel)
-            dragStartBpm = seqs.getBpm();
-    }
-
-    void mouseDrag (const juce::MouseEvent& e) override
-    {
-        if (e.eventComponent == &bpmLabel)
-            setBpm (std::round (dragStartBpm - e.getDistanceFromDragStartY() / 4.0));
-    }
-
 private:
     void timerCallback() override
     {
-        const bool local = router.getMode() == EventRouter::Mode::Local;
+        const bool local = router.isLocalSync();
 
         if (local != isLocal || firstPoll)
         {
             isLocal = local;
-            for (juce::Component* c : { (juce::Component*) &playButton, (juce::Component*) &slowerButton,
-                                        (juce::Component*) &bpmLabel, (juce::Component*) &fasterButton,
-                                        (juce::Component*) &breakCombo })
-                c->setVisible (isLocal && (c != &breakCombo || hasBreaks));
+            playButton.setVisible (isLocal);
+            breakCombo.setVisible (isLocal && hasBreaks);
 
-            if (isLocal)
-                statusLabel.setText ("Local clock", juce::dontSendNotification);
-            else
+            shownBpm = -1.0;   // force the local readout on the next pass
+            if (! isLocal)
                 setRemoteRunning (remoteRunning);
 
             // Hand the playhead back to whichever side now owns it.
@@ -146,33 +112,26 @@ private:
         if (seqs.getBpm() != shownBpm)
         {
             shownBpm = seqs.getBpm();
-            bpmLabel.setText (juce::String (juce::roundToInt (shownBpm)) + " BPM", juce::dontSendNotification);
+            statusLabel.setText ("Local clock  " + juce::String (juce::roundToInt (shownBpm)) + " BPM",
+                                 juce::dontSendNotification);
         }
 
         if (hasBreaks && seqs.getBreak() == nullptr)
             seqs.setBuiltInBreak (0);   // no saved settings to restore from
 
+        // Also catches the break restored at launch, so the slice grid
+        // matches its length without the user having to pick it again.
         if (hasBreaks && seqs.getBreak() != shownBreak)
         {
             shownBreak = seqs.getBreak();
             rebuildBreakCombo();
+            if (onBreakChanged) onBreakChanged();
         }
     }
 
     void refreshPlayText()
     {
         playButton.setButtonText (playButton.getToggleState() ? "STOP" : "PLAY");
-    }
-
-    void nudgeBpm (double delta) { setBpm (std::round (seqs.getBpm()) + delta); }
-
-    void setBpm (double b)
-    {
-        if (b == seqs.getBpm())
-            return;
-        seqs.setBpm (b);
-        if (onStateChanged)
-            onStateChanged();
     }
 
     //==========================================================================
@@ -274,14 +233,14 @@ private:
     const LocalSequencers::Which which;
     const bool hasBreaks;
 
-    juce::TextButton playButton { "PLAY" }, slowerButton { "-" }, fasterButton { "+" };
-    juce::Label bpmLabel, statusLabel;
+    juce::TextButton playButton { "PLAY" };
+    juce::Label statusLabel;
     juce::ComboBox breakCombo;
     std::unique_ptr<juce::FileChooser> chooser;
 
     bool   isLocal = false, firstPoll = true, remoteRunning = false;
     int    lastPlayhead = -2;
-    double shownBpm = -1.0, dragStartBpm = 120.0;
+    double shownBpm = -1.0;
     const Break* shownBreak = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SeqTransportBar)

@@ -22,6 +22,11 @@ class EventRouter
 public:
     enum class Mode { WiFi, Local };
 
+    // Where the sequencers get their clock — independent of Mode, which only
+    // says where controllers send notes. Local: the phone's clock, playing the
+    // built-in synth and breaks. DAW: the server, following DAW MIDI clock.
+    enum class SyncSource { Local, DAW };
+
     EventRouter (NetworkClient& nc, WavetableEngine& synthRef, LocalSequencers& seqs)
         : network (nc),
           sequencers (seqs),
@@ -48,15 +53,22 @@ public:
         morfChord.allNotesOff();
         roseChord.allNotesOff();
 
-        // The local sequencers keep their own clock; it has no business
-        // running once the DAW is meant to be driving.
-        if (m == Mode::WiFi)
-            sequencers.stopAll();
-
         mode.store (m);
     }
 
     Mode getMode() const noexcept { return mode.load(); }
+
+    void setSyncSource (SyncSource s)
+    {
+        // The phone's clock has no business running once the DAW drives.
+        if (s == SyncSource::DAW)
+            sequencers.stopAll();
+
+        syncSource.store (s);
+    }
+
+    SyncSource getSyncSource() const noexcept { return syncSource.load(); }
+    bool isLocalSync() const noexcept         { return syncSource.load() == SyncSource::Local; }
 
     //==========================================================================
     // FX Punch-in / Transport / global — always WiFi.
@@ -69,10 +81,10 @@ public:
     void sendScreenMode (MidiMorf::ControllerMode m) { network.sendScreenMode (m); sequencers.setActivePage (m); }
     void sendTransportButton (uint8_t buttonId)  { network.sendTransportButton (buttonId); }
 
-    // Creative Sequencer Pack. In WiFi mode the server runs the sequencers on
-    // DAW clock; in Local mode LocalSequencers runs the same engines on the
+    // Creative Sequencer Pack. With DAW sync the server runs the sequencers on
+    // DAW clock; with Local sync LocalSequencers runs the same engines on the
     // phone's own clock. Pattern and config edits go to both so either side
-    // is current the moment the mode flips; performance gestures go only to
+    // is current the moment the source flips; performance gestures go only to
     // whichever side is playing.
     void sendSeqStepSet (uint8_t step, uint8_t degree, uint8_t velocity, uint8_t gate, uint8_t mod, bool rest)
     {
@@ -89,13 +101,13 @@ public:
 
     void sendSeqTransport (MidiMorf::SeqCommand c)
     {
-        if (mode.load() == Mode::WiFi) network.sendSeqTransport (c);
+        if (! isLocalSync()) network.sendSeqTransport (c);
         else                           sequencers.transport (c);
     }
 
     void sendSeqRatchet (MidiMorf::SeqRatchetDiv d, bool on)
     {
-        if (mode.load() == Mode::WiFi) network.sendSeqRatchet (d, on);
+        if (! isLocalSync()) network.sendSeqRatchet (d, on);
         else                           sequencers.ratchet ((uint8_t) d, on);
     }
 
@@ -108,13 +120,13 @@ public:
 
     void sendSeqLooper (uint8_t division, bool active, bool randomOn)
     {
-        if (mode.load() == Mode::WiFi) network.sendSeqLooper (division, active, randomOn);
+        if (! isLocalSync()) network.sendSeqLooper (division, active, randomOn);
         else                           sequencers.looper (division, active, randomOn);
     }
 
     void sendSeqRibbon (uint8_t ribbonIndex, int value14bit)
     {
-        if (mode.load() == Mode::WiFi) network.sendSeqRibbon (ribbonIndex, value14bit);
+        if (! isLocalSync()) network.sendSeqRibbon (ribbonIndex, value14bit);
         else                           sequencers.ribbon (ribbonIndex, value14bit);
     }
 
@@ -284,4 +296,5 @@ private:
     RoseChordHandler roseChord;
 
     std::atomic<Mode> mode { Mode::WiFi };
+    std::atomic<SyncSource> syncSource { SyncSource::Local };
 };

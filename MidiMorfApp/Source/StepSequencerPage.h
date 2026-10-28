@@ -416,13 +416,13 @@ public:
         setLookAndFeel (nullptr);
     }
 
-    // Server pushes the playhead as it advances; -1 when stopped. In Local
-    // mode the transport bar feeds the local one instead.
+    // Server pushes the playhead as it advances; -1 when stopped. With Local
+    // sync the transport bar feeds the local one instead.
     void setPlayhead (int step)
     {
         transport.setRemoteRunning (step >= 0);
 
-        if (eventRouter.getMode() == EventRouter::Mode::WiFi)
+        if (! eventRouter.isLocalSync())
             showPlayhead (step);
     }
 

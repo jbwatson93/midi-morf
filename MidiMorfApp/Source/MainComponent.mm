@@ -100,6 +100,7 @@ MainComponent::MainComponent()
     addAndMakeVisible (favoriteButton);
 
     synthPage.onPatchChanged = [this] { saveState(); };
+    transportPage.onStateChanged = [this] { saveState(); };
     stepSequencerPage.setOnStateChanged ([this] { saveState(); });
     sliceSequencerPage.setOnStateChanged ([this] { saveState(); });
 
@@ -352,6 +353,7 @@ void MainComponent::saveState()
         roseChordPage.saveState (*props);
         synthPage.saveState (*props);
         audioEngine.getSequencers().saveState (*props);
+        props->setValue ("seq_sync", eventRouter.isLocalSync() ? 0 : 1);
         props->saveIfNeeded();
     }
 }
@@ -366,6 +368,8 @@ void MainComponent::restoreState()
         roseChordPage.restoreState (*props);
         synthPage.restoreState (*props);
         audioEngine.getSequencers().restoreState (*props);
+        eventRouter.setSyncSource (props->getIntValue ("seq_sync", 0) == 1 ? EventRouter::SyncSource::DAW
+                                                                           : EventRouter::SyncSource::Local);
 
         // First-launch default: Local mode. New users hear the built-in
         // synth immediately when they tap a controller — no server setup

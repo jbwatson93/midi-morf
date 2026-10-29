@@ -1,7 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "WavetableEngine.h"
+#include "TrackRack.h"
 #include "BreakPlayer.h"
 #include "StepSequencerEngine.h"
 #include "SliceSequencerEngine.h"
@@ -10,7 +10,7 @@
 //==============================================================================
 // The sequencers in Local mode: the same engines the server runs, driven by
 // the phone's own clock instead of DAW MIDI clock. The step sequencer plays
-// the built-in synth; the slice sequencer plays the BreakPlayer.
+// track 1 (the synth); the slice sequencer plays track 3 (the break player).
 //
 // This is the AudioSource the device plays. Each block is cut at clock-tick
 // boundaries, so notes land on the right sample rather than on whatever block
@@ -18,19 +18,24 @@
 //
 // Threading: the engines are only ever ticked on the audio thread. Edits from
 // the pages take `lock` briefly; the engines' note output is queued under the
-// same lock and drained on the audio thread, so the synth and break player
-// are only ever touched from there.
+// same lock and drained on the audio thread, so the track sources are only
+// ever played from there.
 class LocalSequencers : public juce::AudioSource
 {
 public:
     enum Which { Step = 0, Slice = 1 };
 
-    explicit LocalSequencers (WavetableEngine& s)
-        : synth (s),
-          synthSink (*this, Target::Synth),
-          breakSink (*this, Target::Breaks),
-          stepSeq (synthSink, 8),
-          sliceSeq (breakSink, 9)
+    // Tracks are 0-based here; the UI calls them T1-T4.
+    static constexpr int StepTrack = 0, SliceTrack = 2;
+
+    LocalSequencers (TrackRack& r, BreakSource& b)
+        : rack (r),
+          breakSource (b),
+          breaks (b.player()),
+          stepSink (*this, StepTrack),
+          sliceSink (*this, SliceTrack),
+          stepSeq (stepSink, 8),
+          sliceSeq (sliceSink, 9)
     {
     }
 
@@ -39,11 +44,10 @@ public:
     void prepareToPlay (int blockSize, double sr) override
     {
         sampleRate = sr;
-        synth.prepareToPlay (blockSize, sr);
-        breaks.prepare (sr);
+        rack.prepare (sr, blockSize);
     }
 
-    void releaseResources() override { synth.releaseResources(); }
+    void releaseResources() override { rack.release(); }
 
     void getNextAudioBlock (const juce::AudioSourceChannelInfo& info) override
     {
@@ -77,11 +81,7 @@ public:
                     breaks.releaseAll();
             }
 
-            synth.getNextAudioBlock (juce::AudioSourceChannelInfo (buf, pos, n));
-
-            float* L = buf->getNumChannels() > 0 ? buf->getWritePointer (0, pos) : nullptr;
-            float* R = buf->getNumChannels() > 1 ? buf->getWritePointer (1, pos) : nullptr;
-            breaks.render (L, R, n);
+            rack.render (*buf, pos, n);
 
             if (clockRunning)
                 samplesToTick -= n;
@@ -116,39 +116,35 @@ public:
 
     //==========================================================================
     // Breaks — message thread.
+    // A new break also sets the tempo to the loop's own.
     void setBuiltInBreak (int index)
     {
-        if (auto b = BreakLibrary::generate (index))
-        {
-            breakIndex = index;
-            importedFile = juce::File();
-            installBreak (std::move (b));
-        }
+        if (auto* b = breakSource.setBuiltInBreak (index))
+            setBpm (b->bpm());
     }
 
     bool importBreak (const juce::File& file, juce::String& error)
     {
-        auto b = BreakLibrary::importFile (file, error);
+        auto* b = breakSource.importBreak (file, error);
         if (b == nullptr)
             return false;
 
-        breakIndex = -1;
-        importedFile = file;
-        installBreak (std::move (b));
+        setBpm (b->bpm());
         return true;
     }
 
-    const Break* getBreak() const        { return breaks.getBreak(); }
-    int  getBuiltInBreakIndex() const    { return breakIndex; }
-    juce::File getImportedBreak() const  { return importedFile; }
+    const Break* getBreak() const        { return breakSource.getBreak(); }
+    int  getBuiltInBreakIndex() const    { return breakSource.getBuiltInBreakIndex(); }
+    juce::File getImportedBreak() const  { return breakSource.getImportedBreak(); }
 
     // Tempo and break survive relaunches; patterns don't yet (the pages
     // don't persist them in WiFi mode either).
     void saveState (juce::PropertySet& p) const
     {
         p.setValue ("seq_bpm", getBpm());
+        const int breakIndex = getBuiltInBreakIndex();
         p.setValue ("seq_break", breakIndex >= 0 ? BreakLibrary::builtInNames()[breakIndex] : juce::String());
-        p.setValue ("seq_breakFile", importedFile.getFullPathName());
+        p.setValue ("seq_breakFile", getImportedBreak().getFullPathName());
     }
 
     void restoreState (juce::PropertySet& p)
@@ -289,29 +285,27 @@ public:
     }
 
 private:
-    enum class Target { Synth, Breaks };
-
-    struct Event { Target target; bool on; int note; int velocity; };
+    struct Event { int track; bool on; int note; int velocity; };
 
     // The engines' output: queued under `lock`, delivered on the audio thread.
     class QueueSink : public SeqSink
     {
     public:
-        QueueSink (LocalSequencers& o, Target t) : owner (o), target (t) {}
+        QueueSink (LocalSequencers& o, int t) : owner (o), track (t) {}
 
-        void sendNoteOn (int, int note, int velocity) override { owner.push ({ target, true, note, velocity }); }
-        void sendNoteOff (int, int note) override             { owner.push ({ target, false, note, 0 }); }
+        void sendNoteOn (int, int note, int velocity) override { owner.push ({ track, true, note, velocity }); }
+        void sendNoteOff (int, int note) override             { owner.push ({ track, false, note, 0 }); }
 
+        // e.g. the step page's MOD lane rides CC1 into the synth's mod wheel.
         void sendCC (int, int cc, int value) override
         {
-            // The step page's MOD lane rides CC1 into the synth's mod wheel.
-            if (target == Target::Synth && cc == 1)
-                owner.synth.setModWheel ((float) juce::jlimit (0, 127, value) / 127.0f);
+            if (auto* s = owner.rack.getSource (track))
+                s->controller (cc, value);
         }
 
     private:
         LocalSequencers& owner;
-        Target target;
+        int track;
     };
 
     static constexpr int NumRibbons = 2;
@@ -326,23 +320,14 @@ private:
     // Audio thread, under lock.
     void drainEvents()
     {
+        if (numEvents > 0)
+            breakSource.setSliceMapping ((int) sliceSeq.getRootNote(), stepBeats());
+
         for (int i = 0; i < numEvents; ++i)
         {
             const auto& e = events[(size_t) i];
-
-            if (e.target == Target::Synth)
-            {
-                if (e.on) synth.noteOnFromAudioThread (e.note, e.velocity);
-                else      synth.noteOffFromAudioThread (e.note);
-            }
-            else
-            {
-                // Slices sit chromatically up from the root, as in Simpler,
-                // and are one-shots there too, so note-offs are ignored.
-                if (e.on)
-                    breaks.trigger (e.note - (int) sliceSeq.getRootNote(), stepBeats(),
-                                    (float) e.velocity / 127.0f);
-            }
+            if (e.on) rack.noteOn (e.track, e.note, e.velocity);
+            else      rack.noteOff (e.track, e.note);
         }
         numEvents = 0;
     }
@@ -414,21 +399,16 @@ private:
         ++globalTick;
     }
 
-    void installBreak (std::unique_ptr<Break> b)
-    {
-        bpm.store (juce::jlimit (40.0, 240.0, b->bpm()));
-        breaks.setBreak (std::move (b));
-    }
-
-    WavetableEngine& synth;
-    BreakPlayer breaks;
+    TrackRack& rack;
+    BreakSource& breakSource;
+    BreakPlayer& breaks;   // the ribbons and STOP play it directly
 
     // Declared before the engines: their destructors still send note-offs.
     juce::SpinLock lock;
     std::array<Event, MaxEvents> events;
     int numEvents = 0;
 
-    QueueSink synthSink, breakSink;
+    QueueSink stepSink, sliceSink;
     StepSequencerEngine stepSeq;
     SliceSequencerEngine sliceSeq;
 
@@ -445,9 +425,6 @@ private:
     int  lastSliceBars = -1, lastSliceDivision = 2;
     MidiMorf::RibbonTarget ribbonTargets[NumRibbons] = { MidiMorf::RibbonTarget::PitchBend,
                                                          MidiMorf::RibbonTarget::StepRepeat };
-
-    int breakIndex = -1;
-    juce::File importedFile;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LocalSequencers)
 };

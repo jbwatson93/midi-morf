@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "BreakLibrary.h"
+#include "TrackRack.h"
 #include <array>
 #include <vector>
 
@@ -225,4 +226,106 @@ private:
     std::vector<float> scratchL, scratchR;
     float ic1[2] {}, ic2[2] {};
     std::atomic<float> pitchSemis { 0.0f }, tone { 1.0f };
+};
+
+//==============================================================================
+// The break player as a track source. Slices sit chromatically up from a
+// root note, as in Simpler; the slice sequencer sets that root and the step
+// length with setSliceMapping() before it fires notes.
+class BreakSource : public SoundSource
+{
+public:
+    BreakPlayer& player() noexcept { return breaks; }
+
+    //==========================================================================
+    // The loop — message thread. Returns the new break, or nullptr.
+    const Break* setBuiltInBreak (int index)
+    {
+        auto b = BreakLibrary::generate (index);
+        if (b == nullptr)
+            return nullptr;
+
+        breakIndex = index;
+        importedFile = juce::File();
+        breaks.setBreak (std::move (b));
+        return breaks.getBreak();
+    }
+
+    const Break* importBreak (const juce::File& file, juce::String& error)
+    {
+        auto b = BreakLibrary::importFile (file, error);
+        if (b == nullptr)
+            return nullptr;
+
+        breakIndex = -1;
+        importedFile = file;
+        breaks.setBreak (std::move (b));
+        return breaks.getBreak();
+    }
+
+    const Break* getBreak() const        { return breaks.getBreak(); }
+    int  getBuiltInBreakIndex() const    { return breakIndex; }
+    juce::File getImportedBreak() const  { return importedFile; }
+
+    // Audio thread.
+    void setSliceMapping (int rootNote, double stepBeats)
+    {
+        sliceRoot = rootNote;
+        sliceStepBeats = stepBeats;
+    }
+
+    //==========================================================================
+    // SoundSource
+    juce::String typeId() const override { return "breaks"; }
+
+    void prepare (double sampleRate, int) override { breaks.prepare (sampleRate); }
+
+    void render (juce::AudioBuffer<float>& buffer, int start, int num) override
+    {
+        float* L = buffer.getNumChannels() > 0 ? buffer.getWritePointer (0, start) : nullptr;
+        float* R = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1, start) : nullptr;
+        if (L != nullptr) juce::FloatVectorOperations::clear (L, num);
+        if (R != nullptr) juce::FloatVectorOperations::clear (R, num);
+        breaks.render (L, R, num);
+    }
+
+    // Slices are one-shots, so note-offs are ignored; STOP and panic cut
+    // them with allNotesOff.
+    void noteOnAudio (int note, int velocity127) override
+    {
+        breaks.trigger (note - sliceRoot, sliceStepBeats, (float) velocity127 / 127.0f);
+    }
+
+    void noteOffAudio (int) override {}
+
+    // Audio thread only, unlike the synth's: the voices aren't atomic.
+    void allNotesOff() override { breaks.releaseAll(); }
+
+    juce::ValueTree getState() const override
+    {
+        juce::ValueTree t (stateType);
+        t.setProperty ("break", breakIndex >= 0 ? BreakLibrary::builtInNames()[breakIndex] : juce::String(), nullptr);
+        t.setProperty ("file", importedFile.getFullPathName(), nullptr);
+        return t;
+    }
+
+    // An imported loop that has gone missing falls back to the first built-in.
+    void setState (const juce::ValueTree& t) override
+    {
+        const juce::String path = t["file"].toString();
+        juce::String error;
+        if (path.isNotEmpty() && juce::File (path).existsAsFile() && importBreak (juce::File (path), error) != nullptr)
+            return;
+
+        setBuiltInBreak (juce::jmax (0, BreakLibrary::indexForName (t["break"].toString())));
+    }
+
+    static inline const juce::Identifier stateType { "Breaks" };
+
+private:
+    BreakPlayer breaks;
+    int breakIndex = -1;
+    juce::File importedFile;
+    int sliceRoot = 36;
+    double sliceStepBeats = 0.25;
 };

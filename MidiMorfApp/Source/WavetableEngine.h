@@ -6,6 +6,7 @@
 #include <vector>
 #include "Wavetable.h"
 #include "MasterFx.h"
+#include "TrackRack.h"
 
 //==============================================================================
 // WavetableVoice: two wavetable oscillators (with stereo unison) + sine sub
@@ -250,7 +251,7 @@ public:
 // Table swaps are lock-free: the audio thread reads a raw pointer per block;
 // the UI thread swaps it atomically and keeps the old table alive for a
 // while before freeing it, so a render in flight never reads freed memory.
-class WavetableEngine : public juce::AudioSource
+class WavetableEngine : public juce::AudioSource, public SoundSource
 {
 public:
     enum ModSource
@@ -380,10 +381,30 @@ public:
         audioThreadMidi.addEvent (juce::MidiMessage::noteOff (1, midiNote), 0);
     }
 
-    void allNotesOff()
+    void allNotesOff() override
     {
         // One flag instead of 2048 queued note-offs — the FIFO is only 1024 deep.
         killAll.store (true);
+    }
+
+    //==========================================================================
+    // SoundSource — the track rack's view of this engine.
+    juce::String typeId() const override                  { return "wavetable"; }
+    void prepare (double sr, int maxBlockSize) override   { prepareToPlay (maxBlockSize, sr); }
+    void release() override                               { releaseResources(); }
+    void noteOnAudio (int note, int velocity127) override { noteOnFromAudioThread (note, velocity127); }
+    void noteOffAudio (int note) override                 { noteOffFromAudioThread (note); }
+
+    void render (juce::AudioBuffer<float>& buffer, int start, int num) override
+    {
+        getNextAudioBlock (juce::AudioSourceChannelInfo (&buffer, start, num));
+    }
+
+    // CC1 is the mod wheel; nothing else is mapped yet.
+    void controller (int cc, int value) override
+    {
+        if (cc == 1)
+            setModWheel ((float) juce::jlimit (0, 127, value) / 127.0f);
     }
 
     void setModWheel (float v) { modWheel.store (juce::jlimit (0.0f, 1.0f, v)); }
@@ -511,7 +532,7 @@ public:
     // prefix, so a patch saved key-by-key converts by just stripping it.
     static inline const juce::Identifier stateType { "Wavetable" };
 
-    juce::ValueTree getState() const
+    juce::ValueTree getState() const override
     {
         juce::ValueTree t (stateType);
         t.setProperty ("version", 1, nullptr);
@@ -570,7 +591,7 @@ public:
     // Anything missing from `t` keeps its current value. Values may arrive as
     // strings (a converted settings file), so everything goes through var's
     // numeric conversions rather than assuming a type.
-    void setState (const juce::ValueTree& t)
+    void setState (const juce::ValueTree& t) override
     {
         auto f = [&t] (const juce::String& id, float cur) { return (float) (double) t.getProperty (id, cur); };
         auto i = [&t] (const juce::String& id, int cur)   { return (int) t.getProperty (id, cur); };

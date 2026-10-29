@@ -5,13 +5,19 @@
 #include "LocalSequencers.h"
 
 //==============================================================================
-// Owns the iOS audio device + the built-in synth. The device plays
-// LocalSequencers, which renders the synth plus the break player and runs the
-// sequencers' Local-mode clock in between. Stereo out, no input.
+// Owns the iOS audio device, the track sources and the track rack. The device
+// plays LocalSequencers, which renders the rack and runs the sequencers'
+// Local-mode clock in between. Stereo out, no input.
+//
+// Tracks for now: T1 the synth, T3 the break player, T2/T4 empty.
 class AudioEngine
 {
 public:
-    AudioEngine() = default;
+    AudioEngine()
+    {
+        rack.setSource (0, &synth);
+        rack.setSource (LocalSequencers::SliceTrack, &breaks);
+    }
 
     ~AudioEngine()
     {
@@ -69,10 +75,13 @@ public:
 
     WavetableEngine& getSynth() noexcept { return synth; }
     LocalSequencers& getSequencers() noexcept { return sequencers; }
+    TrackRack& getRack() noexcept             { return rack; }
 
 private:
     WavetableEngine synth;
-    LocalSequencers sequencers { synth };
+    BreakSource breaks;
+    TrackRack rack;
+    LocalSequencers sequencers { rack, breaks };
     juce::AudioDeviceManager deviceManager;
     juce::AudioSourcePlayer sourcePlayer;
     bool running = false;

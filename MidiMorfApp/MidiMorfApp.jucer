@@ -83,6 +83,7 @@
       <FILE id="brkPly" name="BreakPlayer.h" compile="0" resource="0" file="Source/BreakPlayer.h"/>
       <FILE id="lclSeq" name="LocalSequencers.h" compile="0" resource="0" file="Source/LocalSequencers.h"/>
       <FILE id="sqTrBr" name="SeqTransportBar.h" compile="0" resource="0" file="Source/SeqTransportBar.h"/>
+      <FILE id="trkRck" name="TrackRack.h" compile="0" resource="0" file="Source/TrackRack.h"/>
       <FILE id="slPg01" name="SliceSequencerPage.h" compile="0" resource="0" file="Source/SliceSequencerPage.h"/>
     </GROUP>
   </MAINGROUP>

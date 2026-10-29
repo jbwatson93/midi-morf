@@ -57,7 +57,7 @@ private:
 
     AudioEngine audioEngine;
     NetworkClient networkClient;
-    EventRouter eventRouter { networkClient, audioEngine.getSynth(), audioEngine.getSequencers() };
+    EventRouter eventRouter { networkClient, audioEngine.getRack(), audioEngine.getSequencers() };
     AccelerometerManager accelerometer;
 
 public:

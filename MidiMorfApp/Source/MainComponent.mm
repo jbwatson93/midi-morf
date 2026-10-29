@@ -309,8 +309,7 @@ void MainComponent::tiltUpdated (float tiltX, float tiltY)
 {
     eventRouter.sendTiltUpdate (tiltX, tiltY);
     // Local modulation: accel feeds the routing matrix's AccelX/AccelY sources.
-    audioEngine.getSynth().setAccelX (tiltX);
-    audioEngine.getSynth().setAccelY (tiltY);
+    audioEngine.setTilt (tiltX, tiltY);
 }
 
 // PageContainer::Listener

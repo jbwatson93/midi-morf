@@ -291,12 +291,12 @@ public:
 
     // Slices are one-shots, so note-offs are ignored; STOP and panic cut
     // them with allNotesOff.
-    void noteOnAudio (int note, int velocity127) override
+    void noteOnAudio (int, int note, int velocity127) override
     {
         breaks.trigger (note - sliceRoot, sliceStepBeats, (float) velocity127 / 127.0f);
     }
 
-    void noteOffAudio (int) override {}
+    void noteOffAudio (int, int) override {}
 
     // Audio thread only, unlike the synth's: the voices aren't atomic.
     void allNotesOff() override { breaks.releaseAll(); }

@@ -1,35 +1,42 @@
 #pragma once
 
-#include "WavetableEngine.h"
+#include "TrackRack.h"
+#include <atomic>
 
-// PhoneMidiSink — adapter around the built-in synth that matches the server's
-// VirtualMidiPort API. Per-controller handlers (MorfPadHandler etc.) target
-// this so their internal note-mapping logic stays identical to the server.
-// MIDI channel is recorded but doesn't affect the synth (single global patch).
-// CC messages are ignored locally for v2 (no synth-side CC routing yet).
+// PhoneMidiSink — matches the server's VirtualMidiPort API so the per-
+// controller handlers (MorfPadHandler etc.) keep their note-mapping logic
+// identical to the server's. Each handler gets its own sink, pointed at the
+// track that controller plays; notes go through the rack's message-thread
+// queue. Channels are kept, so two controllers on one track can hold the
+// same note independently.
 class PhoneMidiSink
 {
 public:
-    PhoneMidiSink (WavetableEngine& s) : synth (s) {}
+    PhoneMidiSink (TrackRack& r, int initialTrack) : rack (r), track (initialTrack) {}
+
+    // Callers release held notes first (the handler's allNotesOff) so the
+    // note-offs still reach the old track.
+    void setTrack (int t) { track.store (juce::jlimit (0, TrackRack::NumTracks - 1, t)); }
+    int  getTrack() const { return track.load(); }
 
     void sendNoteOn (int channel, int note, int velocity)
     {
-        synth.noteOn (note, juce::jlimit (0.0f, 1.0f, (float) velocity / 127.0f), channel);
+        rack.postNoteOn (track.load(), channel, note, juce::jlimit (1, 127, velocity));
     }
 
     void sendNoteOff (int channel, int note)
     {
-        synth.noteOff (note, channel);
+        rack.postNoteOff (track.load(), channel, note);
     }
 
+    // e.g. CC1, the mod wheel. controller() is safe off the audio thread.
     void sendCC (int /*channel*/, int cc, int value)
     {
-        // CC1 (mod wheel) drives the synth's modulation routings. Other CCs
-        // currently no-op locally; they only affect WiFi-mode output.
-        if (cc == 1)
-            synth.setModWheel ((float) juce::jlimit (0, 127, value) / 127.0f);
+        if (auto* s = rack.getSource (track.load()))
+            s->controller (cc, value);
     }
 
 private:
-    WavetableEngine& synth;
+    TrackRack& rack;
+    std::atomic<int> track;
 };

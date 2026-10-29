@@ -9,8 +9,9 @@
 
 //==============================================================================
 // The sequencers in Local mode: the same engines the server runs, driven by
-// the phone's own clock instead of DAW MIDI clock. The step sequencer plays
-// track 1 (the synth); the slice sequencer plays track 3 (the break player).
+// the phone's own clock instead of DAW MIDI clock. Each sequencer plays a
+// track: by default the step sequencer plays T2 (a synth), the slice
+// sequencer T3 (the break player).
 //
 // This is the AudioSource the device plays. Each block is cut at clock-tick
 // boundaries, so notes land on the right sample rather than on whatever block
@@ -26,14 +27,14 @@ public:
     enum Which { Step = 0, Slice = 1 };
 
     // Tracks are 0-based here; the UI calls them T1-T4.
-    static constexpr int StepTrack = 0, SliceTrack = 2;
+    static constexpr int DefaultStepTrack = 1, DefaultSliceTrack = 2;
 
     LocalSequencers (TrackRack& r, BreakSource& b)
         : rack (r),
           breakSource (b),
           breaks (b.player()),
-          stepSink (*this, StepTrack),
-          sliceSink (*this, SliceTrack),
+          stepSink (*this, Step),
+          sliceSink (*this, Slice),
           stepSeq (stepSink, 8),
           sliceSeq (sliceSink, 9)
     {
@@ -102,6 +103,29 @@ public:
     {
         wantPlaying[Step].store (false);
         wantPlaying[Slice].store (false);
+    }
+
+    // Message thread. The old track gets the sequencer's note-offs (and, if
+    // it's the break player, a cut — slices ignore note-offs) before the
+    // switch.
+    void setTrack (Which w, int track)
+    {
+        track = juce::jlimit (0, TrackRack::NumTracks - 1, track);
+        const juce::SpinLock::ScopedLockType sl (lock);
+
+        if (tracks[w] == track)
+            return;
+
+        sequencer (w).allNotesOff();
+        if (rack.getSource (tracks[w]) == &breakSource)
+            panicBreaks = true;
+        tracks[w] = track;
+    }
+
+    int getTrack (Which w) const
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        return tracks[w];
     }
 
     void   setBpm (double b) { bpm.store (juce::jlimit (40.0, 240.0, b)); }
@@ -285,27 +309,28 @@ public:
     }
 
 private:
-    struct Event { int track; bool on; int note; int velocity; };
+    struct Event { int track; bool on; int channel, note, velocity; };
 
     // The engines' output: queued under `lock`, delivered on the audio thread.
     class QueueSink : public SeqSink
     {
     public:
-        QueueSink (LocalSequencers& o, int t) : owner (o), track (t) {}
+        // The engines only send from inside `lock`, so reading the track is safe.
+        QueueSink (LocalSequencers& o, Which w) : owner (o), which (w) {}
 
-        void sendNoteOn (int, int note, int velocity) override { owner.push ({ track, true, note, velocity }); }
-        void sendNoteOff (int, int note) override             { owner.push ({ track, false, note, 0 }); }
+        void sendNoteOn (int ch, int note, int velocity) override { owner.push ({ owner.tracks[which], true, ch, note, velocity }); }
+        void sendNoteOff (int ch, int note) override             { owner.push ({ owner.tracks[which], false, ch, note, 0 }); }
 
         // e.g. the step page's MOD lane rides CC1 into the synth's mod wheel.
         void sendCC (int, int cc, int value) override
         {
-            if (auto* s = owner.rack.getSource (track))
+            if (auto* s = owner.rack.getSource (owner.tracks[which]))
                 s->controller (cc, value);
         }
 
     private:
         LocalSequencers& owner;
-        int track;
+        Which which;
     };
 
     static constexpr int NumRibbons = 2;
@@ -326,8 +351,8 @@ private:
         for (int i = 0; i < numEvents; ++i)
         {
             const auto& e = events[(size_t) i];
-            if (e.on) rack.noteOn (e.track, e.note, e.velocity);
-            else      rack.noteOff (e.track, e.note);
+            if (e.on) rack.noteOn (e.track, e.channel, e.note, e.velocity);
+            else      rack.noteOff (e.track, e.channel, e.note);
         }
         numEvents = 0;
     }
@@ -404,7 +429,8 @@ private:
     BreakPlayer& breaks;   // the ribbons and STOP play it directly
 
     // Declared before the engines: their destructors still send note-offs.
-    juce::SpinLock lock;
+    mutable juce::SpinLock lock;
+    int tracks[2] = { DefaultStepTrack, DefaultSliceTrack };   // under lock
     std::array<Event, MaxEvents> events;
     int numEvents = 0;
 

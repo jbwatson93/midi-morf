@@ -297,12 +297,15 @@ public:
     enum LFOWaveform { LFOSine = 0, LFOTri = 1, LFOSaw = 2, LFOSquare = 3, NumLFOWaves = 4 };
 
     static constexpr int NumRoutingSlots = 4;
-    static constexpr int NumVoices = 32;
+    // Each track's synth gets its own voice budget: voices only cost CPU
+    // while sounding, but the cap bounds the worst case when four tracks
+    // all play at once.
+    static constexpr int DefaultVoices = 32;
 
-    WavetableEngine()
+    explicit WavetableEngine (int numVoices = DefaultVoices)
     {
         synth.addSound (new WavetableSound());
-        for (int i = 0; i < NumVoices; ++i)
+        for (int i = 0; i < juce::jmax (1, numVoices); ++i)
             synth.addVoice (new WavetableVoice());
 
         resetToDefaults();
@@ -367,18 +370,18 @@ public:
     // Audio-thread twins of noteOn/noteOff, for the local sequencers, which
     // fire from inside the audio callback. The FIFO above has one producer
     // (the UI); these land at the start of the next getNextAudioBlock call.
-    void noteOnFromAudioThread (int midiNote, int velocity127)
+    void noteOnFromAudioThread (int midiNote, int velocity127, int channel = 1)
     {
         if (midiNote < 0 || midiNote > 127) return;
         const int v = juce::jlimit (1, 127, velocity127);
         lastVelocity.store ((float) v / 127.0f);
-        audioThreadMidi.addEvent (juce::MidiMessage::noteOn (1, midiNote, (juce::uint8) v), 0);
+        audioThreadMidi.addEvent (juce::MidiMessage::noteOn (juce::jlimit (1, 16, channel), midiNote, (juce::uint8) v), 0);
     }
 
-    void noteOffFromAudioThread (int midiNote)
+    void noteOffFromAudioThread (int midiNote, int channel = 1)
     {
         if (midiNote < 0 || midiNote > 127) return;
-        audioThreadMidi.addEvent (juce::MidiMessage::noteOff (1, midiNote), 0);
+        audioThreadMidi.addEvent (juce::MidiMessage::noteOff (juce::jlimit (1, 16, channel), midiNote), 0);
     }
 
     void allNotesOff() override
@@ -392,8 +395,8 @@ public:
     juce::String typeId() const override                  { return "wavetable"; }
     void prepare (double sr, int maxBlockSize) override   { prepareToPlay (maxBlockSize, sr); }
     void release() override                               { releaseResources(); }
-    void noteOnAudio (int note, int velocity127) override { noteOnFromAudioThread (note, velocity127); }
-    void noteOffAudio (int note) override                 { noteOffFromAudioThread (note); }
+    void noteOnAudio (int ch, int note, int velocity127) override { noteOnFromAudioThread (note, velocity127, ch); }
+    void noteOffAudio (int ch, int note) override                 { noteOffFromAudioThread (note, ch); }
 
     void render (juce::AudioBuffer<float>& buffer, int start, int num) override
     {

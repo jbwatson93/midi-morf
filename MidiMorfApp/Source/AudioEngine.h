@@ -9,14 +9,18 @@
 // plays LocalSequencers, which renders the rack and runs the sequencers'
 // Local-mode clock in between. Stereo out, no input.
 //
-// Tracks for now: T1 the synth, T3 the break player, T2/T4 empty.
+// Tracks for now: T1 the main synth (the controllers), T2 a second synth with
+// a bass patch (the step sequencer), T3 the break player (the slice
+// sequencer), T4 empty.
 class AudioEngine
 {
 public:
     AudioEngine()
     {
+        bass.setState (bassPatch());
         rack.setSource (0, &synth);
-        rack.setSource (LocalSequencers::SliceTrack, &breaks);
+        rack.setSource (LocalSequencers::DefaultStepTrack, &bass);
+        rack.setSource (LocalSequencers::DefaultSliceTrack, &breaks);
     }
 
     ~AudioEngine()
@@ -74,11 +78,75 @@ public:
     }
 
     WavetableEngine& getSynth() noexcept { return synth; }
+    WavetableEngine& getBassSynth() noexcept { return bass; }
+
+    // Tilt is a global mod source: every synth hears it.
+    void setTilt (float x, float y)
+    {
+        for (auto* s : { &synth, &bass })
+        {
+            s->setAccelX (x);
+            s->setAccelY (y);
+        }
+    }
+
+    // Any thread. Hard stop on every track — for suspend and panic.
+    void allNotesOff()
+    {
+        rack.postAllNotesOffEverywhere();
+        sequencers.stopAll();
+    }
     LocalSequencers& getSequencers() noexcept { return sequencers; }
     TrackRack& getRack() noexcept             { return rack; }
 
 private:
-    WavetableEngine synth;
+    // A mono-ish acid bass: saw plus a square an octave down, a resonant
+    // ladder snapped shut by a fast filter envelope, velocity on cutoff so
+    // the step page's VEL lane accents. Dry — no delay or reverb muddying the
+    // low end.
+    static juce::ValueTree bassPatch()
+    {
+        juce::ValueTree t (WavetableEngine::stateType);
+        t.setProperty ("osc0_tableName", "Saw", nullptr);
+        t.setProperty ("osc0_level", 1.0f, nullptr);
+        t.setProperty ("osc0_semi", 0, nullptr);
+        t.setProperty ("osc0_fine", 0.0f, nullptr);
+        t.setProperty ("osc1_tableName", "Square", nullptr);
+        t.setProperty ("osc1_level", 0.45f, nullptr);
+        t.setProperty ("osc1_semi", -12, nullptr);
+        t.setProperty ("osc1_fine", 4.0f, nullptr);
+        t.setProperty ("unison", 1, nullptr);
+        t.setProperty ("sub", 0.35f, nullptr);
+        t.setProperty ("drive", 0.35f, nullptr);
+        t.setProperty ("gain", 0.36f, nullptr);
+        t.setProperty ("cutoff", 420.0f, nullptr);
+        t.setProperty ("reso", 2.4f, nullptr);
+        t.setProperty ("filtEnv", 3200.0f, nullptr);
+        t.setProperty ("envPos", 0.0f, nullptr);
+        t.setProperty ("amp",  "0.002,0.3,0.6,0.09", nullptr);
+        t.setProperty ("fenv", "0.001,0.16,0.0,0.1", nullptr);
+        t.setProperty ("lfoDepth", 0.0f, nullptr);
+        t.setProperty ("routeSrc_0", WavetableEngine::ModSrcVelocity, nullptr);
+        t.setProperty ("routeDest_0", WavetableEngine::ModDestCutoff, nullptr);
+        t.setProperty ("routeAmount_0", 0.35f, nullptr);
+        t.setProperty ("routeSrc_1", WavetableEngine::ModSrcModWheel, nullptr);
+        t.setProperty ("routeDest_1", WavetableEngine::ModDestResonance, nullptr);
+        t.setProperty ("routeAmount_1", 0.3f, nullptr);
+        for (int i = 2; i < WavetableEngine::NumRoutingSlots; ++i)
+        {
+            t.setProperty ("routeSrc_" + juce::String (i), WavetableEngine::ModSrcOff, nullptr);
+            t.setProperty ("routeDest_" + juce::String (i), WavetableEngine::ModDestOff, nullptr);
+        }
+        t.setProperty ("distOn", false, nullptr);
+        t.setProperty ("delayOn", false, nullptr);
+        t.setProperty ("revOn", false, nullptr);
+        return t;
+    }
+
+    // Voice budgets: chords and strums with long releases on T1; the step
+    // sequencer plays one note per step on T2.
+    WavetableEngine synth { 24 };
+    WavetableEngine bass { 8 };
     BreakSource breaks;
     TrackRack rack;
     LocalSequencers sequencers { rack, breaks };

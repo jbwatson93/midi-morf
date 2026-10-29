@@ -45,7 +45,7 @@ namespace ProjectInfo
 {
     const char* const  projectName    = "MidiMorfApp";
     const char* const  companyName    = "Retro Relic";
-    const char* const  versionString  = "1.0.3";
-    const int          versionNumber  = 0x10003;
+    const char* const  versionString  = "2.0.1";
+    const int          versionNumber  = 0x20001;
 }
 #endif

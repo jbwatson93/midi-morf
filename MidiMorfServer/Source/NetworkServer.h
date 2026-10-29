@@ -40,9 +40,26 @@ public:
         virtual void morfChordKeySelected (uint8_t /*rootNote*/, uint8_t /*scaleMode*/) {}
 
         // Rose-Chord (Orchid-inspired)
-        virtual void roseChordNoteOn (uint8_t /*rootIdx*/, uint8_t /*typeBits*/, uint8_t /*modBits*/, int8_t /*voicingOffset*/) {}
+        virtual void roseChordNoteOn (uint8_t /*rootIdx*/, uint8_t /*typeBits*/, uint8_t /*modBits*/, int8_t /*voicingOffset*/, int8_t /*octaveOffset*/) {}
         virtual void roseChordNoteOff() {}
-        virtual void roseChordConfig (uint8_t /*typeBits*/, uint8_t /*modBits*/, int8_t /*voicingOffset*/) {}
+        virtual void roseChordConfig (uint8_t /*typeBits*/, uint8_t /*modBits*/, int8_t /*voicingOffset*/, int8_t /*octaveOffset*/) {}
+
+        // Creative Sequencer Pack
+        virtual void packEntitlement (uint8_t /*packId*/, bool /*valid*/) {}
+        virtual void seqStepSet (uint8_t /*step*/, uint8_t /*degree*/, uint8_t /*velocity*/, uint8_t /*gate*/,
+                                 uint8_t /*mod*/, uint8_t /*flags*/) {}
+        virtual void seqConfig (uint8_t /*patternLength*/, uint8_t /*rate*/, uint8_t /*direction*/, uint8_t /*swing*/,
+                                uint8_t /*scaleIndex*/, uint8_t /*rootNote*/, uint8_t /*baseOctave*/,
+                                uint8_t /*octaveRange*/) {}
+        virtual void seqTransport (uint8_t /*command*/) {}
+        virtual void seqRatchet (uint8_t /*division*/, bool /*active*/) {}
+
+        // Slice sequencer
+        virtual void seqSliceConfig (uint8_t /*bars*/, uint8_t /*division*/, uint8_t /*sliceCount*/,
+                                     uint8_t /*rootNote*/, uint8_t /*direction*/, uint8_t /*swing*/) {}
+        virtual void seqLooper (uint8_t /*division*/, bool /*active*/, bool /*randomOn*/) {}
+        virtual void seqRibbon (uint8_t /*ribbonIndex*/, int /*value14bit*/) {}
+        virtual void seqRibbonAssign (uint8_t /*ribbonIndex*/, uint8_t /*target*/, uint8_t /*ccNumber*/) {}
     };
 
     NetworkServer();
@@ -55,6 +72,7 @@ public:
     juce::String getClientAddress() const;
 
     void sendSlotConfig (int slotIndex, const juce::String& name);
+    void sendSeqPlayhead (uint8_t currentStep);
 
     void setListener (Listener* l);
 

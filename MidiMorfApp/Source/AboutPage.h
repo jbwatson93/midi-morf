@@ -3,125 +3,164 @@
 #include <JuceHeader.h>
 #include "MidiMorfColors.h"
 #include "BinaryData.h"
+#include "Glassmorphism.h"
+
+// Deep coffee — harmonises with the wood frame, lets the chrome AppIcon pop.
+static const PagePalette aboutPagePalette {
+    juce::Colour (0xff241712),
+    juce::Colour (0xff0E0805),
+    juce::Colour (0xCC3C2A20),
+    juce::Colour (0xD8241712),
+    juce::Colour (0xCC000000)
+};
 
 class AboutPage : public juce::Component
 {
 public:
     AboutPage()
     {
-        ledTypeface = juce::Typeface::createSystemTypefaceFor (
-            BinaryData::DSEG14ModernMiniRegular_ttf,
-            BinaryData::DSEG14ModernMiniRegular_ttfSize);
+        appIcon = juce::ImageCache::getFromMemory (BinaryData::Icon_png,
+                                                    BinaryData::Icon_pngSize);
     }
 
     void paint (juce::Graphics& g) override
     {
-        auto area = getLocalBounds().toFloat().reduced (16.0f);
+        // Themed glass panel
+        Glassmorphism::paintPanel (g, getLocalBounds().toFloat(), aboutPagePalette);
 
-        // LED screen title
-        auto titleArea = area.removeFromTop (46.0f);
+        auto area = getLocalBounds().toFloat().reduced (28.0f);
+
+        //======================== Left column: hero icon =====================
+        const float iconColW = 260.0f;
+        auto iconCol = area.removeFromLeft (iconColW);
+        area.removeFromLeft (28.0f);
+
+        // Reserved icon area, centred vertically within the column
+        const float iconBoxSize = juce::jmin (200.0f, iconCol.getWidth() - 16.0f);
+        const float iconCornerRadius = iconBoxSize * 0.225f;   // iOS app-icon mask ratio
+        auto iconBox = juce::Rectangle<float> (
+            iconCol.getCentreX() - iconBoxSize * 0.5f,
+            iconCol.getY() + 16.0f,
+            iconBoxSize, iconBoxSize);
+
+        if (! appIcon.isNull())
         {
-            auto ledRect = titleArea;
+            // Soft warm glow halo behind the icon
+            {
+                const float haloPad = 14.0f;
+                auto halo = iconBox.expanded (haloPad);
+                juce::ColourGradient haloGrad (
+                    juce::Colour (0xff8C2A1F).withAlpha (0.55f), halo.getCentreX(), halo.getCentreY(),
+                    juce::Colour (0xff8C2A1F).withAlpha (0.0f),  halo.getRight(),    halo.getCentreY(),
+                    true);
+                g.setGradientFill (haloGrad);
+                g.fillEllipse (halo);
+            }
 
-            // Orange LCD background
-            g.setColour (MidiMorfColors::accent);
-            g.fillRoundedRectangle (ledRect, 6.0f);
+            // Drop shadow
+            {
+                juce::Path shadowPath;
+                shadowPath.addRoundedRectangle (iconBox.translated (0.0f, 8.0f), iconCornerRadius);
+                g.setColour (juce::Colour (0x88000000));
+                g.fillPath (shadowPath);
+            }
 
-            // Black border
-            g.setColour (juce::Colour (0xFF000000));
-            g.drawRoundedRectangle (ledRect.reduced (1.0f), 6.0f, 3.5f);
+            // Icon clipped to iOS-style rounded square
+            {
+                juce::Graphics::ScopedSaveState save (g);
+                juce::Path clip;
+                clip.addRoundedRectangle (iconBox, iconCornerRadius);
+                g.reduceClipRegion (clip);
+                g.drawImage (appIcon, iconBox, juce::RectanglePlacement::centred);
+            }
 
-            // Inner shadow
-            float shadowSize = 8.0f;
-            auto inner = ledRect.reduced (2.0f);
-            g.setGradientFill (juce::ColourGradient (
-                juce::Colour (0xAA000000), inner.getX(), inner.getY(),
-                juce::Colour (0x00000000), inner.getX(), inner.getY() + shadowSize, false));
-            g.fillRect (inner.getX(), inner.getY(), inner.getWidth(), shadowSize);
-            g.setGradientFill (juce::ColourGradient (
-                juce::Colour (0xAA000000), inner.getX(), inner.getBottom(),
-                juce::Colour (0x00000000), inner.getX(), inner.getBottom() - shadowSize, false));
-            g.fillRect (inner.getX(), inner.getBottom() - shadowSize, inner.getWidth(), shadowSize);
-            g.setGradientFill (juce::ColourGradient (
-                juce::Colour (0xAA000000), inner.getX(), inner.getY(),
-                juce::Colour (0x00000000), inner.getX() + shadowSize, inner.getY(), false));
-            g.fillRect (inner.getX(), inner.getY(), shadowSize, inner.getHeight());
-            g.setGradientFill (juce::ColourGradient (
-                juce::Colour (0xAA000000), inner.getRight(), inner.getY(),
-                juce::Colour (0x00000000), inner.getRight() - shadowSize, inner.getY(), false));
-            g.fillRect (inner.getRight() - shadowSize, inner.getY(), shadowSize, inner.getHeight());
-
-            // Dark text on orange
-            g.setColour (juce::Colour (0xFF2A1A00));
-            g.setFont (juce::Font (ledTypeface).withHeight (28.0f));
-            g.drawText ("MIDI-MORF", ledRect, juce::Justification::centred);
+            // Hairline edge stroke
+            g.setColour (juce::Colour (0xff000000).withAlpha (0.6f));
+            g.drawRoundedRectangle (iconBox, iconCornerRadius, 1.5f);
+            g.setColour (juce::Colour (0xffFFFFFF).withAlpha (0.15f));
+            g.drawRoundedRectangle (iconBox.reduced (1.5f), iconCornerRadius - 1.0f, 0.8f);
+        }
+        else
+        {
+            // Fallback: keep the page usable if BinaryData::AppIcon_png isn't generated yet
+            g.setColour (juce::Colour (0xff402015));
+            g.fillRoundedRectangle (iconBox, iconCornerRadius);
+            g.setColour (MidiMorfColors::textLight.withAlpha (0.6f));
+            g.setFont (juce::FontOptions (14.0f, juce::Font::italic));
+            g.drawText ("[icon]", iconBox, juce::Justification::centred);
         }
 
-        area.removeFromTop (10.0f);
+        // Brand wordmark beneath the icon
+        auto brandArea = juce::Rectangle<float> (iconCol.getX(),
+                                                  iconBox.getBottom() + 22.0f,
+                                                  iconCol.getWidth(), 18.0f);
+        g.setColour (MidiMorfColors::accent);
+        g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        g.drawText ("RETRO RELIC", brandArea, juce::Justification::centred);
 
-        // Subtitle
-        g.setFont (juce::FontOptions (13.0f));
-        g.setColour (MidiMorfColors::textDark.withAlpha (0.7f));
-        auto subArea = area.removeFromTop (20.0f);
-        g.drawText ("Expressive MIDI Controllers for iOS", subArea, juce::Justification::centred);
+        // Subtitle below brand
+        auto taglineArea = brandArea.translated (0.0f, 20.0f).withHeight (16.0f);
+        g.setColour (MidiMorfColors::textLight.withAlpha (0.55f));
+        g.setFont (juce::FontOptions (11.0f, juce::Font::italic));
+        g.drawText ("Expressive MIDI Controllers for iOS",
+                    taglineArea, juce::Justification::centred);
 
-        area.removeFromTop (20.0f);
+        //======================== Right column: info sections ================
+        // Vertical divider hairline between columns
+        g.setColour (juce::Colour (0xffFFFFFF).withAlpha (0.08f));
+        g.drawLine (area.getX() - 14.0f, area.getY() + 8.0f,
+                    area.getX() - 14.0f, area.getBottom() - 8.0f, 1.0f);
 
-        // Info sections
-        g.setColour (MidiMorfColors::textDark);
-        float sectionGap = 18.0f;
+        const float sectionGap = 16.0f;
 
-        drawSection (g, area, "Getting Started",
-            "1. Download the MidiMorf Server app on your Mac\n"
-            "2. Open the server app - it creates a virtual MIDI\n"
-            "   port called \"Midi-Morf\"\n"
-            "3. In your DAW, select \"Midi-Morf\" as a MIDI input\n"
-            "4. For Transport controls, set \"Midi-Morf\" as a\n"
-            "   Mackie Control surface in your DAW\n"
-            "5. Make sure your iPhone and Mac are on the\n"
-            "   same WiFi network\n"
-            "6. The app will auto-connect to the server");
-
+        drawSection (g, area, "What's Inside",
+            "7 expressive controllers + a built-in synth.\n"
+            "Play standalone, or send MIDI to a DAW over WiFi.\n"
+            "Tap the menu button to switch modes or jump\n"
+            "between controllers.");
         area.removeFromTop (sectionGap);
 
-        drawSection (g, area, "Server Download",
-            "Get the free MidiMorf Server app at:\n"
-            "www.retro-relic.com/downloads");
-
+        drawSection (g, area, "Local Play (no setup)",
+            "Open Settings, choose Local mode, play any controller.\n"
+            "The built-in synth makes the sound. Tap Synth to\n"
+            "design your own patches.");
         area.removeFromTop (sectionGap);
 
-        drawSection (g, area, "Compatibility",
-            "- iOS 15+ (iPhone)\n"
-            "- macOS 12+ (server)\n"
-            "- Any DAW that accepts MIDI input");
-
+        drawSection (g, area, "DAW Setup (WiFi mode)",
+            "1. Download the MidiMorf Server for Mac\n"
+            "2. Run it - a virtual MIDI port appears system-wide\n"
+            "3. Choose \"Midi-Morf\" as a MIDI input in your DAW\n"
+            "4. For Transport, set it as a Mackie Control surface\n"
+            "5. Same WiFi network - the app auto-connects");
         area.removeFromTop (sectionGap);
 
-        drawSection (g, area, "Troubleshooting",
-            "- Not connecting? Check that both devices are\n"
-            "  on the same WiFi network\n"
-            "- No MIDI in DAW? Select \"Midi-Morf\" as a\n"
-            "  MIDI input on the track\n"
-            "- Server not finding port? Restart the server app");
+        drawSection (g, area, "Server & Support",
+            "retro-relic.com/downloads");
     }
 
     void resized() override {}
 
 private:
-    juce::Typeface::Ptr ledTypeface;
+    juce::Image appIcon;
 
     void drawSection (juce::Graphics& g, juce::Rectangle<float>& area,
                       const juce::String& heading, const juce::String& body)
     {
-        g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+        // Heading — accent colour, small caps feel via uppercase + tracking
+        g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
         g.setColour (MidiMorfColors::accent);
-        auto headingArea = area.removeFromTop (20.0f);
-        g.drawText (heading, headingArea, juce::Justification::centredLeft);
+        auto headingArea = area.removeFromTop (18.0f);
+        g.drawText (heading.toUpperCase(), headingArea, juce::Justification::centredLeft);
 
-        area.removeFromTop (4.0f);
+        // Hairline under heading
+        g.setColour (MidiMorfColors::accent.withAlpha (0.35f));
+        g.drawLine (headingArea.getX(),  headingArea.getBottom() + 1.0f,
+                    headingArea.getX() + 48.0f, headingArea.getBottom() + 1.0f, 1.0f);
+
+        area.removeFromTop (8.0f);
 
         g.setFont (juce::FontOptions (13.0f));
-        g.setColour (MidiMorfColors::textDark);
+        g.setColour (MidiMorfColors::textLight.withAlpha (0.88f));
 
         juce::StringArray lines;
         lines.addTokens (body, "\n", "");

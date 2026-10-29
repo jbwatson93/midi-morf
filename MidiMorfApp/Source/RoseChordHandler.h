@@ -43,12 +43,15 @@ public:
         retriggerIfHeld();
     }
 
-    void setConfig (uint8_t typeBits, uint8_t modBits, int8_t voicing)
+    void setConfig (uint8_t typeBits, uint8_t modBits, int8_t voicing, int8_t octave)
     {
-        bool changed = (typeBits != currentTypes) || (modBits != currentMods) || (voicing != voicingOffset);
-        currentTypes = typeBits;
-        currentMods = modBits;
+        int8_t clampedOctave = (int8_t) juce::jlimit (-2, 2, (int) octave);
+        bool changed = (typeBits != currentTypes) || (modBits != currentMods)
+                    || (voicing != voicingOffset) || (clampedOctave != octaveOffset);
+        currentTypes  = typeBits;
+        currentMods   = modBits;
         voicingOffset = (int8_t) juce::jlimit (-7, 7, (int) voicing);
+        octaveOffset  = clampedOctave;
         if (changed) retriggerIfHeld();
     }
 
@@ -99,7 +102,7 @@ private:
 
     std::vector<int> buildChordNotes() const
     {
-        const int baseNote = 48 + currentRoot;
+        const int baseNote = 48 + currentRoot + (int) octaveOffset * 12;
         std::vector<int> notes;
 
         // Single-note mode: no chord buttons held → just the root.
@@ -169,6 +172,7 @@ private:
     uint8_t currentTypes = 0;  // bitmask of TypeBit
     uint8_t currentMods = 0;   // bitmask of ModBit
     int8_t  voicingOffset = 0;
+    int8_t  octaveOffset = 0;  // -2..+2
 
     bool chordHeld = false;
     std::set<int> activeNotes;

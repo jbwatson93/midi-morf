@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <JUCERPROJECT id="mMsRv1" name="MidiMorfServer" projectType="guiapp" useAppConfig="0"
-              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" version="1.0.0"
+              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" version="2.0.0"
               bundleIdentifier="com.midimorf.server" companyName="Retro Relic">
   <MAINGROUP id="BQ54sE" name="MidiMorfServer">
     <FILE id="iconFile" name="Icon.png" compile="0" resource="1" file="Icon.png"/>
@@ -36,6 +36,11 @@
           file="Source/MorfChordHandler.h"/>
     <FILE id="aRcHdS" name="RoseChordHandler.h" compile="0" resource="0"
           file="Source/RoseChordHandler.h"/>
+    <FILE id="mcRx01" name="MidiClockReceiver.h" compile="0" resource="0" file="Source/MidiClockReceiver.h"/>
+    <FILE id="clkSq1" name="ClockedSequencer.h" compile="0" resource="0" file="Source/ClockedSequencer.h"/>
+    <FILE id="seqPlS" name="SequencerPlatform.h" compile="0" resource="0" file="Source/SequencerPlatform.h"/>
+    <FILE id="sqEn01" name="StepSequencerEngine.h" compile="0" resource="0" file="Source/StepSequencerEngine.h"/>
+    <FILE id="slEn01" name="SliceSequencerEngine.h" compile="0" resource="0" file="Source/SliceSequencerEngine.h"/>
   </MAINGROUP>
   <MODULES>
     <MODULE id="juce_audio_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
@@ -50,7 +55,8 @@
   <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
   <EXPORTFORMATS>
     <XCODE_MAC targetFolder="Builds/MacOSX" customPList="&lt;key&gt;NSLocalNetworkUsageDescription&lt;/key&gt;&#10;&lt;string&gt;Midi-Morf needs local network access to connect to your phone&lt;/string&gt;&#10;&lt;key&gt;NSBonjourServices&lt;/key&gt;&#10;&lt;array&gt;&#10;    &lt;string&gt;_midimorf._tcp&lt;/string&gt;&#10;&lt;/array&gt;"
-               localNetworkPermissionNeeded="1" bigIcon="iconFile" smallIcon="iconFile">
+               localNetworkPermissionNeeded="1" bigIcon="iconFile" smallIcon="iconFile"
+               hardenedRuntime="1">
       <CONFIGURATIONS>
         <CONFIGURATION isDebug="1" name="Debug" targetName="MidiMorfServer"/>
         <CONFIGURATION isDebug="0" name="Release" targetName="MidiMorfServer"/>

@@ -14,6 +14,8 @@ MidiMorfEngine::MidiMorfEngine()
     omnichordHandler = std::make_unique<OmnichordHandler> (virtualMidiPort);
     morfChordHandler   = std::make_unique<MorfChordHandler> (virtualMidiPort);
     roseChordHandler = std::make_unique<RoseChordHandler> (virtualMidiPort, 7);
+    stepSequencer = std::make_unique<StepSequencerEngine> (virtualMidiPort, 8);
+    sliceSequencer = std::make_unique<SliceSequencerEngine> (virtualMidiPort, 9);
 
     networkServer.setListener (this);
     loadState();
@@ -27,6 +29,13 @@ MidiMorfEngine::~MidiMorfEngine()
 void MidiMorfEngine::start()
 {
     virtualMidiPort.open();
+
+    // DAW clock in on a second virtual port, driving the sequencer engines.
+    midiClock.addListener (stepSequencer.get());
+    midiClock.addListener (sliceSequencer.get());
+    midiClock.open();
+    startTimerHz (30);
+
     networkServer.setListener (this);
     networkServer.start();
 
@@ -38,6 +47,14 @@ void MidiMorfEngine::stop()
 {
     saveState();
     networkServer.stop();
+
+    stopTimer();
+    midiClock.close();
+    midiClock.removeListener (stepSequencer.get());
+    midiClock.removeListener (sliceSequencer.get());
+    stepSequencer->allNotesOff();
+    sliceSequencer->allNotesOff();
+
     virtualMidiPort.close();
 }
 
@@ -269,6 +286,15 @@ void MidiMorfEngine::clientConnected (const juce::String&)
 
 void MidiMorfEngine::clientDisconnected()
 {
+    stepSequencer->allNotesOff();
+    sliceSequencer->allNotesOff();
+
+    // Momentary performance state must not survive the phone that was
+    // holding it (a disconnect mid-gesture would otherwise stutter forever).
+    sliceSequencer->setStepRepeat (1);
+    sliceSequencer->setLooper (0, false);
+    stepSequencer->setRatchet (0, false);
+
     int mask = activeSlotMask.exchange (0);
     for (int i = 0; i < MidiMorf::NUM_SLOTS; ++i)
     {
@@ -399,9 +425,9 @@ void MidiMorfEngine::morfChordKeySelected (uint8_t rootNote, uint8_t scaleMode)
     morfChordHandler->setKey (rootNote, scaleMode);
 }
 
-void MidiMorfEngine::roseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint8_t modBits, int8_t voicingOffset)
+void MidiMorfEngine::roseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset)
 {
-    roseChordHandler->setConfig (typeBits, modBits, voicingOffset);
+    roseChordHandler->setConfig (typeBits, modBits, voicingOffset, octaveOffset);
     roseChordHandler->noteOn (rootIdx);
 }
 
@@ -410,9 +436,9 @@ void MidiMorfEngine::roseChordNoteOff()
     roseChordHandler->noteOff();
 }
 
-void MidiMorfEngine::roseChordConfig (uint8_t typeBits, uint8_t modBits, int8_t voicingOffset)
+void MidiMorfEngine::roseChordConfig (uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset)
 {
-    roseChordHandler->setConfig (typeBits, modBits, voicingOffset);
+    roseChordHandler->setConfig (typeBits, modBits, voicingOffset, octaveOffset);
 }
 
 // Local UI interaction
@@ -497,4 +523,157 @@ void MidiMorfEngine::sendTiltAssignBurst (bool isXAxis)
     sendCC (ch, cc, 0);
     sendCC (ch, cc, 127);
     sendCC (ch, cc, 0);
+}
+
+
+// ── Creative Sequencer Pack ──────────────────────────────────────────────────
+
+// SeqStepSet / SeqTransport / SeqRatchet are shared between the two sequencer
+// pages, so they land on whichever engine the phone is looking at. The phone
+// sends ScreenMode before pushing state, and both travel the same TCP stream,
+// so the mode is always current by the time the shared messages arrive.
+ClockedSequencer& MidiMorfEngine::activeSequencer()
+{
+    if (currentMode.load() == static_cast<int> (MidiMorf::ControllerMode::SliceSequencer))
+        return *sliceSequencer;
+
+    return *stepSequencer;
+}
+
+void MidiMorfEngine::timerCallback()
+{
+    auto& seq = activeSequencer();
+    const int step = seq.isEnabled() ? seq.getCurrentStep() : -1;
+
+    if (step == lastSentPlayhead)
+        return;
+
+    lastSentPlayhead = step;
+    networkServer.sendSeqPlayhead (step < 0 ? MidiMorf::SEQ_STEP_NONE
+                                            : static_cast<uint8_t> (step));
+}
+
+void MidiMorfEngine::packEntitlement (uint8_t packId, bool valid)
+{
+    if (static_cast<MidiMorf::PackId> (packId) != MidiMorf::PackId::CreativeSequencer)
+        return;
+
+    // Authoritative: the phone holds the entitlement, the server just obeys it.
+    // NOTE: the engines still default to enabled so the demo patterns play
+    // with no phone attached. Flip that default when the IAP ships (WS-3).
+    stepSequencer->setEnabled (valid);
+    sliceSequencer->setEnabled (valid);
+    DBG ("MidiMorfEngine: Creative Sequencer Pack " << (valid ? "unlocked" : "locked"));
+}
+
+void MidiMorfEngine::seqStepSet (uint8_t step, uint8_t degree, uint8_t velocity, uint8_t gate, uint8_t mod, uint8_t flags)
+{
+    ClockedSequencer::Step s;
+    s.index    = degree;
+    s.velocity = velocity;
+    s.gate     = gate;
+    s.mod      = mod;
+    s.rest     = (flags & MidiMorf::SEQ_FLAG_REST) != 0;
+
+    activeSequencer().setStep (step, s);
+}
+
+void MidiMorfEngine::seqConfig (uint8_t patternLength, uint8_t rate, uint8_t direction, uint8_t swing,
+                                uint8_t scaleIndex, uint8_t rootNote, uint8_t baseOctave, uint8_t octaveRange)
+{
+    stepSequencer->setPatternLength (patternLength);
+    stepSequencer->setRate (static_cast<StepSequencerEngine::Rate> (
+        juce::jlimit (0, 5, (int) rate)));
+    stepSequencer->setDirection (static_cast<StepSequencerEngine::Direction> (
+        juce::jlimit (0, 3, (int) direction)));
+    stepSequencer->setSwing ((float) juce::jlimit (0, 100, (int) swing) / 100.0f);
+    stepSequencer->setScale (scaleIndex, rootNote, baseOctave, octaveRange);
+}
+
+void MidiMorfEngine::seqTransport (uint8_t command)
+{
+    switch (static_cast<MidiMorf::SeqCommand> (command))
+    {
+        case MidiMorf::SeqCommand::Panic:
+            activeSequencer().allNotesOff();
+            break;
+
+        case MidiMorf::SeqCommand::Run:
+            // Transport is the DAW's to own — the sequencer follows MIDI clock.
+            // Nothing to do here; kept so the phone can express intent.
+            break;
+
+        case MidiMorf::SeqCommand::Reset:
+            activeSequencer().clockStart();
+            break;
+    }
+}
+
+void MidiMorfEngine::seqRatchet (uint8_t division, bool active)
+{
+    activeSequencer().setRatchet (division, active);
+}
+
+void MidiMorfEngine::seqSliceConfig (uint8_t bars, uint8_t division, uint8_t sliceCount,
+                                     uint8_t rootNote, uint8_t direction, uint8_t swing)
+{
+    // setGrid() rebuilds the identity pattern, wiping any edits — the phone
+    // re-pushes all steps after every config change, but only re-slice when
+    // the grid actually changed so an unrelated tweak (swing, direction)
+    // can't blank the pattern between those two messages.
+    if ((int) bars != lastSliceBars || (int) division != lastSliceDivision)
+    {
+        sliceSequencer->setGrid (bars, division);
+        lastSliceBars     = bars;
+        lastSliceDivision = division;
+    }
+
+    sliceSequencer->setSlices (sliceCount, rootNote);
+    sliceSequencer->setDirection (static_cast<ClockedSequencer::Direction> (
+        juce::jlimit (0, 3, (int) direction)));
+    sliceSequencer->setSwing ((float) juce::jlimit (0, 100, (int) swing) / 100.0f);
+}
+
+void MidiMorfEngine::seqLooper (uint8_t division, bool active, bool randomOn)
+{
+    sliceSequencer->setLooperRandom (randomOn);
+    sliceSequencer->setLooper (division, active);
+}
+
+void MidiMorfEngine::seqRibbon (uint8_t ribbonIndex, int value14bit)
+{
+    if (ribbonIndex >= NUM_RIBBONS)
+        return;
+
+    const int channel = sliceSequencer->getChannel();
+
+    switch (static_cast<MidiMorf::RibbonTarget> (ribbonTargets[ribbonIndex]))
+    {
+        case MidiMorf::RibbonTarget::PitchBend:
+            virtualMidiPort.sendPitchBend (channel, value14bit);
+            break;
+
+        case MidiMorf::RibbonTarget::CC:
+            virtualMidiPort.sendCC (channel, ribbonCCs[ribbonIndex], value14bit >> 7);
+            break;
+
+        case MidiMorf::RibbonTarget::StepRepeat:
+            // Value is the repeat count itself, not a 14-bit position.
+            sliceSequencer->setStepRepeat (value14bit);
+            break;
+    }
+}
+
+void MidiMorfEngine::seqRibbonAssign (uint8_t ribbonIndex, uint8_t target, uint8_t ccNumber)
+{
+    if (ribbonIndex >= NUM_RIBBONS)
+        return;
+
+    // Reassigning away from the repeater must not leave a stutter running.
+    if (static_cast<MidiMorf::RibbonTarget> (ribbonTargets[ribbonIndex]) == MidiMorf::RibbonTarget::StepRepeat
+        && static_cast<MidiMorf::RibbonTarget> (target) != MidiMorf::RibbonTarget::StepRepeat)
+        sliceSequencer->setStepRepeat (1);
+
+    ribbonTargets[ribbonIndex] = target;
+    ribbonCCs[ribbonIndex]     = (uint8_t) juce::jlimit (0, 127, (int) ccNumber);
 }

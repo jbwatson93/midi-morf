@@ -12,6 +12,10 @@ public:
         virtual void connectedToPlugin (const juce::String& hostName) = 0;
         virtual void disconnectedFromPlugin() = 0;
         virtual void slotConfigReceived (int slotIndex, const juce::String& name) = 0;
+
+        // Creative Sequencer Pack — server pushes the playhead as it advances.
+        // step is -1 when the sequencer is not running.
+        virtual void seqPlayheadChanged (int /*step*/) {}
     };
 
     NetworkClient();
@@ -53,9 +57,25 @@ public:
     void sendMorfChordKeySelect (uint8_t rootNote, uint8_t scaleMode);
 
     // Rose-Chord (Orchid-inspired)
-    void sendRoseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint8_t modBits, int8_t voicingOffset);
+    void sendRoseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset);
     void sendRoseChordNoteOff();
-    void sendRoseChordConfig (uint8_t typeBits, uint8_t modBits, int8_t voicingOffset);
+    void sendRoseChordConfig (uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset);
+
+    // Creative Sequencer Pack. Timing lives on the server (driven by DAW MIDI
+    // clock) — these send editor state, not note events.
+    void sendPackEntitlement (uint8_t packId, bool valid);
+    void sendSeqStepSet (uint8_t step, uint8_t degree, uint8_t velocity, uint8_t gate, uint8_t mod, bool rest);
+    void sendSeqConfig (uint8_t patternLength, uint8_t rate, uint8_t direction, uint8_t swing,
+                        uint8_t scaleIndex, uint8_t rootNote, uint8_t baseOctave, uint8_t octaveRange);
+    void sendSeqTransport (MidiMorf::SeqCommand command);
+    void sendSeqRatchet (MidiMorf::SeqRatchetDiv division, bool active);
+
+    // Slice sequencer (steps go via sendSeqStepSet, degree = slice number)
+    void sendSeqSliceConfig (uint8_t bars, uint8_t division, uint8_t sliceCount,
+                             uint8_t rootNote, uint8_t direction, uint8_t swing);
+    void sendSeqLooper (uint8_t division, bool active, bool randomOn);
+    void sendSeqRibbon (uint8_t ribbonIndex, int value14bit);
+    void sendSeqRibbonAssign (uint8_t ribbonIndex, MidiMorf::RibbonTarget target, uint8_t ccNumber);
 
     void setListener (Listener* l) { listener = l; }
 
@@ -81,3 +101,4 @@ private:
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NetworkClient)
 };
+

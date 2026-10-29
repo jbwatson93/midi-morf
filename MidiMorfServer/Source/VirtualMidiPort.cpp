@@ -59,3 +59,10 @@ void VirtualMidiPort::sendNoteOff (int channel, int note)
     if (midiOutput != nullptr)
         midiOutput->sendMessageNow (juce::MidiMessage::noteOff (channel, note));
 }
+
+void VirtualMidiPort::sendPitchBend (int channel, int value)
+{
+    if (midiOutput != nullptr)
+        midiOutput->sendMessageNow (
+            juce::MidiMessage::pitchWheel (channel, juce::jlimit (0, 16383, value)));
+}

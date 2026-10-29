@@ -50,6 +50,25 @@ public:
         // the other instance's command-line arguments were.
     }
 
+    // iOS lifecycle: release the audio session when backgrounded so the device
+    // doesn't stay claimed (which causes stuck-note / feedback bleed even after
+    // the user dismisses the app). Reacquire when foregrounded.
+    void suspended() override
+    {
+        if (auto* main = getMainComponent())
+        {
+            main->getAudioEngine().getSequencers().stopAll();
+            main->getAudioEngine().getSynth().allNotesOff();
+            main->getAudioEngine().stop();
+        }
+    }
+
+    void resumed() override
+    {
+        if (auto* main = getMainComponent())
+            main->getAudioEngine().start();
+    }
+
     //==============================================================================
     /*
         This class implements the desktop window that contains an instance of
@@ -97,6 +116,12 @@ public:
     };
 
 private:
+    MainComponent* getMainComponent() noexcept
+    {
+        if (mainWindow == nullptr) return nullptr;
+        return dynamic_cast<MainComponent*> (mainWindow->getContentComponent());
+    }
+
     std::unique_ptr<MainWindow> mainWindow;
 };
 

@@ -1,11 +1,13 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "SynthEngine.h"
+#include "WavetableEngine.h"
+#include "LocalSequencers.h"
 
 //==============================================================================
-// Owns the iOS audio device + a SynthEngine. Wires synth output through an
-// AudioSourcePlayer into the system AudioDeviceManager. Stereo out, no input.
+// Owns the iOS audio device + the built-in synth. The device plays
+// LocalSequencers, which renders the synth plus the break player and runs the
+// sequencers' Local-mode clock in between. Stereo out, no input.
 class AudioEngine
 {
 public:
@@ -13,30 +15,37 @@ public:
 
     ~AudioEngine()
     {
-        stop();
+        shutdown();
     }
 
-    // Initialises the audio device and starts the audio thread. Safe to call
-    // multiple times.
+    // First call: initialise the audio device (iOS session creation happens
+    // here under the hood). Subsequent calls just re-attach the callback so
+    // foreground/background cycles don't keep tearing down the audio session
+    // (which on iOS sometimes returns paramErr -50 if the session is in flux).
     void start()
     {
         if (running)
             return;
 
-        // Stereo out, no input. JUCE configures the iOS audio session under the
-        // hood when initialising for output.
-        auto error = deviceManager.initialiseWithDefaultDevices (0, 2);
-        if (error.isNotEmpty())
+        if (! deviceInitialised)
         {
-            DBG ("AudioEngine: device init failed: " << error);
-            return;
+            auto error = deviceManager.initialiseWithDefaultDevices (0, 2);
+            if (error.isNotEmpty())
+            {
+                DBG ("AudioEngine: device init failed: " << error);
+                return;
+            }
+            deviceInitialised = true;
         }
 
-        sourcePlayer.setSource (&synth);
+        sourcePlayer.setSource (&sequencers);
         deviceManager.addAudioCallback (&sourcePlayer);
         running = true;
     }
 
+    // Detach the audio callback but keep the iOS audio session alive. Avoids
+    // the closeAudioDevice → reopen churn that was causing AudioQueueNew -50
+    // on resume.
     void stop()
     {
         if (! running)
@@ -44,15 +53,28 @@ public:
 
         deviceManager.removeAudioCallback (&sourcePlayer);
         sourcePlayer.setSource (nullptr);
-        deviceManager.closeAudioDevice();
         running = false;
     }
 
-    SynthEngine& getSynth() noexcept { return synth; }
+    // Full teardown — only called from MainComponent destructor / app shutdown.
+    void shutdown()
+    {
+        stop();
+        if (deviceInitialised)
+        {
+            deviceManager.closeAudioDevice();
+            deviceInitialised = false;
+        }
+    }
+
+    WavetableEngine& getSynth() noexcept { return synth; }
+    LocalSequencers& getSequencers() noexcept { return sequencers; }
 
 private:
-    SynthEngine synth;
+    WavetableEngine synth;
+    LocalSequencers sequencers { synth };
     juce::AudioDeviceManager deviceManager;
     juce::AudioSourcePlayer sourcePlayer;
     bool running = false;
+    bool deviceInitialised = false;
 };

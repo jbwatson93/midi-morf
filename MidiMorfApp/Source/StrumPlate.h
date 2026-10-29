@@ -19,28 +19,58 @@ public:
     void paint (juce::Graphics& g) override
     {
         auto bounds = getLocalBounds().toFloat();
+        const float radius = 8.0f;
 
-        g.setColour (MidiMorfColors::padBackground);
-        g.fillRoundedRectangle (bounds, 8.0f);
+        // 3D glass chamber — substrate / sheen / shadow / edge so the plate
+        // reads as a recessed strumming surface rather than a flat dark rect.
+        {
+            juce::Graphics::ScopedSaveState save (g);
+            juce::Path clip;
+            clip.addRoundedRectangle (bounds, radius);
+            g.reduceClipRegion (clip);
 
-        g.setColour (MidiMorfColors::padBorder);
-        g.drawRoundedRectangle (bounds.reduced (1.0f), 8.0f, 1.5f);
+            // Substrate — very dark with a slight indigo undertone so it
+            // harmonises with the page background.
+            g.setGradientFill (juce::ColourGradient (
+                juce::Colour (0xff0A0C18), bounds.getX(), bounds.getY(),
+                juce::Colour (0xff020208), bounds.getX(), bounds.getBottom(), false));
+            g.fillAll();
 
-        // Draw vertical string lines
+            // Top sheen — light catching the top of a slightly curved surface
+            auto sheen = bounds.withHeight (bounds.getHeight() * 0.35f);
+            g.setGradientFill (juce::ColourGradient (
+                juce::Colour (0x44FFFFFF), sheen.getX(), sheen.getY(),
+                juce::Colour (0x00FFFFFF), sheen.getX(), sheen.getBottom(), false));
+            g.fillRect (sheen);
+
+            // Bottom shadow — gives the chamber depth
+            auto shadow = bounds.withTrimmedTop (bounds.getHeight() * 0.6f);
+            g.setGradientFill (juce::ColourGradient (
+                juce::Colour (0x00000000), shadow.getX(), shadow.getY(),
+                juce::Colour (0x66000000), shadow.getX(), shadow.getBottom(), false));
+            g.fillRect (shadow);
+        }
+
+        // Edge stroke — matching the page's translucent black trim
+        g.setColour (juce::Colour (0xAA000000));
+        g.drawRoundedRectangle (bounds.reduced (1.0f), radius, 1.5f);
+
+        // String lines — slightly brighter so they read against the new
+        // darker substrate
         int numLines = 24;
         float lineSpacing = bounds.getWidth() / (numLines + 1);
-        g.setColour (MidiMorfColors::crosshair.withAlpha (0.3f));
+        g.setColour (juce::Colour (0x44FFFFFF));
         for (int i = 1; i <= numLines; ++i)
         {
             float x = bounds.getX() + i * lineSpacing;
             g.drawVerticalLine ((int) x, bounds.getY() + 6.0f, bounds.getBottom() - 6.0f);
         }
 
-        // Draw touch indicator
+        // Touch indicator
         if (touching)
         {
             float px = bounds.getX() + lastPosition * bounds.getWidth();
-            g.setColour (MidiMorfColors::accent.withAlpha (0.6f));
+            g.setColour (MidiMorfColors::accent.withAlpha (0.7f));
             g.fillRect (px - 2.0f, bounds.getY(), 4.0f, bounds.getHeight());
         }
 

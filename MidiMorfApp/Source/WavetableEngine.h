@@ -505,6 +505,138 @@ public:
         routings[1] = { ModSrcModWheel, ModDestCutoff, 0.5f };
     }
 
+    //==========================================================================
+    // The whole patch as one ValueTree — what presets, projects and autosave
+    // all store. Property names are the old "wt_*" settings keys without the
+    // prefix, so a patch saved key-by-key converts by just stripping it.
+    static inline const juce::Identifier stateType { "Wavetable" };
+
+    juce::ValueTree getState() const
+    {
+        juce::ValueTree t (stateType);
+        t.setProperty ("version", 1, nullptr);
+
+        for (int o = 0; o < 2; ++o)
+        {
+            const juce::String p = "osc" + juce::String (o) + "_";
+            const int builtIn = getBuiltInIndex (o);
+            t.setProperty (p + "tableName", builtIn >= 0 ? WavetableLibrary::builtInNames()[builtIn] : juce::String(), nullptr);
+            t.setProperty (p + "file",  getImportedFile (o).getFullPathName(), nullptr);
+            t.setProperty (p + "level", getOscLevel (o), nullptr);
+            t.setProperty (p + "pos",   getOscPosition (o), nullptr);
+            t.setProperty (p + "semi",  getOscSemitones (o), nullptr);
+            t.setProperty (p + "fine",  getOscFineCents (o), nullptr);
+        }
+        t.setProperty ("unison",  unison, nullptr);
+        t.setProperty ("detune",  unisonDetune, nullptr);
+        t.setProperty ("sub",     subLevel, nullptr);
+        t.setProperty ("drive",   drive, nullptr);
+        t.setProperty ("gain",    gain, nullptr);
+        t.setProperty ("cutoff",  filterCutoff, nullptr);
+        t.setProperty ("reso",    filterReso, nullptr);
+        t.setProperty ("filtEnv", filterEnvAmount, nullptr);
+        t.setProperty ("envPos",  envToPos, nullptr);
+
+        auto adsr = [] (float a, float d, float s, float r)
+        {
+            return juce::String (a) + "," + juce::String (d) + "," + juce::String (s) + "," + juce::String (r);
+        };
+        t.setProperty ("amp",  adsr (ampA, ampD, ampS, ampR), nullptr);
+        t.setProperty ("fenv", adsr (filA, filD, filS, filR), nullptr);
+
+        t.setProperty ("lfoRate",  lfoRate, nullptr);
+        t.setProperty ("lfoDepth", lfoDepth, nullptr);
+        t.setProperty ("lfoWave",  lfoWaveform, nullptr);
+        for (int i = 0; i < NumRoutingSlots; ++i)
+        {
+            const juce::String n (i);
+            t.setProperty ("routeSrc_" + n,    routings[i].source, nullptr);
+            t.setProperty ("routeDest_" + n,   routings[i].dest, nullptr);
+            t.setProperty ("routeAmount_" + n, routings[i].amount, nullptr);
+        }
+
+        t.setProperty ("distDrive", fx.distDrive, nullptr);
+        t.setProperty ("distOn",    fx.distEnabled, nullptr);
+        t.setProperty ("delayTime", fx.delayTimeMs, nullptr);
+        t.setProperty ("delayFb",   fx.delayFeedback, nullptr);
+        t.setProperty ("delayMix",  fx.delayMix, nullptr);
+        t.setProperty ("delayOn",   fx.delayEnabled, nullptr);
+        t.setProperty ("revMix",    fx.reverbWet, nullptr);
+        t.setProperty ("revSize",   fx.reverbSize, nullptr);
+        t.setProperty ("revOn",     fx.reverbEnabled, nullptr);
+        return t;
+    }
+
+    // Anything missing from `t` keeps its current value. Values may arrive as
+    // strings (a converted settings file), so everything goes through var's
+    // numeric conversions rather than assuming a type.
+    void setState (const juce::ValueTree& t)
+    {
+        auto f = [&t] (const juce::String& id, float cur) { return (float) (double) t.getProperty (id, cur); };
+        auto i = [&t] (const juce::String& id, int cur)   { return (int) t.getProperty (id, cur); };
+        auto b = [&t] (const juce::String& id, bool cur)  { return (bool) t.getProperty (id, cur); };
+
+        for (int o = 0; o < 2; ++o)
+        {
+            const juce::String p = "osc" + juce::String (o) + "_";
+            if (t.hasProperty (p + "tableName") || t.hasProperty (p + "file"))
+            {
+                const int table = WavetableLibrary::indexForName (t[p + "tableName"].toString());
+                const juce::File file (t[p + "file"].toString());
+                juce::String error;
+                if (table >= 0)
+                    setBuiltInTable (o, table);
+                else if (! file.existsAsFile() || ! importTable (o, file, error))
+                    setBuiltInTable (o, WavetableLibrary::indexForName ("Morph")); // imported file has gone
+            }
+            setOscLevel (o,     f (p + "level", getOscLevel (o)));
+            setOscPosition (o,  f (p + "pos",   getOscPosition (o)));
+            setOscSemitones (o, i (p + "semi",  getOscSemitones (o)));
+            setOscFineCents (o, f (p + "fine",  getOscFineCents (o)));
+        }
+        setUnison          (i ("unison",  unison));
+        setUnisonDetune    (f ("detune",  unisonDetune));
+        setSubLevel        (f ("sub",     subLevel));
+        setDrive           (f ("drive",   drive));
+        setGain            (f ("gain",    gain));
+        setFilterCutoff    (f ("cutoff",  filterCutoff));
+        setFilterResonance (f ("reso",    filterReso));
+        setFilterEnvAmount (f ("filtEnv", filterEnvAmount));
+        setEnvToPosition   (f ("envPos",  envToPos));
+
+        auto adsr = [&t] (const char* id, float* out)
+        {
+            auto parts = juce::StringArray::fromTokens (t[id].toString(), ",", "");
+            if (parts.size() != 4) return false;
+            for (int k = 0; k < 4; ++k) out[k] = parts[k].getFloatValue();
+            return true;
+        };
+        float v[4];
+        if (adsr ("amp", v))  setAmpADSR (v[0], v[1], v[2], v[3]);
+        if (adsr ("fenv", v)) setFilterADSR (v[0], v[1], v[2], v[3]);
+
+        setLFORate     (f ("lfoRate",  lfoRate));
+        setLFODepth    (f ("lfoDepth", lfoDepth));
+        setLFOWaveform (i ("lfoWave",  lfoWaveform));
+        for (int s = 0; s < NumRoutingSlots; ++s)
+        {
+            const juce::String n (s);
+            setRoutingSource (s, i ("routeSrc_" + n,    routings[s].source));
+            setRoutingDest   (s, i ("routeDest_" + n,   routings[s].dest));
+            setRoutingAmount (s, f ("routeAmount_" + n, routings[s].amount));
+        }
+
+        fx.distDrive     = f ("distDrive", fx.distDrive);
+        fx.distEnabled   = b ("distOn",    fx.distEnabled);
+        fx.delayTimeMs   = f ("delayTime", fx.delayTimeMs);
+        fx.delayFeedback = f ("delayFb",   fx.delayFeedback);
+        fx.delayMix      = f ("delayMix",  fx.delayMix);
+        fx.delayEnabled  = b ("delayOn",   fx.delayEnabled);
+        fx.reverbWet     = f ("revMix",    fx.reverbWet);
+        fx.reverbSize    = f ("revSize",   fx.reverbSize);
+        fx.reverbEnabled = b ("revOn",     fx.reverbEnabled);
+    }
+
 private:
     struct OscState
     {

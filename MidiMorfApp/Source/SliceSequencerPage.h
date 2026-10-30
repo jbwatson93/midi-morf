@@ -310,7 +310,7 @@ public:
         for (int i = 0; i < 2; ++i)
         {
             auto* r = ribbons.add (new RibbonStrip());
-            r->onValue14        = [this, i] (int v) { eventRouter.sendSeqRibbon ((uint8_t) i, v); };
+            r->onValue14        = [this, i] (int v) { ++ribbonMoves[i]; eventRouter.sendSeqRibbon ((uint8_t) i, v); };
             r->onAssignRequested = [this, i] { showRibbonAssignMenu (i); };
             addAndMakeVisible (r);
         }
@@ -339,6 +339,7 @@ public:
         {
             looperDiv  = div;
             looperHeld = active;
+            if (active) ++looperHolds;
             sendLooperState();
         };
         addAndMakeVisible (looper);
@@ -386,6 +387,14 @@ public:
     }
 
     SeqTransportBar& getTransport() { return transport; }
+
+    // For the walkthrough: what's been played with, and where things are.
+    int ribbonMoves[2] { 0, 0 };
+    int looperHolds = 0;
+    juce::Rectangle<int> ribbonBounds (int i) const { return ribbons[juce::jlimit (0, 1, i)]->getBounds(); }
+    juce::Rectangle<int> gridBounds() const         { return lanes.getBounds(); }
+    juce::Rectangle<int> looperBounds() const       { return looper.getBounds().getUnion (randomButton.getBounds()); }
+    int numStepsShown() const                       { return numSteps(); }
 
     //==========================================================================
     // Session clips: the slices and rests as a pattern. The grid (bars,
@@ -859,6 +868,7 @@ public:
     void setPlayhead (int step) { content.setPlayhead (step); }
     void pushFullState()        { content.pushFullState(); }
     SeqPattern getPattern() const               { return content.getPattern(); }
+    SliceSequencerContent& getContent()         { return content; }
     void showPattern (const SeqPattern& p)      { content.showPattern (p); }
     void loadPattern (const SeqPattern& p)      { content.loadPattern (p); }
     void setOnStateChanged (std::function<void()> f) { content.getTransport().onStateChanged = std::move (f); }

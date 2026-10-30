@@ -246,7 +246,8 @@ Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit
 ### Phase 7.5 — First-run walkthrough + more breaks
 
 - [x] **Walkthrough** on first launch (skippable, replayable from Settings): coach marks over the real screens, each step waiting for the player to do the thing — not a slideshow. Make a beat on the Drum Grid → press Play → a bassline on Step-Seq → record a chord take on Morf-Chord → launch it from Session → Save As. Ends with their own project, named.
-  Done (`Walkthrough.h`): 16 steps on a tour project (Soft Keys chords, Acid Bass, 808 drums, all empty). An untitled project in progress is kept as "Before the tour". Settings → Take the tour replays it.
+  Done (`Walkthrough.h`), JB's flow (2026-10-30): on an empty project, pick Step-Seq + Synth for track 1, pick a synth preset, switch steps on and drag the note sliders, play; then Breaker + Sampler (the Amen) on track 2, and glitch it: move slices in the grid, the stutter ribbon, the pitch ribbon, the looper (with RND). 19 steps. An untitled project in progress is kept as "Before the tour"; Settings → Take the tour replays it.
+- [x] Slice-Seq is called **Breaker** in the app (the rail says "Break").
 - [ ] **Live remix lane** (JB, 2026-10-30), monome-mlr style: a sample laid across a row of 16 positions with the playhead walking along it; tap a position to jump playback there (quantized), hold two to loop between them, release to fall back in time. Builds on the Sampler's slice playback.
 - [ ] **More of JB's recreated breaks** bundled beside the Amen (`BreakLibrary::recorded()`). Never the "All The Breaks" pack.
 

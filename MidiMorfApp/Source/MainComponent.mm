@@ -1,4 +1,5 @@
 #include "MainComponent.h"
+#include <set>
 
 #if JUCE_IOS
  #import <UIKit/UIKit.h>
@@ -32,12 +33,12 @@ static const juce::String controllerNames[] = {
     "Morf-Chord",
     "Rose-Chord",
     "Step-Seq",
-    "Slice-Seq"
+    "Breaker"   // the slice sequencer
 };
 
 // Short names for the rail, same order.
 static const juce::String controllerShortNames[] = {
-    "FX", "Pad", "Strum", "Transport", "Dual", "Chord", "Rose", "Step", "Slice"
+    "FX", "Pad", "Strum", "Transport", "Dual", "Chord", "Rose", "Step", "Break"
 };
 
 // Guards the invariant that broke once already: NUM_CONTROLLERS is the index
@@ -122,7 +123,7 @@ MainComponent::MainComponent()
 
     SessionPage::Callbacks cb;
     cb.getInstrument = [this] (int t) { return instrumentOf[t]; };
-    cb.setInstrument = [this] (int t, int mode) { setInstrument (t, mode); updateRail(); };
+    cb.setInstrument = [this] (int t, int mode) { setInstrument (t, mode); seedClips(); updateRail(); };
     cb.getSound      = [this] (int t) { return (int) audioEngine.getTrackSound (t); };
     cb.setSound      = [this] (int t, int s) { setSound (t, s); updateRail(); };
     cb.getVolume     = [this] (int t) { return audioEngine.getRack().getVolume (t); };
@@ -1066,13 +1067,13 @@ void MainComponent::saveProjectAs (const juce::String& name)
 // Bass, T3 Slice-Seq on the Amen, T4 Drum Grid on the 808 kit, each
 // sequencer with one clip.
 //
-// The walkthrough's (tour) is the same minus the slicer, with Soft Keys for
-// the chords and the drums and bass left empty for the player to fill.
+// The walkthrough's (tour) starts with every track empty, for the player to
+// set up: the synths on Init, track 2's sampler already holding the Amen.
 static juce::ValueTree starterProject (int drumGridMode, bool tour = false)
 {
     using CM = MidiMorf::ControllerMode;
-    const int inst[TrackRack::NumTracks]  = { (int) CM::MorfChord, (int) CM::StepSequencer, tour ? -1 : (int) CM::SliceSequencer, drumGridMode };
-    const int sound[TrackRack::NumTracks] = { 1, 1, tour ? 0 : 2, 3 };
+    const int inst[TrackRack::NumTracks]  = { (int) CM::MorfChord, (int) CM::StepSequencer, (int) CM::SliceSequencer, drumGridMode };
+    const int sound[TrackRack::NumTracks] = { 1, 1, 2, 3 };
 
     juce::ValueTree project ("MidiMorfProject");
     project.setProperty ("version", 1, nullptr);
@@ -1082,15 +1083,15 @@ static juce::ValueTree starterProject (int drumGridMode, bool tour = false)
     {
         juce::ValueTree track ("Track");
         track.setProperty ("index", t, nullptr);
-        track.setProperty ("instrument", inst[t], nullptr);
-        track.setProperty ("sound", sound[t], nullptr);
+        track.setProperty ("instrument", tour ? -1 : inst[t], nullptr);
+        track.setProperty ("sound", tour ? 0 : sound[t], nullptr);
         track.setProperty ("volume", 1.0, nullptr);
-        const juce::String presetName = t == 1 ? "Acid Bass" : (t == 0 && tour ? "Soft Keys" : "");
+        const juce::String presetName = t == 1 && ! tour ? "Acid Bass" : "";
         const auto* preset = presetName.isNotEmpty() ? WavetablePresets::findFactory (presetName) : nullptr;
         track.setProperty ("soundName", preset != nullptr ? presetName : juce::String ("Init"), nullptr);
         track.appendChild ((preset != nullptr ? preset->state : WavetablePresets::init().state).createCopy(), nullptr);
         juce::ValueTree sampler (SamplerSource::stateType);
-        if (t == 2)
+        if (t == (tour ? 1 : 2))
             sampler.setProperty ("break", BreakLibrary::builtInNames()[0], nullptr);
         track.appendChild (sampler, nullptr);
         juce::ValueTree drums (DrumSource::stateType);
@@ -1113,18 +1114,14 @@ static juce::ValueTree starterProject (int drumGridMode, bool tour = false)
     for (int l = 0; l < 3; ++l)
         for (int i = 0; i < 16 && i < (int) std::strlen (lanes[l]); ++i)
             beat.drums[(size_t) laneOf[l]][(size_t) i] = (uint8_t) juce::roundToInt (BreakLibrary::detail::velocityFor (lanes[l][i]) * 127.0f);
-    if (tour)
+    if (! tour)   // the tour's tracks get their clips as the player sets them up
     {
-        for (auto& st : step.steps) st.rest = true;
-        beat = {};
-    }
-    s.setClip (1, 0, { "Pattern 1", step, LocalSequencers::Step });
-    if (! tour)
+        s.setClip (1, 0, { "Pattern 1", step, LocalSequencers::Step });
         s.setClip (2, 0, { "Pattern 1", slice, LocalSequencers::Slice });
-    s.setClip (3, 0, { "Pattern 1", beat, LocalSequencers::Drums });
-    for (int t = 1; t < 4; ++t)
-        if (s.hasClip (t, 0))
+        s.setClip (3, 0, { "Pattern 1", beat, LocalSequencers::Drums });
+        for (int t = 1; t < 4; ++t)
             s.setPlaying (t, 0);
+    }
     project.appendChild (s.toValueTree(), nullptr);
     return project;
 }
@@ -1179,65 +1176,90 @@ void MainComponent::startWalkthrough()
     loadProjectTree (starterProject (drumGridPageIdx, true));
 
     auto& seqs = audioEngine.getSequencers();
-    auto hits = [this] (int lane)
-    {
-        const auto p = drumGridPage.getPattern();
-        return (int) std::count_if (p.drums[(size_t) lane].begin(), p.drums[(size_t) lane].end(), [] (uint8_t v) { return v > 0; });
-    };
-    auto onPage = [this] (int page) { return pageContainer.getCurrentPage() == page; };
+    seqs.setBpm (140.0);   // the Amen's own tempo
+
+    // The step page starts empty (all rests, all on the root) and the
+    // slicer in order, so the first glitch is obvious.
+    SeqPattern rests, inOrder;
+    for (auto& st : rests.steps) st = { 0, 100, 50, 64, true };
+    for (int i = 0; i < SeqPattern::MaxSteps; ++i) inOrder.steps[(size_t) i] = { (uint8_t) i, 100, 95, 64, false };
+    stepSequencerPage.loadPattern (rests);
+    sliceSequencerPage.loadPattern (inOrder);
+
+    auto& breaker = sliceSequencerPage.getContent();
+    auto onPage    = [this] (int page) { return pageContainer.getCurrentPage() == page; };
     auto railTrack = [this] (int t) { return trackButtons[t]->getBounds(); };
-    auto inPage = [this] (juce::Component& c, juce::Rectangle<int> r) { return getLocalArea (&c, r); };
-    auto chordTakeHasNotes = [this]
+    auto inPage    = [this] (juce::Component& c, juce::Rectangle<int> r) { return getLocalArea (&c, r); };
+    auto onSession = [this] (juce::Rectangle<int> r) { return getLocalArea (homePage.get(), r); };
+    auto stepsOn   = [this]
     {
-        for (int s = 0; s < SessionModel::NumScenes; ++s)
-            if (session.hasClip (0, s) && session.clip (0, s)->isNotes() && session.clip (0, s)->notes.numNotes > 0)
-                return true;
-        return false;
+        const auto p = stepSequencerPage.getPattern();
+        int on = 0;
+        for (int i = 0; i < p.length; ++i) on += p.steps[(size_t) i].rest ? 0 : 1;
+        return on;
     };
-    const int chordPage = (int) MidiMorf::ControllerMode::MorfChord;
+    auto notesUsed = [this]
+    {
+        const auto p = stepSequencerPage.getPattern();
+        std::set<int> degrees;
+        for (int i = 0; i < p.length; ++i)
+            if (! p.steps[(size_t) i].rest) degrees.insert (p.steps[(size_t) i].index);
+        return (int) degrees.size();
+    };
+    auto slicesMoved = [this, &breaker]
+    {
+        const auto p = sliceSequencerPage.getPattern();
+        int moved = 0;
+        for (int i = 0; i < breaker.numStepsShown(); ++i) moved += p.steps[(size_t) i].index != i || p.steps[(size_t) i].rest;
+        return moved;
+    };
+    auto baseline = std::make_shared<std::array<int, 3>>();   // ribbon and looper counts when their step starts
     const int stepPage  = (int) MidiMorf::ControllerMode::StepSequencer;
+    const int slicePage = (int) MidiMorf::ControllerMode::SliceSequencer;
 
     std::vector<Walkthrough::Step> steps = {
-        { "Let's make your first beat. Drums, a bassline, then some chords you play yourself. About two minutes.",
+        { "Let's make something: a bassline you write yourself, then the Amen break, chopped up live. About two minutes.",
           nullptr, nullptr, "Let's go" },
-        { "These four buttons are your tracks. Tap 4: the drums.",
-          [=] { return railTrack (3); }, [=] { return onPage (drumGridPageIdx); } },
-        { "This is the Drum Grid. Tap the KICK row on the first beat of each group of four.",
-          [=] { return inPage (drumGridPage, drumGridPage.laneBounds (Drums::Kick)); }, [=] { return hits (Drums::Kick) >= 3; } },
-        { "Now a SNARE or two, in between the kicks.",
-          [=] { return inPage (drumGridPage, drumGridPage.laneBounds (Drums::Snare)); }, [=] { return hits (Drums::Snare) >= 1; } },
-        { "Slide your finger along the C.HAT row to paint hi-hats.",
-          [=] { return inPage (drumGridPage, drumGridPage.laneBounds (Drums::ClosedHat)); }, [=] { return hits (Drums::ClosedHat) >= 4; } },
+        { "Every track has something that plays it. Pick Step-Seq for track 1.",
+          [=] { return onSession (homePage->instrumentBounds (0)); }, [this] { return instrumentOf[0] == (int) MidiMorf::ControllerMode::StepSequencer; } },
+        { "And a sound for it to play: pick Synth.",
+          [=] { return onSession (homePage->soundBounds (0)); }, [this] { return audioEngine.getTrackSound (0) == AudioEngine::Sound::Synth; } },
+        { "Tap 1 to open its Step-Seq.",
+          [=] { return railTrack (0); }, [=] { return onPage (stepPage); } },
+        { "Tap 1 again to get to its sound.",
+          [=] { return railTrack (0); }, [=] { return onPage (synthPageIdx); } },
+        { "Tap the name to browse the synth sounds and pick one. Try the Bass ones.",
+          [this] { return getLocalArea (&synthPage, synthPage.presetBarBounds()); },
+          [this] { return audioEngine.getSoundName (0) != "Init"; } },
+        { "Tap 1 to go back to the steps.",
+          [=] { return railTrack (0); }, [=] { return onPage (stepPage); } },
+        { "Every step is off. Tap a few to switch them on.",
+          [=] { return inPage (stepSequencerPage, stepSequencerPage.stepsBounds()); }, [=] { return stepsOn() >= 4; } },
+        { "Now drag the sliders up and down to change each step's note.",
+          [=] { return inPage (stepSequencerPage, stepSequencerPage.stepsBounds()); }, [=] { return notesUsed() >= 3; } },
         { "Press play.",
           [this] { return playButton.getBounds(); }, [&seqs] { return seqs.isAnyPlaying(); } },
-        { "That's a beat. Keep playing with it any time. Now a bassline: tap 2.",
-          [=] { return railTrack (1); }, [=] { return onPage (stepPage); } },
-        { "Tap steps to switch them on. Drag the bars above them to change the notes.",
-          [=] { return inPage (stepSequencerPage, stepSequencerPage.stepsBounds()); },
-          [this]
-          {
-              const auto p = stepSequencerPage.getPattern();
-              int on = 0;
-              for (int i = 0; i < p.length; ++i) on += p.steps[(size_t) i].rest ? 0 : 1;
-              return on >= 3;
-          },
-          {}, [&seqs] { seqs.setPlaying (LocalSequencers::Step, true); } },
-        { "Now some chords you play yourself. Tap 1.",
-          [=] { return railTrack (0); }, [=] { return onPage (chordPage); } },
-        { "Press the red button to record what you play.",
-          [this] { return recordButton.getBounds(); }, [this] { return recordingTrack >= 0; } },
-        { "After a bar of clicks it records 2 bars, then loops so you can add more. Play a few chords on the pads.",
-          nullptr, chordTakeHasNotes, {}, {}, true },
-        { "Nice. Press the red button again to stop recording. Your chords keep playing.",
-          [this] { return recordButton.getBounds(); }, [this] { return recordingTrack < 0; }, {}, {}, false },
-        { "Tap the house to see everything together.",
+        { "That's your bassline. Now the drums. Tap the house.",
           [this] { return homeButton.getBounds(); }, [=] { return onPage (homePageIdx); } },
-        { "This is Session. Each row is a track, each box a clip. Tap + to copy a clip into a variation, or the arrows on top to switch whole rows at once.",
-          [this] { return getLocalArea (homePage.get(), homePage->gridBounds()); }, nullptr, "Next" },
-        { "Keep it: tap Project, then Save As, and give it a name.",
-          [this] { return getLocalArea (homePage.get(), homePage->projectButtonBounds()); },
-          [this] { return projectName != "Untitled"; } },
-        { "That's your first track. Replay this tour any time from Settings.",
+        { "For track 2, pick Breaker: it plays a drum break in slices.",
+          [=] { return onSession (homePage->instrumentBounds (1)); }, [this] { return instrumentOf[1] == (int) MidiMorf::ControllerMode::SliceSequencer; } },
+        { "And for its sound, pick Sampler. It already holds the Amen break.",
+          [=] { return onSession (homePage->soundBounds (1)); }, [this] { return audioEngine.getTrackSound (1) == AudioEngine::Sound::Sampler; } },
+        { "Tap 2 to open Breaker.",
+          [=] { return railTrack (1); }, [=] { return onPage (slicePage); },
+          {}, [&seqs] { seqs.setPlaying (LocalSequencers::Slice, true); } },
+        { "It's playing the Amen in order, one slice per step. Tap and drag in the grid to change which slice plays where.",
+          [=, &breaker] { return inPage (breaker, breaker.gridBounds()); }, [=] { return slicesMoved() >= 3; } },
+        { "Now drag along the right-hand strip on top: it stutters each step, faster as you go.",
+          [=, &breaker] { return inPage (breaker, breaker.ribbonBounds (1)); }, [=, &breaker] { return breaker.ribbonMoves[1] > (*baseline)[1]; },
+          {}, [=, &breaker] { (*baseline)[1] = breaker.ribbonMoves[1]; } },
+        { "The left strip bends the pitch. Try it.",
+          [=, &breaker] { return inPage (breaker, breaker.ribbonBounds (0)); }, [=, &breaker] { return breaker.ribbonMoves[0] > (*baseline)[0]; },
+          {}, [=, &breaker] { (*baseline)[0] = breaker.ribbonMoves[0]; } },
+        { "Hold a square on the looper for a roll. Turn on RND first and every roll lands somewhere different.",
+          [=, &breaker] { return inPage (breaker, breaker.looperBounds()); }, [=, &breaker] { return breaker.looperHolds > (*baseline)[2]; },
+          {}, [=, &breaker] { (*baseline)[2] = breaker.looperHolds; } },
+        { "Now go crazy. When you've got something, save it from Session: Project, then Save As. You can replay this tour from Settings.",
           nullptr, nullptr, "Done" },
     };
     walkthrough.setBounds (getLocalBounds());

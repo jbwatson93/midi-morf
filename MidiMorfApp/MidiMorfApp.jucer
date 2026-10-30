@@ -83,6 +83,8 @@
       <FILE id="brkPg1" name="BreaksPage.h" compile="0" resource="0" file="Source/BreaksPage.h"/>
       <FILE id="brkImp" name="BreakImport.h" compile="0" resource="0" file="Source/BreakImport.h"/>
       <FILE id="pnchFx" name="PunchFx.h" compile="0" resource="0" file="Source/PunchFx.h"/>
+      <FILE id="wtPrst" name="WavetablePresets.h" compile="0" resource="0" file="Source/WavetablePresets.h"/>
+      <FILE id="prsBrw" name="PresetBrowser.h" compile="0" resource="0" file="Source/PresetBrowser.h"/>
       <FILE id="slPg01" name="SliceSequencerPage.h" compile="0" resource="0" file="Source/SliceSequencerPage.h"/>
     </GROUP>
   </MAINGROUP>
@@ -105,8 +107,8 @@
   </MODULES>
   <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
   <EXPORTFORMATS>
-    <XCODE_IPHONE targetFolder="Builds/iOS" extraDefs="JUCE_IOS_AUDIO_EXPLICIT_SAMPLERATES=48000.0" localNetworkPermissionNeeded="1" localNetworkPermissionText="Midi-Morf needs local network access to connect to your DAW&lt;"
-                  customPList="&lt;key&gt;NSLocalNetworkUsageDescription&lt;/key&gt;&#10;  &lt;string&gt;Midi-Morf needs local network access to connect to your DAW&lt;/string&gt;&#10;  &lt;key&gt;NSBonjourServices&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;_midimorf._tcp&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UISupportedInterfaceOrientations&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;UIInterfaceOrientationLandscapeRight&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UIRequiresFullScreen&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;CFBundleIconName&lt;/key&gt;&#10;  &lt;string&gt;AppIcon&lt;/string&gt;&#10;"
+    <XCODE_IPHONE targetFolder="Builds/iOS" UIFileSharingEnabled="1" extraDefs="JUCE_IOS_AUDIO_EXPLICIT_SAMPLERATES=48000.0" localNetworkPermissionNeeded="1" localNetworkPermissionText="Midi-Morf needs local network access to connect to your DAW&lt;"
+                  customPList="&lt;plist&gt;&lt;dict&gt;&#10;  &lt;key&gt;NSLocalNetworkUsageDescription&lt;/key&gt;&#10;  &lt;string&gt;Midi-Morf needs local network access to connect to your DAW&lt;/string&gt;&#10;  &lt;key&gt;NSBonjourServices&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;_midimorf._tcp&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UISupportedInterfaceOrientations&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;UIInterfaceOrientationLandscapeRight&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UIRequiresFullScreen&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;LSSupportsOpeningDocumentsInPlace&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;CFBundleIconName&lt;/key&gt;&#10;  &lt;string&gt;AppIcon&lt;/string&gt;&#10;&lt;/dict&gt;&lt;/plist&gt;"
                   iosDevelopmentTeamID="69KM48W4TU" extraCustomFrameworks="CoreMotion"
                   iosScreenOrientation="UIInterfaceOrientationLandscapeRight" iPadScreenOrientation="UIInterfaceOrientationLandscapeRight">
       <CONFIGURATIONS>

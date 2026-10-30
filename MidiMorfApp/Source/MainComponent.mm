@@ -128,6 +128,13 @@ MainComponent::MainComponent()
     addAndMakeVisible (playButton);
 
     synthPage.onPatchChanged = [this] { saveState(); };
+    synthPage.onPresetChanged = [this] (const juce::String& name)
+    {
+        audioEngine.setSoundName (soundTrack, name);
+        homePage->refresh();
+        updateRail();
+        saveState();
+    };
     breaksPage.onChanged = [this] { saveState(); };
     fxPage.onStateChanged = [this] { saveState(); };
     transportPage.onStateChanged = [this] { saveState(); };
@@ -361,9 +368,7 @@ void MainComponent::showSound (int track)
     {
         case AudioEngine::Sound::Synth:
             soundTrack = track;
-            synthPage.edit (audioEngine.getTrackSynth (track),
-                            "T" + juce::String (track + 1) + " " + audioEngine.getSoundName (track).toUpperCase(),
-                            TrackColours::get (track));
+            synthPage.edit (audioEngine.getTrackSynth (track), audioEngine.getSoundName (track), TrackColours::get (track));
             pageContainer.setPage (synthPageIdx);
             break;
 
@@ -565,6 +570,7 @@ void MainComponent::saveNow()
         track.setProperty ("instrument", instrumentOf[t], nullptr);
         track.setProperty ("sound", (int) audioEngine.getTrackSound (t), nullptr);
         track.setProperty ("volume", audioEngine.getRack().getVolume (t), nullptr);
+        track.setProperty ("soundName", audioEngine.getSynthName (t), nullptr);
         track.appendChild (audioEngine.getTrackSynth (t).getState(), nullptr);   // kept even when not playing
         project.appendChild (track, nullptr);
     }
@@ -662,6 +668,7 @@ void MainComponent::restoreState()
                 audioEngine.getTrackSynth (t).setState (synth);
             setInstrument (t, track.getProperty ("instrument", defaultInst[t]));
             audioEngine.getRack().setVolume (t, (float) (double) track.getProperty ("volume", 1.0));
+            audioEngine.setSoundName (t, track["soundName"].toString());
         }
     }
     else
@@ -692,9 +699,7 @@ void MainComponent::restoreState()
 
     soundTrack = juce::jlimit (0, TrackRack::NumTracks - 1, settings->getIntValue ("sound_track", 0));
     if (audioEngine.getWavetable (soundTrack) != nullptr)
-        synthPage.edit (audioEngine.getTrackSynth (soundTrack),
-                        "T" + juce::String (soundTrack + 1) + " " + audioEngine.getSoundName (soundTrack).toUpperCase(),
-                        TrackColours::get (soundTrack));
+        synthPage.edit (audioEngine.getTrackSynth (soundTrack), audioEngine.getSoundName (soundTrack), TrackColours::get (soundTrack));
 
     // Last page, if it still belongs somewhere; otherwise T1's
     // instrument (Morf-Chord on first launch), or Home.

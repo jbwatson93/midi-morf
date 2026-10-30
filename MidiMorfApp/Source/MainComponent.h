@@ -18,6 +18,7 @@
 #include "ProjectBrowser.h"
 #include "NoteEditorPage.h"
 #include "Walkthrough.h"
+#include "RemixPage.h"
 #include "SamplerPage.h"
 #include "DrumGridPage.h"
 #include "DrumKitPage.h"
@@ -162,6 +163,7 @@ private:
     std::array<std::unique_ptr<DualMPadPage>, TrackRack::NumTracks> dualMPadPages;
     std::array<std::unique_ptr<MorfChordPage>, TrackRack::NumTracks> morfChordPages;
     std::array<std::unique_ptr<RoseChordPage>, TrackRack::NumTracks> roseChordPages;
+    std::array<std::unique_ptr<RemixPage>, TrackRack::NumTracks> remixPages;
     juce::Component morfPadPlaceholder, omnichordPlaceholder, dualMPadPlaceholder, morfChordPlaceholder, roseChordPlaceholder;
     TransportPage transportPage;
     // Every track has its own sequencer pages; the one-of-each slots they

@@ -62,7 +62,7 @@ static constexpr int noteEditorPageIdx = MidiMorf::NUM_CONTROLLERS + 8;
 // Then every track's own instrument pages: 4 of each kind, kind-major.
 // Kinds 0-2 are the sequencers (as LocalSequencers::Kind), 3-7 the live
 // controllers.
-static constexpr int NumKinds         = 8;
+static constexpr int NumKinds         = 9;   // ... and 8, the Remix Lane
 static constexpr int seqPageBase      = MidiMorf::NUM_CONTROLLERS + 9;
 static constexpr int numPages         = seqPageBase + NumKinds * TrackRack::NumTracks;
 
@@ -86,8 +86,13 @@ static bool isIPad()
    #endif
 }
 
+// The Remix Lane's instrument id: not a page index (its pages are per track).
+static constexpr int RemixId = 200;
+
 static bool isSequencer (int mode)
 {
+    if (mode == RemixId)
+        return true;
     return mode == (int) MidiMorf::ControllerMode::StepSequencer
         || mode == (int) MidiMorf::ControllerMode::SliceSequencer
         || mode == drumGridPageIdx;
@@ -96,6 +101,8 @@ static bool isSequencer (int mode)
 // The sequencer kind an instrument id is (LocalSequencers::Kind as int).
 static int whichSequencer (int mode)
 {
+    if (mode == RemixId)
+        return (int) LocalSequencers::Kind::Remix;
     if (mode == drumGridPageIdx)
         return (int) LocalSequencers::Kind::Drums;
     return mode == (int) MidiMorf::ControllerMode::StepSequencer ? (int) LocalSequencers::Kind::Step : (int) LocalSequencers::Kind::Slice;
@@ -107,6 +114,8 @@ static constexpr int KindStep = (int) LocalSequencers::Kind::Step, KindSlice = (
 // An instrument id (a ControllerMode, or the Drum Grid's page) as a page kind.
 static int kindOf (int mode)
 {
+    if (mode == RemixId)
+        return 8;
     if (isSequencer (mode))
         return whichSequencer (mode);
     for (int k = 0; k < 5; ++k)
@@ -118,6 +127,8 @@ static int kindOf (int mode)
 // An instrument's name on the rail.
 static juce::String instrumentShortName (int mode)
 {
+    if (mode == RemixId)
+        return "Remix";
     if (mode == drumGridPageIdx)
         return "Drums";
     return juce::isPositiveAndBelow (mode, MidiMorf::NUM_CONTROLLERS) ? controllerShortNames[mode] : juce::String();
@@ -137,6 +148,8 @@ MainComponent::MainComponent()
         dualMPadPages[(size_t) t]  = std::make_unique<DualMPadPage> (router);
         morfChordPages[(size_t) t] = std::make_unique<MorfChordPage> (router);
         roseChordPages[(size_t) t] = std::make_unique<RoseChordPage> (router);
+        remixPages[(size_t) t]     = std::make_unique<RemixPage> (router);
+        remixPages[(size_t) t]->setTrack (t);
 
         stepPages[(size_t) t] = std::make_unique<StepSequencerPage> (router);
         stepPages[(size_t) t]->setTrack (t);
@@ -174,6 +187,8 @@ MainComponent::MainComponent()
     cb.isRunning     = [this] (int t)
     {
         const int w = sequencerOf (t);
+        if (w == SessionPage::NoClips)
+            return audioEngine.getSequencers().getPlayhead (t) >= 0;
         if (w < 0)
             return audioEngine.getSequencers().isNoteClipPlaying (t);
         return audioEngine.getSequencers().getPlayhead (t) >= 0;
@@ -268,7 +283,7 @@ MainComponent::MainComponent()
     cb.changed       = [this] { saveState(); };
     homePage = std::make_unique<SessionPage> (session, cb, SessionPage::Pages { (int) MidiMorf::ControllerMode::Transport,
                                                                                 (int) MidiMorf::ControllerMode::FXPunchIn,
-                                                                                settingsPageIdx, aboutPageIdx, drumGridPageIdx });
+                                                                                settingsPageIdx, aboutPageIdx, drumGridPageIdx, RemixId });
 
     // Page container — controllers, then Sound, About, Settings, Home, Breaks.
     // The order is the page indices above.
@@ -298,6 +313,7 @@ MainComponent::MainComponent()
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (dualMPadPages[(size_t) t].get());
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (morfChordPages[(size_t) t].get());
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (roseChordPages[(size_t) t].get());
+    for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (remixPages[(size_t) t].get());
 
     // Perform borrows the tracks' instrument pages and hands them back.
     performView.onShow       = [this] { populatePerform(); };
@@ -567,6 +583,7 @@ juce::String MainComponent::getPageDisplayName (int pageIndex) const
     {
         const int kind = pageKind (pageIndex);
         static const char* names[3] = { "Step-Seq", "Breaker", "Drum Grid" };
+        if (kind == 8) return "Remix Lane";
         return kind < 3 ? juce::String (names[kind]) : controllerNames[(int) controllerKinds[kind - 3]];
     }
     if (pageIndex == drumKitPageIdx)   return "Drums";
@@ -602,7 +619,13 @@ void MainComponent::setInstrument (int track, int mode)
         seqs.setKind (track, (LocalSequencers::Kind) kind);
 
         // The engine starts from what the track's page shows.
-        if (kind == KindDrums)
+        if (mode == RemixId)
+        {
+            if (audioEngine.getTrackSound (track) == AudioEngine::Sound::Sampler)
+                audioEngine.getTrackSampler (track).setMode (SamplerSource::Slice);   // it plays the sample in slices
+            remixPages[(size_t) track]->updateLength();
+        }
+        else if (kind == KindDrums)
         {
             seqs.queuePattern (track, drumPage (track).getPattern());
         }
@@ -731,6 +754,8 @@ void MainComponent::showSound (int track)
 int MainComponent::sequencerOf (int track) const
 {
     const int inst = juce::isPositiveAndBelow (track, TrackRack::NumTracks) ? instrumentOf[track] : -1;
+    if (inst == RemixId)
+        return SessionPage::NoClips;   // played live, no clips
     return isSequencer (inst) ? whichSequencer (inst) : -1;
 }
 
@@ -878,6 +903,8 @@ void MainComponent::launchScene (int scene)
     for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
         const int w = sequencerOf (t);
+        if (w == SessionPage::NoClips)
+            continue;   // a Remix Lane plays on through scene changes
         const int kind = w >= 0 ? w : SessionModel::NotesClip;
         if (session.hasClip (t, scene) && session.clip (t, scene)->sequencer == kind)
             launchClip (t, scene);
@@ -889,6 +916,11 @@ void MainComponent::launchScene (int scene)
 void MainComponent::stopTrack (int track)
 {
     const int w = sequencerOf (track);
+    if (w == SessionPage::NoClips)
+    {
+        audioEngine.getSequencers().queueStop (track);
+        return;
+    }
     if (w < 0)
     {
         if (track == recordingTrack)
@@ -1053,7 +1085,7 @@ void MainComponent::railRecord()
         return;
     }
     const int track = trackOfPage (pageContainer.getCurrentPage());
-    if (track < 0 || sequencerOf (track) >= 0)
+    if (track < 0 || sequencerOf (track) != -1)
         return;
 
     const int playing = session.getPlaying (track);
@@ -1416,7 +1448,7 @@ void MainComponent::updateRail()
     // ● on a controller track's own page (or its drum pads), to record what
     // you play there.
     const bool canRecord = current >= 0 && (! pageIsSound (page) || page == drumKitPageIdx)
-                           && page != noteEditorPageIdx && sequencerOf (current) < 0;
+                           && page != noteEditorPageIdx && sequencerOf (current) == -1;
     recordButton.setLit (recordingTrack >= 0);
     if (recordButton.isVisible() != (canRecord || recordingTrack >= 0))
     {

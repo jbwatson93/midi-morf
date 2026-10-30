@@ -387,6 +387,34 @@ public:
 
     SeqTransportBar& getTransport() { return transport; }
 
+    //==========================================================================
+    // Session clips: the slices and rests as a pattern. The grid (bars,
+    // division) stays with the track.
+    SeqPattern getPattern() const
+    {
+        SeqPattern p;
+        p.length = numSteps();
+        for (int i = 0; i < MAX_STEPS; ++i)
+            p.steps[(size_t) i] = { (uint8_t) steps[(size_t) i].slice, 100, 95, 64, steps[(size_t) i].rest };
+        return p;
+    }
+
+    void showPattern (const SeqPattern& p)
+    {
+        for (int i = 0; i < MAX_STEPS; ++i)
+        {
+            steps[(size_t) i].slice = juce::jlimit (0, MAX_STEPS - 1, (int) p.steps[(size_t) i].index);
+            steps[(size_t) i].rest  = p.steps[(size_t) i].rest;
+        }
+        refreshAllCells();
+    }
+
+    void loadPattern (const SeqPattern& p)
+    {
+        showPattern (p);
+        pushAllSteps();
+    }
+
     // Called when the page becomes visible — the server keeps no per-page
     // memory, so config, pattern, and ribbon routing all go up together.
     void pushFullState()
@@ -830,6 +858,9 @@ public:
 
     void setPlayhead (int step) { content.setPlayhead (step); }
     void pushFullState()        { content.pushFullState(); }
+    SeqPattern getPattern() const               { return content.getPattern(); }
+    void showPattern (const SeqPattern& p)      { content.showPattern (p); }
+    void loadPattern (const SeqPattern& p)      { content.loadPattern (p); }
     void setOnStateChanged (std::function<void()> f) { content.getTransport().onStateChanged = std::move (f); }
 
     void resized() override { content.setBounds (getLocalBounds()); }

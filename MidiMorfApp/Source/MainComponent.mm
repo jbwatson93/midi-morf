@@ -21,6 +21,8 @@ static void requestMicrophone (std::function<void (bool)> done)
    #endif
 }
 
+static juce::File projectFile();   // Documents/Projects/Current.midimorf, below
+
 static const juce::String controllerNames[] = {
     "Morf FX",
     "Morf-Pad",
@@ -117,18 +119,33 @@ MainComponent::MainComponent()
     // Morf FX plays the master bus's punch-in FX in Local mode.
     eventRouter.setPunchFx (&audioEngine.getPunchFx());
 
-    HomePage::Callbacks cb;
+    SessionPage::Callbacks cb;
     cb.getInstrument = [this] (int t) { return instrumentOf[t]; };
     cb.setInstrument = [this] (int t, int mode) { setInstrument (t, mode); updateRail(); };
     cb.getSound      = [this] (int t) { return (int) audioEngine.getTrackSound (t); };
     cb.setSound      = [this] (int t, int s) { setSound (t, s); updateRail(); };
     cb.getVolume     = [this] (int t) { return audioEngine.getRack().getVolume (t); };
     cb.setVolume     = [this] (int t, float g) { audioEngine.getRack().setVolume (t, g); };
+    cb.sequencerOf   = [this] (int t) { return sequencerOf (t); };
+    cb.isRunning     = [this] (int t)
+    {
+        const int w = sequencerOf (t);
+        return w >= 0 && audioEngine.getSequencers().getPlayhead ((LocalSequencers::Which) w) >= 0;
+    };
+    cb.launchClip    = [this] (int t, int s) { launchClip (t, s); };
+    cb.newClip       = [this] (int t, int s) { newClip (t, s); };
+    cb.editClip      = [this] (int t, int s) { editClip (t, s); };
+    cb.duplicateClip = [this] (int t, int s) { duplicateClip (t, s); };
+    cb.deleteClip    = [this] (int t, int s) { deleteClip (t, s); };
+    cb.launchScene   = [this] (int s) { launchScene (s); };
+    cb.stopTrack     = [this] (int t) { stopTrack (t); };
     cb.openPage      = [this] (int page) { pageContainer.setPage (page); };
+    cb.openProjects  = [this] { showProjects(); };
+    cb.projectName   = [this] { return projectName; };
     cb.changed       = [this] { saveState(); };
-    homePage = std::make_unique<HomePage> (cb, HomePage::Pages { (int) MidiMorf::ControllerMode::Transport,
-                                                                 (int) MidiMorf::ControllerMode::FXPunchIn,
-                                                                 settingsPageIdx, aboutPageIdx, drumGridPageIdx });
+    homePage = std::make_unique<SessionPage> (session, cb, SessionPage::Pages { (int) MidiMorf::ControllerMode::Transport,
+                                                                                (int) MidiMorf::ControllerMode::FXPunchIn,
+                                                                                settingsPageIdx, aboutPageIdx, drumGridPageIdx });
 
     // Page container — controllers, then Sound, About, Settings, Home, Breaks.
     // The order is the page indices above.
@@ -364,7 +381,7 @@ juce::String MainComponent::getPageDisplayName (int pageIndex) const
     if (pageIndex == synthPageIdx)     return "Sound";
     if (pageIndex == aboutPageIdx)     return "About";
     if (pageIndex == settingsPageIdx)  return "Settings";
-    if (pageIndex == homePageIdx)      return "Home";
+    if (pageIndex == homePageIdx)      return "Session";
     if (pageIndex == samplerPageIdx)   return "Sampler";
     if (pageIndex == performPageIdx)   return "Perform";
     if (pageIndex == drumGridPageIdx)  return "Drum Grid";
@@ -495,6 +512,316 @@ void MainComponent::showSound (int track)
         case AudioEngine::Sound::Empty:
             break;
     }
+    updateRail();
+}
+
+//==============================================================================
+// Session clips
+//
+// A clip is a sequencer track's pattern. The page shows and edits the
+// playing clip; its edits are copied back into the clip before anything
+// else happens to it (a launch, a duplicate, a save). On the phone's clock a
+// launch waits for the next bar and LocalSequencers swaps it in exactly; on
+// DAW sync the page sends it straight away.
+
+int MainComponent::sequencerOf (int track) const
+{
+    const int inst = juce::isPositiveAndBelow (track, TrackRack::NumTracks) ? instrumentOf[track] : -1;
+    return isSequencer (inst) ? (int) whichSequencer (inst) : -1;
+}
+
+SeqPattern MainComponent::pagePattern (int which)
+{
+    switch (which)
+    {
+        case LocalSequencers::Step:  return stepSequencerPage.getPattern();
+        case LocalSequencers::Slice: return sliceSequencerPage.getPattern();
+        default:                     return drumGridPage.getPattern();
+    }
+}
+
+void MainComponent::showOnPage (int which, const SeqPattern& p)
+{
+    switch (which)
+    {
+        case LocalSequencers::Step:  stepSequencerPage.showPattern (p); break;
+        case LocalSequencers::Slice: sliceSequencerPage.showPattern (p); break;
+        default:                     drumGridPage.showPattern (p); break;
+    }
+}
+
+void MainComponent::captureClip (int track)
+{
+    const int w = sequencerOf (track), s = session.getPlaying (track);
+    if (w >= 0 && session.hasClip (track, s) && session.clip (track, s)->sequencer == w)
+        session.clip (track, s)->pattern = pagePattern (w);
+}
+
+void MainComponent::launchClip (int track, int scene)
+{
+    const int w = sequencerOf (track);
+    if (w < 0 || ! session.hasClip (track, scene) || session.clip (track, scene)->sequencer != w)
+        return;
+
+    captureClip (track);
+    const auto& pattern = session.clip (track, scene)->pattern;
+    auto& seqs = audioEngine.getSequencers();
+    const auto which = (LocalSequencers::Which) w;
+
+    if (which == LocalSequencers::Drums || eventRouter.isLocalSync())
+    {
+        const bool wasRunning = seqs.getPlayhead (which) >= 0;
+        seqs.queuePattern (which, pattern);
+        if (wasRunning)
+        {
+            session.setQueued (track, scene);   // takes over on the bar; pollLaunches moves it to playing
+        }
+        else
+        {
+            showOnPage (w, pattern);
+            session.setPlaying (track, scene);
+            shownLaunches[w] = seqs.getLaunchCount (which);
+        }
+        seqs.setPlaying (which, true);
+    }
+    else
+    {
+        switch (which)
+        {
+            case LocalSequencers::Step:  stepSequencerPage.loadPattern (pattern); break;
+            case LocalSequencers::Slice: sliceSequencerPage.loadPattern (pattern); break;
+            default: break;
+        }
+        session.setPlaying (track, scene);
+    }
+    saveState();
+}
+
+// A new clip starts as a copy of what the track is playing, so a variation is
+// one tap away.
+void MainComponent::newClip (int track, int scene)
+{
+    const int w = sequencerOf (track);
+    if (w < 0) return;
+    captureClip (track);
+    session.setClip (track, scene, { session.freshName (track), pagePattern (w), w });
+    launchClip (track, scene);
+    homePage->refresh();
+}
+
+void MainComponent::editClip (int track, int scene)
+{
+    if (session.getPlaying (track) != scene)
+        launchClip (track, scene);
+    showInstrument (track);
+}
+
+// Into the next empty slot to the right.
+void MainComponent::duplicateClip (int track, int scene)
+{
+    if (! session.hasClip (track, scene)) return;
+    if (session.getPlaying (track) == scene)
+        captureClip (track);
+    for (int s = scene + 1; s < SessionModel::NumScenes; ++s)
+        if (! session.hasClip (track, s))
+        {
+            auto copy = *session.clip (track, scene);
+            copy.name = session.freshName (track);
+            session.setClip (track, s, copy);
+            saveState();
+            return;
+        }
+}
+
+void MainComponent::deleteClip (int track, int scene)
+{
+    if (session.getPlaying (track) == scene)
+        stopTrack (track);
+    session.removeClip (track, scene);
+    saveState();
+}
+
+// Every track's clip in this scene; tracks with nothing there stop.
+void MainComponent::launchScene (int scene)
+{
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+    {
+        const int w = sequencerOf (t);
+        if (w < 0) continue;
+        if (session.hasClip (t, scene) && session.clip (t, scene)->sequencer == w)
+            launchClip (t, scene);
+        else
+            stopTrack (t);
+    }
+}
+
+void MainComponent::stopTrack (int track)
+{
+    const int w = sequencerOf (track);
+    if (w < 0) return;
+    session.setQueued (track, -1);
+    audioEngine.getSequencers().queueStop ((LocalSequencers::Which) w);
+}
+
+// Timer: a queued clip that has taken over becomes the playing one, and its
+// page shows it.
+void MainComponent::pollLaunches()
+{
+    auto& seqs = audioEngine.getSequencers();
+    for (int w = 0; w < LocalSequencers::NumSequencers; ++w)
+    {
+        const int count = seqs.getLaunchCount ((LocalSequencers::Which) w);
+        if (count == shownLaunches[w])
+            continue;
+        shownLaunches[w] = count;
+        showOnPage (w, seqs.getPattern ((LocalSequencers::Which) w));
+        for (int t = 0; t < TrackRack::NumTracks; ++t)
+            if (sequencerOf (t) == w && session.getQueued (t) >= 0)
+                session.setPlaying (t, session.getQueued (t));
+    }
+}
+
+// The first time a sequencer track has no clips: its current pattern
+// becomes Pattern 1 in scene 1.
+void MainComponent::seedClips()
+{
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+    {
+        const int w = sequencerOf (t);
+        if (w < 0) continue;
+        bool any = false;
+        for (int s = 0; s < SessionModel::NumScenes; ++s)
+            any |= session.hasClip (t, s);
+        if (any) continue;
+        session.setClip (t, 0, { "Pattern 1", pagePattern (w), w });
+        session.setPlaying (t, 0);
+    }
+}
+
+// After a project loads: each sequencer gets its track's playing clip.
+void MainComponent::applySessionToSequencers()
+{
+    auto& seqs = audioEngine.getSequencers();
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+    {
+        const int w = sequencerOf (t), s = session.getPlaying (t);
+        if (w < 0 || ! session.hasClip (t, s) || session.clip (t, s)->sequencer != w)
+            continue;
+        const auto& p = session.clip (t, s)->pattern;
+        seqs.queuePattern ((LocalSequencers::Which) w, p);   // stopped: applies at once
+        switch (w)
+        {
+            case LocalSequencers::Step:  stepSequencerPage.loadPattern (p); break;
+            case LocalSequencers::Slice: sliceSequencerPage.loadPattern (p); break;
+            default:                     drumGridPage.showPattern (p); break;
+        }
+        shownLaunches[w] = seqs.getLaunchCount ((LocalSequencers::Which) w);
+    }
+}
+
+//==============================================================================
+// Projects
+
+void MainComponent::showProjects()
+{
+    if (projectBrowser == nullptr)
+    {
+        projectBrowser = std::make_unique<ProjectBrowser>();
+        projectBrowser->currentName = [this] { return projectName; };
+        projectBrowser->onOpen      = [this] (const juce::File& f) { openProject (f); };
+        projectBrowser->onSaveAs    = [this] (const juce::String& n) { saveProjectAs (n); };
+        addChildComponent (*projectBrowser);
+    }
+    projectBrowser->setBounds (pageContainer.getBounds());
+    projectBrowser->show();
+}
+
+void MainComponent::saveProjectAs (const juce::String& name)
+{
+    projectName = name;
+    saveNow();   // writes <name>.midimorf beside the working copy
+    homePage->refresh();
+}
+
+// The project New starts from: T1 Morf-Chord on a synth, T2 Step-Seq on Acid
+// Bass, T3 Slice-Seq on the Amen, T4 Drum Grid on the 808 kit, each
+// sequencer with one clip.
+static juce::ValueTree starterProject (int drumGridMode)
+{
+    using CM = MidiMorf::ControllerMode;
+    const int inst[TrackRack::NumTracks]  = { (int) CM::MorfChord, (int) CM::StepSequencer, (int) CM::SliceSequencer, drumGridMode };
+    const int sound[TrackRack::NumTracks] = { 1, 1, 2, 3 };
+
+    juce::ValueTree project ("MidiMorfProject");
+    project.setProperty ("version", 1, nullptr);
+    project.setProperty ("name", "Untitled", nullptr);
+
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+    {
+        juce::ValueTree track ("Track");
+        track.setProperty ("index", t, nullptr);
+        track.setProperty ("instrument", inst[t], nullptr);
+        track.setProperty ("sound", sound[t], nullptr);
+        track.setProperty ("volume", 1.0, nullptr);
+        const auto* preset = t == 1 ? WavetablePresets::findFactory ("Acid Bass") : nullptr;
+        track.setProperty ("soundName", preset != nullptr ? "Acid Bass" : "Init", nullptr);
+        track.appendChild ((preset != nullptr ? preset->state : WavetablePresets::init().state).createCopy(), nullptr);
+        juce::ValueTree sampler (SamplerSource::stateType);
+        if (t == 2)
+            sampler.setProperty ("break", BreakLibrary::builtInNames()[0], nullptr);
+        track.appendChild (sampler, nullptr);
+        juce::ValueTree drums (DrumSource::stateType);
+        drums.setProperty ("kit", Drums::factoryKits().front().name, nullptr);
+        track.appendChild (drums, nullptr);
+        project.appendChild (track, nullptr);
+    }
+
+    SessionModel s;
+    SeqPattern step, slice, beat;
+    static const int degrees[16] = { 0, 2, 4, 2, 7, 4, 2, 4, 0, 2, 4, 7, 9, 7, 4, 2 };
+    for (int i = 0; i < 16; ++i)
+    {
+        step.steps[(size_t) i]  = { (uint8_t) degrees[i], (uint8_t) (i % 4 == 0 ? 112 : 80), 50, 64, false };
+        slice.steps[(size_t) i] = { (uint8_t) i, 100, 95, 64, false };
+    }
+    const auto& boomBap = BreakLibrary::styles()[1];
+    const char* lanes[3] = { boomBap.kick, boomBap.snare, boomBap.hat };
+    const int laneOf[3] = { Drums::Kick, Drums::Snare, Drums::ClosedHat };
+    for (int l = 0; l < 3; ++l)
+        for (int i = 0; i < 16 && i < (int) std::strlen (lanes[l]); ++i)
+            beat.drums[(size_t) laneOf[l]][(size_t) i] = (uint8_t) juce::roundToInt (BreakLibrary::detail::velocityFor (lanes[l][i]) * 127.0f);
+    s.setClip (1, 0, { "Pattern 1", step, LocalSequencers::Step });
+    s.setClip (2, 0, { "Pattern 1", slice, LocalSequencers::Slice });
+    s.setClip (3, 0, { "Pattern 1", beat, LocalSequencers::Drums });
+    for (int t = 1; t < 4; ++t)
+        s.setPlaying (t, 0);
+    project.appendChild (s.toValueTree(), nullptr);
+    return project;
+}
+
+// Swaps the working copy for another project (or the starter) and reloads
+// everything from it. The one being left is saved first.
+void MainComponent::openProject (const juce::File& file)
+{
+    saveNow();
+    audioEngine.allNotesOff();
+
+    const auto current = projectFile();
+    bool ok = false;
+    if (file.existsAsFile())
+    {
+        ok = file.copyFileTo (current);
+    }
+    else if (auto xml = starterProject (drumGridPageIdx).createXml())
+    {
+        ok = xml->writeTo (current);
+    }
+    if (! ok)
+        return;
+
+    restoreState();
+    pageContainer.setPage (homePageIdx);
+    homePage->refresh();
     updateRail();
 }
 
@@ -671,6 +998,7 @@ void MainComponent::timerCallback()
         auto& seqs = audioEngine.getSequencers();
         playButton.setLit (seqs.isAnyPlaying());
     }
+    pollLaunches();
 
     // Write the project once things have been still for half a second, so
     // dragging a knob doesn't rewrite the file on every tick.
@@ -715,8 +1043,12 @@ void MainComponent::saveNow()
     audioEngine.getSequencers().saveState (pageState);
     drumGridPage.saveState (pageState);
 
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+        captureClip (t);
+
     juce::ValueTree project ("MidiMorfProject");
     project.setProperty ("version", 1, nullptr);
+    project.setProperty ("name", projectName, nullptr);
     for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
         juce::ValueTree track ("Track");
@@ -733,6 +1065,7 @@ void MainComponent::saveNow()
     }
     if (auto xml = pageState.createXml ("PageState"))
         project.appendChild (juce::ValueTree::fromXml (*xml), nullptr);
+    project.appendChild (session.toValueTree(), nullptr);
 
     // Written beside the old file and swapped in, so a crash mid-write
     // can't leave half a project.
@@ -743,6 +1076,11 @@ void MainComponent::saveNow()
         file.getParentDirectory().createDirectory();
         juce::TemporaryFile temp (file);
         written = xml->writeTo (temp.getFile()) && temp.overwriteTargetFileWithTemporary();
+
+        // A named project keeps its own copy too, so opening another never
+        // loses it.
+        if (written && projectName != "Untitled")
+            file.copyFileTo (file.getSiblingFile (projectName).withFileExtension ("midimorf"));
     }
 
     if (auto* props = appProperties.getUserSettings())
@@ -865,6 +1203,13 @@ void MainComponent::restoreState()
             audioEngine.getRack().setVolume (t, (float) settings->getDoubleValue ("trk_vol_" + n, 1.0));
         }
     }
+
+    // The Session: its clips, or a first clip per sequencer track from what
+    // the pages hold (a project from before Session).
+    projectName = project.isValid() ? project.getProperty ("name", "Untitled").toString() : juce::String ("Untitled");
+    session.fromValueTree (project.getChildWithName ("Session"));
+    seedClips();
+    applySessionToSequencers();
 
     soundTrack = juce::jlimit (0, TrackRack::NumTracks - 1, settings->getIntValue ("sound_track", 0));
     if (audioEngine.getWavetable (soundTrack) != nullptr)

@@ -428,6 +428,44 @@ public:
 
     SeqTransportBar& getTransport() { return transport; }
 
+    //==========================================================================
+    // Session clips: the steps and length as a pattern.
+    SeqPattern getPattern() const
+    {
+        SeqPattern p;
+        p.length = lenCombo.getSelectedId();
+        for (int i = 0; i < NUM_STEPS; ++i)
+        {
+            const auto& s = steps[(size_t) i];
+            p.steps[(size_t) i] = { (uint8_t) s.degree, (uint8_t) s.velocity, (uint8_t) s.gate, (uint8_t) s.mod, s.rest };
+        }
+        return p;
+    }
+
+    // Shows a pattern the sequencer is already playing (a launched clip).
+    void showPattern (const SeqPattern& p)
+    {
+        for (int i = 0; i < NUM_STEPS; ++i)
+        {
+            const auto& s = p.steps[(size_t) i];
+            steps[(size_t) i] = { juce::jlimit (0, juce::jmax (0, (int) noteTable.size() - 1), (int) s.index),
+                                  (int) s.velocity, (int) s.mod, (int) s.gate, s.rest };
+            refreshStepBox (i);
+        }
+        lenCombo.setSelectedId (juce::jlimit (1, NUM_STEPS, p.length), juce::dontSendNotification);
+        lanes.setPatternLength (lenCombo.getSelectedId());
+        for (int i = 0; i < NUM_STEPS; ++i)
+            stepBoxes[i]->setActive (i < lenCombo.getSelectedId());
+        refreshLanes();
+    }
+
+    // Shows it and sends it (WiFi mode: the server's sequencer).
+    void loadPattern (const SeqPattern& p)
+    {
+        showPattern (p);
+        pushFullState();
+    }
+
     // Called when the page becomes visible — the server needs the full state,
     // since it has no idea what the phone was editing while away.
     void pushFullState()
@@ -804,6 +842,9 @@ public:
 
     void setPlayhead (int step) { content.setPlayhead (step); }
     void pushFullState()        { content.pushFullState(); }
+    SeqPattern getPattern() const               { return content.getPattern(); }
+    void showPattern (const SeqPattern& p)      { content.showPattern (p); }
+    void loadPattern (const SeqPattern& p)      { content.loadPattern (p); }
     void setOnStateChanged (std::function<void()> f) { content.getTransport().onStateChanged = std::move (f); }
 
     void resized() override { content.setBounds (getLocalBounds()); }

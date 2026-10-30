@@ -14,7 +14,8 @@
 #include "WavetableSynthPage.h"
 #include "AboutPage.h"
 #include "SettingsPage.h"
-#include "HomePage.h"
+#include "SessionPage.h"
+#include "ProjectBrowser.h"
 #include "SamplerPage.h"
 #include "DrumGridPage.h"
 #include "DrumKitPage.h"
@@ -101,6 +102,33 @@ private:
     void audition (int track, int note, bool down);
 
     //==========================================================================
+    // Session clips
+    int  sequencerOf (int track) const;                 // LocalSequencers::Which, or -1
+    SeqPattern pagePattern (int which);
+    void showOnPage (int which, const SeqPattern& p);
+    void captureClip (int track);                       // the page's edits into the playing clip
+    void launchClip (int track, int scene);
+    void newClip (int track, int scene);
+    void editClip (int track, int scene);
+    void duplicateClip (int track, int scene);
+    void deleteClip (int track, int scene);
+    void launchScene (int scene);
+    void stopTrack (int track);
+    void pollLaunches();
+    void seedClips();                                   // a first clip per sequencer track
+    int  shownLaunches[3] { 0, 0, 0 };
+
+    //==========================================================================
+    // Projects: the working one autosaves to Current.midimorf, and a named
+    // one also to <name>.midimorf beside it.
+    void showProjects();
+    void openProject (const juce::File& file);   // a named project file, or {} for a new one
+    void saveProjectAs (const juce::String& name);
+    void applySessionToSequencers();
+    juce::String projectName { "Untitled" };
+    std::unique_ptr<ProjectBrowser> projectBrowser;
+
+    //==========================================================================
     PageContainer pageContainer;
     FXPunchInPage fxPage;
     MorfPadPage morfPadPage;
@@ -114,7 +142,8 @@ private:
     WavetableSynthPage synthPage { audioEngine.getSynth() };
     AboutPage aboutPage;
     SettingsPage settingsPage { eventRouter };
-    std::unique_ptr<HomePage> homePage;
+    SessionModel session;
+    std::unique_ptr<SessionPage> homePage;   // the Session page; Home before it
     SamplerPage samplerPage;
     PerformView performView;   // iPad only
     DrumGridPage drumGridPage { audioEngine.getSequencers() };

@@ -151,7 +151,7 @@ private:
             addAndMakeVisible (instrument);
 
             sound.addItem ("Synth", 1 + 1);
-            sound.addItem ("Breaks", 2 + 1);
+            sound.addItem ("Sampler", 2 + 1);
             sound.addItem ("Empty", 0 + 1);
             sound.onChange = [this]
             {

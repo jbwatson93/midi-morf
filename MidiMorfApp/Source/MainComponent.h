@@ -15,7 +15,7 @@
 #include "AboutPage.h"
 #include "SettingsPage.h"
 #include "HomePage.h"
-#include "BreaksPage.h"
+#include "SamplerPage.h"
 #include "PerformView.h"
 #include "NetworkClient.h"
 #include "AccelerometerManager.h"
@@ -95,6 +95,7 @@ private:
     bool dawPlaying = false;
     int  focusedMode = -1;   // the page shared sequencer messages go to, in Perform
     void populatePerform();
+    void migrateBreak (int track, juce::PropertySet& pages);
 
     //==========================================================================
     PageContainer pageContainer;
@@ -111,7 +112,7 @@ private:
     AboutPage aboutPage;
     SettingsPage settingsPage { eventRouter };
     std::unique_ptr<HomePage> homePage;
-    BreaksPage breaksPage { audioEngine.getSequencers() };
+    SamplerPage samplerPage;
     PerformView performView;   // iPad only
 
     TrackHeader header;

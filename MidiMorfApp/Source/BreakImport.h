@@ -4,15 +4,36 @@
 #include "LocalSequencers.h"
 
 //==============================================================================
-// "Import .wav..." for drum loops, shared by Slice-Seq's BREAK picker and the
-// Breaks sound page.
+// Importing audio, shared by Slice-Seq's BREAK picker and the Sampler page.
 //
-// iOS hands back a security-scoped URL, so the loop is copied into the app's
+// iOS hands back a security-scoped URL, so the file is copied into the app's
 // Documents/Breaks folder first. That copy is what gets remembered, so it
-// still loads on the next launch. `chooser` must outlive the dialog — callers
-// keep it as a member. `onImported` runs only on success; failures alert.
+// still loads on the next launch.
 namespace BreakImport
 {
+    // The copy, or an empty File (with `error` set) if it couldn't be read.
+    inline juce::File copyIn (const juce::URL& url, juce::String& error)
+    {
+        auto dir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Breaks");
+        dir.createDirectory();
+        auto name = url.getFileName().isNotEmpty() ? url.getFileName() : juce::String ("Imported.wav");
+        auto dest = dir.getChildFile (juce::URL::removeEscapeChars (name));
+
+        if (auto in = url.createInputStream (juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)))
+        {
+            dest.deleteFile();
+            juce::FileOutputStream out (dest);
+            if (out.openedOk() && out.writeFromInputStream (*in, -1) > 0)
+                return dest;
+        }
+
+        error = "Couldn't read " + name;
+        return {};
+    }
+
+    // Pick a drum loop for the slicer. `chooser` must outlive the dialog —
+    // callers keep it as a member. `onImported` runs only on success;
+    // failures alert.
     inline void launch (std::unique_ptr<juce::FileChooser>& chooser, LocalSequencers& seqs,
                         std::function<void()> onImported)
     {
@@ -23,24 +44,9 @@ namespace BreakImport
                 auto url = fc.getURLResult();
                 if (url.isEmpty()) return;
 
-                auto dir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
-                               .getChildFile ("Breaks");
-                dir.createDirectory();
-                auto name = url.getFileName().isNotEmpty() ? url.getFileName() : juce::String ("Imported.wav");
-                auto dest = dir.getChildFile (juce::URL::removeEscapeChars (name));
-
-                bool copied = false;
-                if (auto in = url.createInputStream (juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)))
-                {
-                    dest.deleteFile();
-                    juce::FileOutputStream out (dest);
-                    copied = out.openedOk() && out.writeFromInputStream (*in, -1) > 0;
-                }
-
                 juce::String error;
-                if (! copied)
-                    error = "Couldn't read " + name;
-                else if (seqs.importBreak (dest, error))
+                const auto dest = copyIn (url, error);
+                if (dest != juce::File() && seqs.importBreak (dest, error))
                 {
                     if (onImported) onImported();
                     return;

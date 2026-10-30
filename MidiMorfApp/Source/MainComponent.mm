@@ -2,7 +2,24 @@
 
 #if JUCE_IOS
  #import <UIKit/UIKit.h>
+ #import <AVFoundation/AVFoundation.h>
 #endif
+
+// Asks for the microphone (iOS shows its prompt the first time) and calls
+// back on the message thread with the answer.
+static void requestMicrophone (std::function<void (bool)> done)
+{
+   #if JUCE_IOS
+    JUCE_BEGIN_IGNORE_DEPRECATION_WARNINGS
+    [[AVAudioSession sharedInstance] requestRecordPermission: ^(BOOL granted)
+    {
+        juce::MessageManager::callAsync ([done, granted] { done (granted); });
+    }];
+    JUCE_END_IGNORE_DEPRECATION_WARNINGS
+   #else
+    juce::MessageManager::callAsync ([done] { done (true); });
+   #endif
+}
 
 static const juce::String controllerNames[] = {
     "Morf FX",
@@ -34,7 +51,7 @@ static constexpr int synthPageIdx     = MidiMorf::NUM_CONTROLLERS;
 static constexpr int aboutPageIdx     = MidiMorf::NUM_CONTROLLERS + 1;
 static constexpr int settingsPageIdx  = MidiMorf::NUM_CONTROLLERS + 2;
 static constexpr int homePageIdx      = MidiMorf::NUM_CONTROLLERS + 3;
-static constexpr int breaksPageIdx    = MidiMorf::NUM_CONTROLLERS + 4;
+static constexpr int samplerPageIdx   = MidiMorf::NUM_CONTROLLERS + 4;
 static constexpr int performPageIdx   = MidiMorf::NUM_CONTROLLERS + 5;
 static constexpr int numPages         = MidiMorf::NUM_CONTROLLERS + 6;
 
@@ -115,7 +132,7 @@ MainComponent::MainComponent()
     pageContainer.addPage (&aboutPage);
     pageContainer.addPage (&settingsPage);
     pageContainer.addPage (homePage.get());
-    pageContainer.addPage (&breaksPage);
+    pageContainer.addPage (&samplerPage);
     pageContainer.addPage (&performView);
 
     // Perform borrows the tracks' instrument pages and hands them back.
@@ -173,7 +190,22 @@ MainComponent::MainComponent()
         updateRail();
         saveState();
     };
-    breaksPage.onChanged = [this] { saveState(); };
+    samplerPage.onChanged = [this] { homePage->refresh(); updateRail(); saveState(); };
+    samplerPage.setRecorder (audioEngine.getRecorder());
+    samplerPage.onMicNeeded = [this] (std::function<void (bool)> done)
+    {
+        requestMicrophone ([this, done] (bool granted) { done (granted && audioEngine.setMicOn (true)); });
+    };
+    samplerPage.onMicDone = [this] { audioEngine.setMicOn (false); };
+
+    // A break loaded into the slicer's sampler sets the tempo to the loop's
+    // own, as picking it on Slice-Seq does.
+    samplerPage.onLoaded = [this] (int t, const Break* b)
+    {
+        if (b != nullptr && t == eventRouter.getTrackFor (MidiMorf::ControllerMode::SliceSequencer)
+            && audioEngine.getTrackSampler (t).getMode() == SamplerSource::Slice)
+            audioEngine.getSequencers().setBpm (b->bpm());
+    };
     fxPage.onStateChanged = [this] { saveState(); };
     transportPage.onStateChanged = [this] { saveState(); };
     stepSequencerPage.setOnStateChanged ([this] { saveState(); });
@@ -309,7 +341,7 @@ juce::String MainComponent::getPageDisplayName (int pageIndex) const
     if (pageIndex == aboutPageIdx)     return "About";
     if (pageIndex == settingsPageIdx)  return "Settings";
     if (pageIndex == homePageIdx)      return "Home";
-    if (pageIndex == breaksPageIdx)    return "Breaks";
+    if (pageIndex == samplerPageIdx)   return "Sampler";
     if (pageIndex == performPageIdx)   return "Perform";
     return {};
 }
@@ -360,13 +392,8 @@ int MainComponent::trackOfPage (int pageIndex) const
     if (pageIndex == synthPageIdx)
         return soundTrack;
 
-    if (pageIndex == breaksPageIdx)
-    {
-        for (int t = 0; t < TrackRack::NumTracks; ++t)
-            if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Breaks)
-                return t;
-        return -1;
-    }
+    if (pageIndex == samplerPageIdx)
+        return samplerPage.getTrack();
 
     for (int t = 0; t < TrackRack::NumTracks; ++t)
         if (instrumentOf[t] == pageIndex)
@@ -376,7 +403,7 @@ int MainComponent::trackOfPage (int pageIndex) const
 
 bool MainComponent::pageIsSound (int pageIndex) const
 {
-    return pageIndex == synthPageIdx || pageIndex == breaksPageIdx;
+    return pageIndex == synthPageIdx || pageIndex == samplerPageIdx;
 }
 
 // First tap: the track's instrument. Tapping the lit track again flips
@@ -417,9 +444,9 @@ void MainComponent::showSound (int track)
             pageContainer.setPage (synthPageIdx);
             break;
 
-        case AudioEngine::Sound::Breaks:
-            breaksPage.setTrack (track);
-            pageContainer.setPage (breaksPageIdx);
+        case AudioEngine::Sound::Sampler:
+            samplerPage.edit (audioEngine.getTrackSampler (track), track);
+            pageContainer.setPage (samplerPageIdx);
             break;
 
         case AudioEngine::Sound::Empty:
@@ -444,6 +471,20 @@ juce::String MainComponent::headerText (int pageIndex) const
     const auto sound = audioEngine.getTrackSound (t) == AudioEngine::Sound::Empty ? juce::String ("nothing")
                                                                                    : audioEngine.getSoundName (t);
     return track + getPageDisplayName (pageIndex) + arrow + sound;
+}
+
+// Before samplers, the slicer's break was saved beside the tempo, as
+// seq_break / seq_breakFile. It moves into the sampler on that track.
+void MainComponent::migrateBreak (int track, juce::PropertySet& pages)
+{
+    auto& s = audioEngine.getTrackSampler (track);
+    s.setMode (SamplerSource::Slice);
+
+    const auto path = pages.getValue ("seq_breakFile");
+    juce::String error;
+    if (path.isNotEmpty() && juce::File (path).existsAsFile() && s.importBreak (juce::File (path), error) != nullptr)
+        return;
+    s.setBuiltInBreak (juce::jmax (0, BreakLibrary::indexForName (pages.getValue ("seq_break"))));
 }
 
 // Each quarter gets its track's instrument page (or nothing) and a header
@@ -633,7 +674,8 @@ void MainComponent::saveNow()
         track.setProperty ("volume", audioEngine.getRack().getVolume (t), nullptr);
         track.setProperty ("soundName", audioEngine.getSynthName (t), nullptr);
         track.setProperty ("muted", audioEngine.getRack().isMuted (t), nullptr);
-        track.appendChild (audioEngine.getTrackSynth (t).getState(), nullptr);   // kept even when not playing
+        track.appendChild (audioEngine.getTrackSynth (t).getState(), nullptr);     // both kept, whichever
+        track.appendChild (audioEngine.getTrackSampler (t).getState(), nullptr);   // the track plays
         project.appendChild (track, nullptr);
     }
     if (auto xml = pageState.createXml ("PageState"))
@@ -728,6 +770,10 @@ void MainComponent::restoreState()
             setSound (t, track.getProperty ("sound", defaultSound[t]));
             if (auto synth = track.getChildWithName (WavetableEngine::stateType); synth.isValid())
                 audioEngine.getTrackSynth (t).setState (synth);
+            if (auto sampler = track.getChildWithName (SamplerSource::stateType); sampler.isValid())
+                audioEngine.getTrackSampler (t).setState (sampler);
+            else if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Sampler)
+                migrateBreak (t, pages);   // a project from before samplers
             setInstrument (t, track.getProperty ("instrument", defaultInst[t]));
             audioEngine.getRack().setVolume (t, (float) (double) track.getProperty ("volume", 1.0));
             audioEngine.setSoundName (t, track["soundName"].toString());
@@ -741,7 +787,11 @@ void MainComponent::restoreState()
         synthPage.restoreState (*settings);
 
         for (int t = 0; t < TrackRack::NumTracks; ++t)
+        {
             setSound (t, settings->getIntValue ("trk_sound_" + juce::String (t), defaultSound[t]));
+            if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Sampler)
+                migrateBreak (t, *settings);
+        }
 
         for (int t = 1; t < TrackRack::NumTracks; ++t)
         {
@@ -763,6 +813,14 @@ void MainComponent::restoreState()
     soundTrack = juce::jlimit (0, TrackRack::NumTracks - 1, settings->getIntValue ("sound_track", 0));
     if (audioEngine.getWavetable (soundTrack) != nullptr)
         synthPage.edit (audioEngine.getTrackSynth (soundTrack), audioEngine.getSoundName (soundTrack), TrackColours::get (soundTrack));
+
+    // The Sampler page starts on the first track playing a sampler.
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+        if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Sampler)
+        {
+            samplerPage.edit (audioEngine.getTrackSampler (t), t);
+            break;
+        }
 
     // Last page, if it still belongs somewhere; otherwise T1's
     // instrument (Morf-Chord on first launch), or Home.

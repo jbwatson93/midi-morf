@@ -7,12 +7,18 @@
 #include <vector>
 
 //==============================================================================
-// Plays slices of the current Break for the slice sequencer in Local mode.
+// Plays the sampler's current sample (a Break) two ways.
 //
-// Like Simpler's slice mode, a slice is a one-shot: it plays at native speed
-// to the end of its own region, whatever the gate does, and only the next
-// slice (or STOP) cuts it short. The sequencer is monophonic, so a new slice
-// chokes the old one with a 2 ms fade; a small voice pool lets fades overlap.
+// Slices, for the slice sequencer: like Simpler's slice mode, a slice is a
+// one-shot that plays at native speed to the end of its own region, whatever
+// the gate does, and only the next slice (or STOP) cuts it short. The
+// sequencer is monophonic, so a new slice chokes the old one with a 2 ms
+// fade; a small voice pool lets fades overlap.
+//
+// Keys: the whole sample, polyphonic, pitched from a root note — with an
+// ADSR (Keys mode) or as a plain one-shot (One-shot mode). These read with
+// 4-point Hermite interpolation, which keeps pitched-up samples cleaner than
+// linear; slices stay linear and at native speed, so a break is unchanged.
 //
 // setBreak() is message-thread; everything else runs on the audio thread.
 class BreakPlayer
@@ -42,6 +48,11 @@ public:
         scratchR.assign (2048, 0.0f);
         for (auto& v : voices)
             v.active = false;
+        for (auto& k : keys)
+        {
+            k.active = false;
+            k.adsr.setSampleRate (sampleRate);
+        }
         ic1[0] = ic1[1] = ic2[0] = ic2[1] = 0.0f;
     }
 
@@ -84,11 +95,74 @@ public:
         v->releasing = false;
     }
 
+    // A keyed note: the whole sample from the start, pitched by `ratio`
+    // (2^(semitones/12) from the root). With `oneShot` it ignores note-off
+    // and plays to the end; otherwise `envelope` shapes it.
+    void startKey (int note, float velocity, double ratio, bool oneShot, const juce::ADSR::Parameters& envelope)
+    {
+        const Break* b = syncBreak();
+        if (b == nullptr)
+            return;
+
+        // Polyphony is MaxKeys; the pool has spares so a stolen voice can fade
+        // out (~3 ms) while the new note starts, instead of being cut.
+        int sounding = 0;
+        Key* oldest = nullptr;
+        for (auto& cand : keys)
+            if (cand.active && ! cand.stolen)
+            {
+                ++sounding;
+                if (oldest == nullptr || cand.age > oldest->age) oldest = &cand;
+            }
+        if (sounding >= MaxKeys && oldest != nullptr)
+        {
+            oldest->stolen = true;
+            oldest->oneShot = false;
+            oldest->adsr.setParameters ({ 0.001f, 0.0f, 1.0f, 0.003f });
+            oldest->adsr.noteOff();
+        }
+
+        // A free slot, else (every spare still fading) the oldest fading one.
+        Key* k = nullptr;
+        for (auto& cand : keys)
+            if (! cand.active) { k = &cand; break; }
+        if (k == nullptr)
+            for (auto& cand : keys)
+                if (k == nullptr || cand.age > k->age) k = &cand;
+
+        k->active  = true;
+        k->stolen  = false;
+        k->note    = note;
+        k->oneShot = oneShot;
+        k->pos     = 0.0;
+        k->ratio   = ratio;
+        k->gain    = juce::jlimit (0.0f, 1.0f, velocity);
+        k->age     = 0;
+        k->fadeIn  = 0.0f;   // a stolen voice restarts from silence, no click
+        k->adsr.setParameters (oneShot ? juce::ADSR::Parameters { 0.001f, 0.0f, 1.0f, 0.004f } : envelope);
+        k->adsr.reset();
+        k->adsr.noteOn();
+    }
+
+    void stopKey (int note)
+    {
+        for (auto& k : keys)
+            if (k.active && k.note == note && ! k.oneShot)
+                k.adsr.noteOff();
+    }
+
     void releaseAll()
     {
         for (auto& v : voices)
             if (v.active)
                 v.release (fadeSamples (0.004));
+        for (auto& k : keys)
+            if (k.active)
+            {
+                k.oneShot = false;
+                k.adsr.setParameters ({ 0.001f, 0.0f, 1.0f, 0.004f });
+                k.adsr.noteOff();
+            }
     }
 
     // Adds into L/R.
@@ -123,6 +197,16 @@ private:
         }
     };
 
+    struct Key
+    {
+        bool   active = false, oneShot = false, stolen = false;
+        int    note = -1;
+        double pos = 0.0, ratio = 1.0;
+        float  gain = 1.0f, fadeIn = 1.0f;
+        juce::int64 age = 0;
+        juce::ADSR adsr;
+    };
+
     struct Retired { std::unique_ptr<Break> b; juce::uint32 when; };
 
     // Slice-edge crossfade. Short enough to keep transients sharp, long
@@ -139,6 +223,8 @@ private:
         {
             for (auto& v : voices)
                 v.active = false;
+            for (auto& k : keys)
+                k.active = false;
             lastBreak = b;
         }
         return b;
@@ -187,6 +273,8 @@ private:
             }
         }
 
+        any |= renderKeys (b, srcL, srcR, len, n);
+
         if (! any)
             return;
 
@@ -216,6 +304,55 @@ private:
         juce::FloatVectorOperations::add (R != nullptr ? R : L, scratchR.data(), n);
     }
 
+    static float hermite (const float* d, int len, double pos)
+    {
+        const int i1 = (int) pos;
+        const float t = (float) (pos - i1);
+        const float y0 = d[juce::jmax (0, i1 - 1)], y1 = d[i1],
+                    y2 = d[juce::jmin (len - 1, i1 + 1)], y3 = d[juce::jmin (len - 1, i1 + 2)];
+        const float c1 = 0.5f * (y2 - y0);
+        const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+        const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+        return ((c3 * t + c2) * t + c1) * t + y1;
+    }
+
+    // Keyed voices into the scratch buffers, after the slices. True if any played.
+    bool renderKeys (const Break& b, const float* srcL, const float* srcR, int len, int n)
+    {
+        bool any = false;
+        const double base = b.sampleRate / deviceRate * std::pow (2.0, pitchSemis.load() / 12.0);
+        const float fadeStep = 1.0f / fadeSamples (fadeSeconds);
+        const double tail = fadeSamples (fadeSeconds);   // fade out before the sample runs out
+
+        for (auto& k : keys)
+        {
+            if (! k.active)
+                continue;
+
+            any = true;
+            const double rate = base * k.ratio;
+            for (int i = 0; i < n; ++i)
+            {
+                if (k.pos >= len - 2 || ! k.adsr.isActive())
+                {
+                    k.active = false;
+                    break;
+                }
+
+                float env = k.adsr.getNextSample() * k.gain;
+                if (k.fadeIn < 1.0f) { k.fadeIn = juce::jmin (1.0f, k.fadeIn + fadeStep); env *= k.fadeIn; }
+                const double left = (len - 2 - k.pos) / rate;
+                if (left < tail) env *= (float) (left / tail);
+
+                scratchL[(size_t) i] += env * hermite (srcL, len, k.pos);
+                scratchR[(size_t) i] += env * hermite (srcR, len, k.pos);
+                k.pos += rate;
+            }
+            k.age += n;
+        }
+        return any;
+    }
+
     std::unique_ptr<Break> owned;
     std::atomic<const Break*> current { nullptr };
     std::vector<Retired> retired;
@@ -223,113 +360,9 @@ private:
     double deviceRate = 48000.0;
     const Break* lastBreak = nullptr;
     std::array<Voice, 6> voices;
+    static constexpr int MaxKeys = 12;
+    std::array<Key, MaxKeys + 4> keys;   // + spares for stolen voices to fade out in
     std::vector<float> scratchL, scratchR;
     float ic1[2] {}, ic2[2] {};
     std::atomic<float> pitchSemis { 0.0f }, tone { 1.0f };
-};
-
-//==============================================================================
-// The break player as a track source. Slices sit chromatically up from a
-// root note, as in Simpler; the slice sequencer sets that root and the step
-// length with setSliceMapping() before it fires notes.
-class BreakSource : public SoundSource
-{
-public:
-    BreakPlayer& player() noexcept { return breaks; }
-
-    //==========================================================================
-    // The loop — message thread. Returns the new break, or nullptr.
-    const Break* setBuiltInBreak (int index)
-    {
-        auto b = BreakLibrary::generate (index);
-        if (b == nullptr)
-            return nullptr;
-
-        breakIndex = index;
-        importedFile = juce::File();
-        breaks.setBreak (std::move (b));
-        return breaks.getBreak();
-    }
-
-    const Break* importBreak (const juce::File& file, juce::String& error)
-    {
-        auto b = BreakLibrary::importFile (file, error);
-        if (b == nullptr)
-            return nullptr;
-
-        breakIndex = -1;
-        importedFile = file;
-        breaks.setBreak (std::move (b));
-        return breaks.getBreak();
-    }
-
-    const Break* getBreak() const        { return breaks.getBreak(); }
-    int  getBuiltInBreakIndex() const    { return breakIndex; }
-    juce::File getImportedBreak() const  { return importedFile; }
-
-    // Audio thread.
-    void setSliceMapping (int rootNote, double stepBeats)
-    {
-        sliceRoot = rootNote;
-        sliceStepBeats = stepBeats;
-    }
-
-    //==========================================================================
-    // SoundSource
-    juce::String typeId() const override { return "breaks"; }
-
-    void prepare (double sampleRate, int) override { breaks.prepare (sampleRate); }
-
-    void render (juce::AudioBuffer<float>& buffer, int start, int num) override
-    {
-        if (releasePending.exchange (false))
-            breaks.releaseAll();
-
-        float* L = buffer.getNumChannels() > 0 ? buffer.getWritePointer (0, start) : nullptr;
-        float* R = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1, start) : nullptr;
-        if (L != nullptr) juce::FloatVectorOperations::clear (L, num);
-        if (R != nullptr) juce::FloatVectorOperations::clear (R, num);
-        breaks.render (L, R, num);
-    }
-
-    // Slices are one-shots, so note-offs are ignored; STOP and panic cut
-    // them with allNotesOff.
-    void noteOnAudio (int, int note, int velocity127) override
-    {
-        breaks.trigger (note - sliceRoot, sliceStepBeats, (float) velocity127 / 127.0f);
-    }
-
-    void noteOffAudio (int, int) override {}
-
-    // Any thread: the voices aren't atomic, so this flags the audio thread.
-    void allNotesOff() override { releasePending.store (true); }
-
-    juce::ValueTree getState() const override
-    {
-        juce::ValueTree t (stateType);
-        t.setProperty ("break", breakIndex >= 0 ? BreakLibrary::builtInNames()[breakIndex] : juce::String(), nullptr);
-        t.setProperty ("file", importedFile.getFullPathName(), nullptr);
-        return t;
-    }
-
-    // An imported loop that has gone missing falls back to the first built-in.
-    void setState (const juce::ValueTree& t) override
-    {
-        const juce::String path = t["file"].toString();
-        juce::String error;
-        if (path.isNotEmpty() && juce::File (path).existsAsFile() && importBreak (juce::File (path), error) != nullptr)
-            return;
-
-        setBuiltInBreak (juce::jmax (0, BreakLibrary::indexForName (t["break"].toString())));
-    }
-
-    static inline const juce::Identifier stateType { "Breaks" };
-
-private:
-    BreakPlayer breaks;
-    int breakIndex = -1;
-    juce::File importedFile;
-    std::atomic<bool> releasePending { false };
-    int sliceRoot = 36;
-    double sliceStepBeats = 0.25;
 };

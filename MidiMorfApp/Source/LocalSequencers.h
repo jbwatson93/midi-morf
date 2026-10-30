@@ -11,19 +11,22 @@
 #include "NoteClip.h"
 
 //==============================================================================
-// The sequencers in Local mode: the same engines the server runs, driven by
-// the phone's own clock instead of DAW MIDI clock. Each sequencer plays a
-// track: by default the step sequencer plays T2 (a synth), the slice
-// sequencer T3 (the break player), the drum grid T4 (the drum synth).
+// The sequencers in Local mode, on the phone's own clock, plus the note-clip
+// players and the clip recorder.
 //
-// The drum grid is the phone's own: eight lanes of 16 steps with a velocity
-// each. It fires its steps at the exact sample (swing included) rather than
-// on the 24 PPQN ticks the other two share, so a swung hat lands where it
-// should, not a whole tick early or late.
+// Every track has a sequencer slot: nothing, a Step-Seq, a Breaker (the slice
+// sequencer) or a Drum Grid, each with its own engine and pattern, so two
+// tracks can both run a Step-Seq. The Step-Seq and Breaker engines are the
+// ones the server runs, ticked at 24 PPQN; the Drum Grid is the phone's own
+// and fires at the exact sample (swing included).
 //
-// This is the AudioSource the device plays. Each block is cut at clock-tick
-// boundaries, so notes land on the right sample rather than on whatever block
-// edge they fall nearest — at 120 BPM a tick is ~1000 samples, a block 256.
+// The pages talk to the engines through EventRouter as they talk to the
+// server, without saying which track they are: those messages go to the
+// active track (setActiveTrack), which MainComponent keeps on the page being
+// shown or touched.
+//
+// This is the AudioSource the device plays. Each block is cut at clock ticks
+// and at every exact-sample event, so notes land on the right sample.
 //
 // Threading: the engines are only ever ticked on the audio thread. Edits from
 // the pages take `lock` briefly; the engines' note output is queued under the
@@ -33,21 +36,22 @@ class LocalSequencers : public juce::AudioSource,
                         private LiveEventObserver
 {
 public:
-    enum Which { Step = 0, Slice = 1, Drums = 2 };
-    static constexpr int NumSequencers = 3;
+    // What sequencer a track has. A strong type, so a track number can't be
+    // passed where a kind is meant (or the other way round).
+    enum class Kind { None = -1, Step = 0, Slice = 1, Drums = 2 };
 
-    // Tracks are 0-based here; the UI calls them T1-T4.
-    static constexpr int DefaultStepTrack = 1, DefaultSliceTrack = 2, DefaultDrumTrack = 3;
-
+    static constexpr int NumTracks = TrackRack::NumTracks;
     static constexpr int DrumLanes = ::Drums::NumDrums, DrumSteps = 16;
 
-    explicit LocalSequencers (TrackRack& r)
-        : rack (r),
-          stepSink (*this, Step),
-          sliceSink (*this, Slice),
-          stepSeq (stepSink, 8),
-          sliceSeq (sliceSink, 9)
+    explicit LocalSequencers (TrackRack& r) : rack (r)
     {
+        for (int t = 0; t < NumTracks; ++t)
+        {
+            auto& s = slots[(size_t) t];
+            s.sink  = std::make_unique<QueueSink> (*this, t);
+            s.step  = std::make_unique<StepSequencerEngine> (*s.sink, 8);
+            s.slice = std::make_unique<SliceSequencerEngine> (*s.sink, 9);
+        }
         rack.setLiveEventObserver (this);
     }
 
@@ -90,21 +94,24 @@ public:
 
                     // Where we are between ticks, in ticks.
                     const double now = (double) globalTick - samplesToTick / samplesPerTick();
-                    if (running[Drums].load())
-                    {
-                        fireDueDrumSteps (now);
-                        const int until = (int) std::lround ((drumStepTick (nextDrumSixteenth) - now) * samplesPerTick());
-                        n = juce::jmin (n, juce::jmax (1, until));
-                    }
 
-                    // Note clips fire on their exact sample too.
-                    for (int t = 0; t < TrackRack::NumTracks; ++t)
+                    // Drum Grids and note clips fire on their exact sample.
+                    for (int t = 0; t < NumTracks; ++t)
+                    {
+                        auto& s = slots[(size_t) t];
+                        if (s.kind == Kind::Drums && s.running.load())
+                        {
+                            fireDueDrumSteps (t, now);
+                            const int until = (int) std::lround ((drumStepTick (t, s.nextDrumSixteenth) - now) * samplesPerTick());
+                            n = juce::jmin (n, juce::jmax (1, until));
+                        }
                         if (notePlayers[(size_t) t].active)
                         {
                             fireDueNotes (t, now);
                             const int until = (int) std::lround ((nextNoteTick (t) - now) * samplesPerTick());
                             n = juce::jmin (n, juce::jmax (1, until));
                         }
+                    }
                     segmentTick = lastNow = now;
                 }
                 else
@@ -114,9 +121,10 @@ public:
 
                 drainEvents();
 
-                if (std::exchange (panicBreaks, false))
-                    if (auto* s = sliceSampler())
-                        s->player().releaseAll();
+                for (int t = 0; t < NumTracks; ++t)
+                    if (std::exchange (slots[(size_t) t].panicBreaks, false))
+                        if (auto* s = sliceSampler (t))
+                            s->player().releaseAll();
             }
 
             rack.render (*buf, pos, n);
@@ -130,17 +138,44 @@ public:
     }
 
     //==========================================================================
-    // Transport — message thread.
+    // Tracks' sequencers — message thread.
 
-    // Each sequencer has its own PLAY. They share one clock, so starting the
-    // second while the first runs drops it in on the next 16th, in phase.
-    void setPlaying (Which w, bool shouldPlay) { wantPlaying[w].store (shouldPlay); }
-    bool isPlaying (Which w) const             { return wantPlaying[w].load(); }
+    // Gives a track a sequencer (or none). The old one stops and lets go of
+    // its notes; its pattern is kept for if it comes back.
+    void setKind (int track, Kind k)
+    {
+        if (! validTrack (track)) return;
+        const juce::SpinLock::ScopedLockType sl (lock);
+        auto& s = slots[(size_t) track];
+        if (s.kind == k) return;
+        if (s.running.load())
+            stopSequencer (track);
+        s.want.store (false);
+        s.hasPending = s.pendingStop = false;
+        if (auto* smp = dynamic_cast<SamplerSource*> (rack.getSource (track)))
+            smp->allNotesOff();   // one-shots ignore the note-offs
+        s.kind = k;
+    }
+
+    Kind getKind (int track) const { const juce::SpinLock::ScopedLockType sl (lock); return validTrack (track) ? slots[(size_t) track].kind : Kind::None; }
+
+    // Where the pages' messages go (they don't say which track they are).
+    void setActiveTrack (int track) { const juce::SpinLock::ScopedLockType sl (lock); if (validTrack (track)) activeTrack = track; }
+    int  getActiveTrack() const     { const juce::SpinLock::ScopedLockType sl (lock); return activeTrack; }
+
+    // Each sequencer has its own PLAY. They share one clock, so starting one
+    // while another runs drops it in on the next 16th, in phase.
+    void setPlaying (int track, bool shouldPlay)
+    {
+        if (validTrack (track) && (! shouldPlay || getKind (track) != Kind::None))
+            slots[(size_t) track].want.store (shouldPlay);
+    }
+    bool isPlaying (int track) const { return validTrack (track) && slots[(size_t) track].want.load(); }
 
     void stopAll()
     {
-        for (auto& w : wantPlaying)
-            w.store (false);
+        for (auto& s : slots)
+            s.want.store (false);
         const juce::SpinLock::ScopedLockType sl (lock);
         for (auto& p : notePlayers)
         {
@@ -153,15 +188,31 @@ public:
 
     bool isAnyPlaying() const
     {
-        for (auto& w : wantPlaying)
-            if (w.load()) return true;
+        for (auto& s : slots)
+            if (s.want.load()) return true;
         const juce::SpinLock::ScopedLockType sl (lock);
         for (auto& p : notePlayers)
             if (p.wanted) return true;
         return recording != RecIdle;
     }
 
-    //==========================================================================
+    void   setBpm (double b) { bpm.store (juce::jlimit (40.0, 240.0, b)); }
+    double getBpm() const    { return bpm.load(); }
+
+    int getPlayhead (int track) const
+    {
+        if (! validTrack (track)) return -1;
+        const auto& s = slots[(size_t) track];
+        if (! s.running.load()) return -1;
+        switch (s.kind)
+        {
+            case Kind::Drums: return s.drumStep.load();
+            case Kind::Step:  return s.step->getCurrentStep();
+            case Kind::Slice: return s.slice->getCurrentStep();
+            default:          return -1;
+        }
+    }
+
     // Note clips — message thread. Each track has a player: a launched note
     // clip loops on it, from the launch point (quantized like patterns).
     void queueNoteClip (int track, const NoteClip& c)
@@ -275,50 +326,19 @@ public:
 
     void setMetronome (bool on) { const juce::SpinLock::ScopedLockType sl (lock); recMetronome = on; }
 
-    // Message thread. The old track gets the sequencer's note-offs (and, if
-    // it's the break player, a cut — slices ignore note-offs) before the
-    // switch.
-    void setTrack (Which w, int track)
-    {
-        track = juce::jlimit (0, TrackRack::NumTracks - 1, track);
-        const juce::SpinLock::ScopedLockType sl (lock);
-
-        if (tracks[w] == track)
-            return;
-
-        if (w == Drums) releaseDrumNotes();
-        else            sequencer (w).allNotesOff();
-        if (auto* s = dynamic_cast<SamplerSource*> (rack.getSource (tracks[w])))
-            s->allNotesOff();   // one-shots ignore the note-offs
-        tracks[w] = track;
-    }
-
-    int getTrack (Which w) const
-    {
-        const juce::SpinLock::ScopedLockType sl (lock);
-        return tracks[w];
-    }
-
-    void   setBpm (double b) { bpm.store (juce::jlimit (40.0, 240.0, b)); }
-    double getBpm() const    { return bpm.load(); }
-
-    int getPlayhead (Which w) const
-    {
-        if (! running[w].load())
-            return -1;
-        if (w == Drums) return drumStep.load();
-        return w == Step ? stepSeq.getCurrentStep() : sliceSeq.getCurrentStep();
-    }
-
     //==========================================================================
-    // The drum grid — message thread. Velocity 0 is an empty step.
-    void setDrumStep (int lane, int step, int velocity)
+    // The Drum Grid — message thread. Velocity 0 is an empty step.
+    void setDrumStep (int track, int lane, int step, int velocity)
     {
-        if (! juce::isPositiveAndBelow (lane, DrumLanes) || ! juce::isPositiveAndBelow (step, DrumSteps))
+        if (! validTrack (track) || ! juce::isPositiveAndBelow (lane, DrumLanes) || ! juce::isPositiveAndBelow (step, DrumSteps))
             return;
         const juce::SpinLock::ScopedLockType sl (lock);
-        drumPattern[(size_t) lane][(size_t) step] = (uint8_t) juce::jlimit (0, 127, velocity);
+        slots[(size_t) track].drumPattern[(size_t) lane][(size_t) step] = (uint8_t) juce::jlimit (0, 127, velocity);
     }
+
+    // 0..1: how late the off-beat 16ths come, up to half a 16th.
+    void  setDrumSwing (int track, float amount) { if (validTrack (track)) slots[(size_t) track].drumSwing.store (juce::jlimit (0.0f, 1.0f, amount)); }
+    float getDrumSwing (int track) const        { return validTrack (track) ? slots[(size_t) track].drumSwing.load() : 0.0f; }
 
     //==========================================================================
     // Session launching — message thread.
@@ -332,60 +352,61 @@ public:
     void setLaunchQuantize (int q) { launchQuantize.store (juce::jlimit (0, 2, q)); }
     int  getLaunchQuantize() const { return launchQuantize.load(); }
 
-    void queuePattern (Which w, const SeqPattern& p)
+    void queuePattern (int track, const SeqPattern& p)
     {
+        if (! validTrack (track)) return;
         const juce::SpinLock::ScopedLockType sl (lock);
-        pending[w] = p;
-        hasPending[w] = true;
-        pendingStop[w] = false;
-        if (! running[w].load() || launchQuantize.load() == Off)
-            applyPending (w);
+        auto& s = slots[(size_t) track];
+        s.pending = p;
+        s.hasPending = true;
+        s.pendingStop = false;
+        if (! s.running.load() || launchQuantize.load() == Off)
+            applyPending (track);
     }
 
-    void queueStop (Which w)
+    void queueStop (int track)
     {
+        if (! validTrack (track)) return;
         const juce::SpinLock::ScopedLockType sl (lock);
-        hasPending[w] = false;
-        if (running[w].load()) pendingStop[w] = true;
-        else                   wantPlaying[w].store (false);
+        auto& s = slots[(size_t) track];
+        s.hasPending = false;
+        if (s.running.load()) s.pendingStop = true;
+        else                  s.want.store (false);
     }
 
-    bool isLaunchPending (Which w) const
+    bool isLaunchPending (int track) const
     {
         const juce::SpinLock::ScopedLockType sl (lock);
-        return hasPending[w] || pendingStop[w];
+        return validTrack (track) && (slots[(size_t) track].hasPending || slots[(size_t) track].pendingStop);
     }
 
     // Goes up each time a queued pattern takes over, so a page can redraw.
-    int getLaunchCount (Which w) const { return launches[w].load(); }
+    int getLaunchCount (int track) const { return validTrack (track) ? slots[(size_t) track].launches.load() : 0; }
 
-    // The pattern the sequencer is playing now.
-    SeqPattern getPattern (Which w) const
+    // The pattern the track's sequencer is playing now.
+    SeqPattern getPattern (int track) const
     {
-        const juce::SpinLock::ScopedLockType sl (lock);
         SeqPattern p;
-        if (w == Drums)
+        if (! validTrack (track)) return p;
+        const juce::SpinLock::ScopedLockType sl (lock);
+        const auto& s = slots[(size_t) track];
+        if (s.kind == Kind::Drums)
         {
-            p.drums = drumPattern;
+            p.drums = s.drumPattern;
             return p;
         }
-        auto& seq = const_cast<LocalSequencers*> (this)->sequencer (w);
+        const ClockedSequencer& seq = s.kind == Kind::Slice ? (const ClockedSequencer&) *s.slice : *s.step;
         p.length = seq.getPatternLength();
         for (int i = 0; i < SeqPattern::MaxSteps; ++i)
             p.steps[(size_t) i] = seq.getStep (i);
         return p;
     }
 
-    // 0..1: how late the off-beat 16ths come, up to half a 16th.
-    void  setDrumSwing (float amount) { drumSwing.store (juce::jlimit (0.0f, 1.0f, amount)); }
-    float getDrumSwing() const        { return drumSwing.load(); }
-
     //==========================================================================
-    // Breaks — message thread.
-    // A new break also sets the tempo to the loop's own.
-    void setBuiltInBreak (int index)
+    // Breaks — message thread. A new break also sets the tempo to the loop's own.
+    void setBuiltInBreak (int track, int index)
     {
-        auto* s = sliceSampler();
+        auto* s = sliceSampler (track);
         if (s == nullptr)
             return;
         s->setMode (SamplerSource::Slice);   // a break picked for the slicer is to be sliced
@@ -393,12 +414,12 @@ public:
             setBpm (b->bpm());
     }
 
-    bool importBreak (const juce::File& file, juce::String& error)
+    bool importBreak (int track, const juce::File& file, juce::String& error)
     {
-        auto* s = sliceSampler();
+        auto* s = sliceSampler (track);
         if (s == nullptr)
         {
-            error = "The slicer's track isn't playing a sampler.";
+            error = "Breaker's track isn't playing a sampler.";
             return false;
         }
         s->setMode (SamplerSource::Slice);
@@ -410,15 +431,15 @@ public:
         return true;
     }
 
-    // The slicer's sample: whatever the sampler on its track holds. Nothing
-    // if that track plays something else.
-    const Break* getBreak() const        { auto* s = sliceSampler(); return s != nullptr ? s->getBreak() : nullptr; }
-    int  getBuiltInBreakIndex() const    { auto* s = sliceSampler(); return s != nullptr ? s->getBuiltInBreakIndex() : -1; }
-    juce::File getImportedBreak() const  { auto* s = sliceSampler(); return s != nullptr ? s->getImportedBreak() : juce::File(); }
+    // A slicer's sample: whatever the sampler on its track holds. Nothing if
+    // that track plays something else.
+    const Break* getBreak (int track) const        { auto* s = sliceSampler (track); return s != nullptr ? s->getBreak() : nullptr; }
+    int  getBuiltInBreakIndex (int track) const    { auto* s = sliceSampler (track); return s != nullptr ? s->getBuiltInBreakIndex() : -1; }
+    juce::File getImportedBreak (int track) const  { auto* s = sliceSampler (track); return s != nullptr ? s->getImportedBreak() : juce::File(); }
 
-    SamplerSource* sliceSampler() const
+    SamplerSource* sliceSampler (int track) const
     {
-        return dynamic_cast<SamplerSource*> (rack.getSource (tracks[Slice]));
+        return validTrack (track) ? dynamic_cast<SamplerSource*> (rack.getSource (track)) : nullptr;
     }
 
     // Tempo and launch quantize, in the project. The patterns are the
@@ -437,14 +458,9 @@ public:
     }
 
     //==========================================================================
-    // Mirrors of MidiMorfEngine's sequencer handlers — message thread. The
-    // pages talk to these through EventRouter exactly as they talk to the
-    // server, so one page serves both modes.
-
-    void setActivePage (MidiMorf::ControllerMode m)
-    {
-        sliceIsActive = (m == MidiMorf::ControllerMode::SliceSequencer);
-    }
+    // Mirrors of MidiMorfEngine's sequencer handlers — message thread, to the
+    // active track's sequencer. The pages talk to these through EventRouter
+    // exactly as they talk to the server, so one page serves both modes.
 
     void stepSet (uint8_t step, uint8_t degree, uint8_t velocity, uint8_t gate, uint8_t mod, bool rest)
     {
@@ -456,13 +472,15 @@ public:
         s.rest     = rest;
 
         const juce::SpinLock::ScopedLockType sl (lock);
-        activeSequencer().setStep (step, s);
+        if (auto* seq = activeSequencer())
+            seq->setStep (step, s);
     }
 
     void config (uint8_t patternLength, uint8_t rate, uint8_t direction, uint8_t swing,
                  uint8_t scaleIndex, uint8_t rootNote, uint8_t baseOctave, uint8_t octaveRange)
     {
         const juce::SpinLock::ScopedLockType sl (lock);
+        auto& stepSeq = *slots[(size_t) activeTrack].step;
         stepSeq.setPatternLength (patternLength);
         stepSeq.setRate (static_cast<ClockedSequencer::Rate> (juce::jlimit (0, 5, (int) rate)));
         stepSeq.setDirection (static_cast<ClockedSequencer::Direction> (juce::jlimit (0, 3, (int) direction)));
@@ -475,41 +493,45 @@ public:
         const juce::SpinLock::ScopedLockType sl (lock);
         if (c == MidiMorf::SeqCommand::Panic)
         {
-            activeSequencer().allNotesOff();
-            if (sliceIsActive)
-                panicBreaks = true;
+            if (auto* seq = activeSequencer())
+                seq->allNotesOff();
+            if (slots[(size_t) activeTrack].kind == Kind::Slice)
+                slots[(size_t) activeTrack].panicBreaks = true;
         }
     }
 
     void ratchet (uint8_t division, bool active)
     {
         const juce::SpinLock::ScopedLockType sl (lock);
-        activeSequencer().setRatchet (division, active);
+        if (auto* seq = activeSequencer())
+            seq->setRatchet (division, active);
     }
 
     void sliceConfig (uint8_t bars, uint8_t division, uint8_t sliceCount,
                       uint8_t rootNote, uint8_t direction, uint8_t swing)
     {
         const juce::SpinLock::ScopedLockType sl (lock);
+        auto& s = slots[(size_t) activeTrack];
 
         // Same guard as the server: only a real grid change re-slices.
-        if ((int) bars != lastSliceBars || (int) division != lastSliceDivision)
+        if ((int) bars != s.lastSliceBars || (int) division != s.lastSliceDivision)
         {
-            sliceSeq.setGrid (bars, division);
-            lastSliceBars     = bars;
-            lastSliceDivision = division;
+            s.slice->setGrid (bars, division);
+            s.lastSliceBars     = bars;
+            s.lastSliceDivision = division;
         }
 
-        sliceSeq.setSlices (sliceCount, rootNote);
-        sliceSeq.setDirection (static_cast<ClockedSequencer::Direction> (juce::jlimit (0, 3, (int) direction)));
-        sliceSeq.setSwing ((float) juce::jlimit (0, 100, (int) swing) / 100.0f);
+        s.slice->setSlices (sliceCount, rootNote);
+        s.slice->setDirection (static_cast<ClockedSequencer::Direction> (juce::jlimit (0, 3, (int) direction)));
+        s.slice->setSwing ((float) juce::jlimit (0, 100, (int) swing) / 100.0f);
     }
 
     void looper (uint8_t division, bool active, bool randomOn)
     {
         const juce::SpinLock::ScopedLockType sl (lock);
-        sliceSeq.setLooperRandom (randomOn);
-        sliceSeq.setLooper (division, active);
+        auto& slice = *slots[(size_t) activeTrack].slice;
+        slice.setLooperRandom (randomOn);
+        slice.setLooper (division, active);
     }
 
     // Locally there is no Simpler to receive pitch bend or a CC, so the
@@ -519,23 +541,24 @@ public:
     {
         if (ribbonIndex >= NumRibbons)
             return;
+        const int t = getActiveTrack();
 
-        switch (ribbonTargets[ribbonIndex])
+        switch (slots[(size_t) t].ribbonTargets[ribbonIndex])
         {
             case MidiMorf::RibbonTarget::PitchBend:
-                if (auto* s = sliceSampler())
+                if (auto* s = sliceSampler (t))
                     s->player().setPitchSemitones ((float) (value14bit - 8192) / 8192.0f * 12.0f);
                 break;
 
             case MidiMorf::RibbonTarget::CC:
-                if (auto* s = sliceSampler())
+                if (auto* s = sliceSampler (t))
                     s->player().setTone ((float) value14bit / 16383.0f);
                 break;
 
             case MidiMorf::RibbonTarget::StepRepeat:
             {
                 const juce::SpinLock::ScopedLockType sl (lock);
-                sliceSeq.setStepRepeat (value14bit);
+                slots[(size_t) t].slice->setStepRepeat (value14bit);
                 break;
             }
         }
@@ -545,49 +568,80 @@ public:
     {
         if (ribbonIndex >= NumRibbons)
             return;
+        const int t = getActiveTrack();
+        auto& s = slots[(size_t) t];
 
-        const auto old = ribbonTargets[ribbonIndex];
-        ribbonTargets[ribbonIndex] = target;
+        const auto old = s.ribbonTargets[ribbonIndex];
+        s.ribbonTargets[ribbonIndex] = target;
 
         // Reassigning away from a target must not leave it stuck.
         if (old == MidiMorf::RibbonTarget::StepRepeat && target != old)
         {
             const juce::SpinLock::ScopedLockType sl (lock);
-            sliceSeq.setStepRepeat (1);
+            s.slice->setStepRepeat (1);
         }
         if (old == MidiMorf::RibbonTarget::PitchBend && target != old)
-            if (auto* s = sliceSampler()) s->player().setPitchSemitones (0.0f);
+            if (auto* smp = sliceSampler (t)) smp->player().setPitchSemitones (0.0f);
         if (old == MidiMorf::RibbonTarget::CC && target != old)
-            if (auto* s = sliceSampler()) s->player().setTone (1.0f);
+            if (auto* smp = sliceSampler (t)) smp->player().setTone (1.0f);
     }
 
 private:
     struct Event { int track; bool on; int channel, note, velocity; };
 
+    static bool validTrack (int t) { return juce::isPositiveAndBelow (t, NumTracks); }
+
     // The engines' output: queued under `lock`, delivered on the audio thread.
     class QueueSink : public SeqSink
     {
     public:
-        // The engines only send from inside `lock`, so reading the track is safe.
-        QueueSink (LocalSequencers& o, Which w) : owner (o), which (w) {}
+        QueueSink (LocalSequencers& o, int t) : owner (o), track (t) {}
 
-        void sendNoteOn (int ch, int note, int velocity) override { owner.push ({ owner.tracks[which], true, ch, note, velocity }); }
-        void sendNoteOff (int ch, int note) override             { owner.push ({ owner.tracks[which], false, ch, note, 0 }); }
+        void sendNoteOn (int ch, int note, int velocity) override { owner.push ({ track, true, ch, note, velocity }); }
+        void sendNoteOff (int ch, int note) override             { owner.push ({ track, false, ch, note, 0 }); }
 
         // e.g. the step page's MOD lane rides CC1 into the synth's mod wheel.
         void sendCC (int, int cc, int value) override
         {
-            if (auto* s = owner.rack.getSource (owner.tracks[which]))
+            if (auto* s = owner.rack.getSource (track))
                 s->controller (cc, value);
         }
 
     private:
         LocalSequencers& owner;
-        Which which;
+        const int track;
     };
 
-    static constexpr int NumRibbons = 2;
-    static constexpr int MaxEvents  = 256;
+    static constexpr int NumRibbons  = 2;
+    static constexpr int MaxEvents   = 512;
+    static constexpr int DrumChannel = 10;
+
+    struct Slot
+    {
+        Kind kind = Kind::None;
+        std::unique_ptr<QueueSink> sink;
+        std::unique_ptr<StepSequencerEngine> step;
+        std::unique_ptr<SliceSequencerEngine> slice;
+        std::atomic<bool> want { false }, running { false };
+
+        // Launching, under lock.
+        SeqPattern pending {};
+        bool hasPending = false, pendingStop = false;
+        std::atomic<int> launches { 0 };
+
+        // The Drum Grid.
+        std::array<std::array<uint8_t, DrumSteps>, DrumLanes> drumPattern {};   // under lock
+        std::array<bool, DrumLanes> drumSounding {};                            // under lock
+        int nextDrumSixteenth = 0;                                              // under lock
+        std::atomic<float> drumSwing { 0.0f };
+        std::atomic<int> drumStep { -1 };
+
+        // Breaker.
+        int lastSliceBars = -1, lastSliceDivision = 2;   // under lock
+        bool panicBreaks = false;                        // under lock
+        MidiMorf::RibbonTarget ribbonTargets[NumRibbons] = { MidiMorf::RibbonTarget::PitchBend,
+                                                             MidiMorf::RibbonTarget::StepRepeat };
+    };
 
     void push (const Event& e)
     {
@@ -599,8 +653,10 @@ private:
     void drainEvents()
     {
         if (numEvents > 0)
-            if (auto* s = sliceSampler())
-                s->setSliceMapping ((int) sliceSeq.getRootNote(), stepBeats());
+            for (int t = 0; t < NumTracks; ++t)
+                if (slots[(size_t) t].kind == Kind::Slice)
+                    if (auto* s = sliceSampler (t))
+                        s->setSliceMapping ((int) slots[(size_t) t].slice->getRootNote(), stepBeats (t));
 
         for (int i = 0; i < numEvents; ++i)
         {
@@ -611,9 +667,10 @@ private:
         numEvents = 0;
     }
 
-    double stepBeats() const
+    double stepBeats (int t) const
     {
-        return lastSliceDivision == 0 ? 1.0 : lastSliceDivision == 1 ? 0.5 : 0.25;
+        const int d = slots[(size_t) t].lastSliceDivision;
+        return d == 0 ? 1.0 : d == 1 ? 0.5 : 0.25;
     }
 
     double samplesPerTick() const
@@ -621,74 +678,86 @@ private:
         return sampleRate * 60.0 / (bpm.load() * SeqPPQN);
     }
 
-    ClockedSequencer& sequencer (int w) { return w == Step ? (ClockedSequencer&) stepSeq : sliceSeq; }
+    // The tick-driven engine for a track (Step-Seq or Breaker).
+    ClockedSequencer& sequencer (int t)
+    {
+        auto& s = slots[(size_t) t];
+        return s.kind == Kind::Slice ? (ClockedSequencer&) *s.slice : *s.step;
+    }
 
-    ClockedSequencer& activeSequencer() { return sliceIsActive ? (ClockedSequencer&) sliceSeq : stepSeq; }
+    ClockedSequencer* activeSequencer()
+    {
+        const auto k = slots[(size_t) activeTrack].kind;
+        return k == Kind::Step || k == Kind::Slice ? &sequencer (activeTrack) : nullptr;
+    }
 
     //==========================================================================
-    // The drum grid's clock — audio thread, under lock.
+    // The Drum Grid's clock — audio thread, under lock.
 
     // The tick a 16th falls on, swing included. Sixteenths count from the
-    // clock's start, so the grid stays in phase with the other sequencers.
-    double drumStepTick (int sixteenth) const
+    // clock's start, so the grids stay in phase with the other sequencers.
+    double drumStepTick (int t, int sixteenth) const
     {
         constexpr int tps = SeqPPQN / 4;
-        return sixteenth * tps + ((sixteenth % 2) == 1 ? drumSwing.load() * tps * 0.5 : 0.0);
+        return sixteenth * tps + ((sixteenth % 2) == 1 ? slots[(size_t) t].drumSwing.load() * tps * 0.5 : 0.0);
     }
 
     // Steps fire on the nearest sample.
-    void fireDueDrumSteps (double now)
+    void fireDueDrumSteps (int t, double now)
     {
-        while ((drumStepTick (nextDrumSixteenth) - now) * samplesPerTick() < 0.5)
+        auto& s = slots[(size_t) t];
+        while ((drumStepTick (t, s.nextDrumSixteenth) - now) * samplesPerTick() < 0.5)
         {
-            if (nextDrumSixteenth % launchSixteenths() == 0 && atBarLine (Drums))
+            if (s.nextDrumSixteenth % launchSixteenths() == 0 && atLaunchPoint (t))
                 return;   // stopped on the launch point
 
             // Last step's notes end as the next step starts (a sampler in
             // Keys mode needs its note-offs; the drum synth ignores them).
-            releaseDrumNotes();
+            releaseDrumNotes (t);
 
-            const int step = nextDrumSixteenth % DrumSteps;
+            const int step = s.nextDrumSixteenth % DrumSteps;
             for (int lane = 0; lane < DrumLanes; ++lane)
-                if (const int vel = drumPattern[(size_t) lane][(size_t) step]; vel > 0)
+                if (const int vel = s.drumPattern[(size_t) lane][(size_t) step]; vel > 0)
                 {
-                    push ({ tracks[Drums], true, DrumChannel, ::Drums::noteFor (lane), vel });
-                    drumSounding[(size_t) lane] = true;
+                    push ({ t, true, DrumChannel, ::Drums::noteFor (lane), vel });
+                    s.drumSounding[(size_t) lane] = true;
                 }
 
-            drumStep.store (step);
-            ++nextDrumSixteenth;
+            s.drumStep.store (step);
+            ++s.nextDrumSixteenth;
         }
     }
 
-    void releaseDrumNotes()
+    void releaseDrumNotes (int t)
     {
+        auto& s = slots[(size_t) t];
         for (int lane = 0; lane < DrumLanes; ++lane)
-            if (std::exchange (drumSounding[(size_t) lane], false))
-                push ({ tracks[Drums], false, DrumChannel, ::Drums::noteFor (lane), 0 });
+            if (std::exchange (s.drumSounding[(size_t) lane], false))
+                push ({ t, false, DrumChannel, ::Drums::noteFor (lane), 0 });
     }
 
     // Under lock. The queued pattern becomes the playing one.
-    void applyPending (int w)
+    void applyPending (int t)
     {
-        if (! hasPending[w])
+        auto& s = slots[(size_t) t];
+        if (! s.hasPending)
             return;
-        hasPending[w] = false;
+        s.hasPending = false;
 
-        const auto& p = pending[w];
-        if (w == Drums)
+        const auto& p = s.pending;
+        if (s.kind == Kind::Drums)
         {
-            drumPattern = p.drums;
+            s.drumPattern = p.drums;
         }
-        else
+        else if (s.kind != Kind::None)
         {
-            auto& seq = sequencer (w);
+            auto& seq = sequencer (t);
             for (int i = 0; i < SeqPattern::MaxSteps; ++i)
                 seq.setStep (i, p.steps[(size_t) i]);
-            if (w == Step)
+            if (s.kind == Kind::Step)
                 seq.setPatternLength (p.length);   // the slicer's length is its grid's
         }
-        launches[w].fetch_add (1);
+        s.launches.fetch_add (1);
     }
 
     // How many 16ths apart the launch points are.
@@ -704,33 +773,35 @@ private:
 
     // Audio thread, under lock, on a launch point: a queued stop or pattern.
     // True if the sequencer stopped.
-    bool atBarLine (int w)
+    bool atLaunchPoint (int t)
     {
-        if (std::exchange (pendingStop[w], false))
+        auto& s = slots[(size_t) t];
+        if (std::exchange (s.pendingStop, false))
         {
-            wantPlaying[w].store (false);
-            stopSequencer (w);
+            s.want.store (false);
+            stopSequencer (t);
             return true;
         }
-        applyPending (w);
+        applyPending (t);
         return false;
     }
 
-    void stopSequencer (int w)
+    void stopSequencer (int t)
     {
-        if (w == Drums)
+        auto& s = slots[(size_t) t];
+        if (s.kind == Kind::Drums)
         {
-            releaseDrumNotes();
-            drumStep.store (-1);
+            releaseDrumNotes (t);
+            s.drumStep.store (-1);
         }
-        else
+        else if (s.kind != Kind::None)
         {
-            sequencer (w).clockStop();
-            if (w == Slice)
-                if (auto* s = sliceSampler())
-                    s->player().releaseAll();   // one-shots ignore the note-off
+            sequencer (t).clockStop();
+            if (s.kind == Kind::Slice)
+                if (auto* smp = sliceSampler (t))
+                    smp->player().releaseAll();   // one-shots ignore the note-off
         }
-        running[w].store (false);
+        s.running.store (false);
     }
 
     // Audio thread, under lock.
@@ -744,13 +815,13 @@ private:
                 stopNotePlayer ((int) (&p - notePlayers.data()));
         }
 
-        for (int w = 0; w < NumSequencers; ++w)
+        for (int t = 0; t < NumTracks; ++t)
         {
-            const bool want = wantPlaying[w].load();
+            auto& s = slots[(size_t) t];
+            const bool want = s.want.load() && s.kind != Kind::None;
             anyWanted |= want;
-
-            if (! want && running[w].load())
-                stopSequencer (w);
+            if (! want && s.running.load())
+                stopSequencer (t);
         }
 
         if (anyWanted && ! clockRunning)
@@ -765,7 +836,6 @@ private:
         }
     }
 
-    //==========================================================================
     // Note clips and recording — audio thread, under lock.
     struct NotePlayer
     {
@@ -988,32 +1058,36 @@ private:
             clickLeft = (int) (0.06 * sampleRate);
         }
 
-        // Launch points for the tick-driven two; the drum grid has its own.
-        if (globalTick % (launchSixteenths() * (SeqPPQN / 4)) == 0)
-            for (int w : { Step, Slice })
-                if (running[w].load())
-                    atBarLine (w);
+        const bool launchPoint = globalTick % (launchSixteenths() * (SeqPPQN / 4)) == 0;
 
-        for (int w = 0; w < NumSequencers; ++w)
+        for (int t = 0; t < NumTracks; ++t)
         {
-            if (wantPlaying[w].load() && ! running[w].load() && globalTick % (SeqPPQN / 4) == 0)
+            auto& s = slots[(size_t) t];
+            if (s.kind == Kind::None)
+                continue;
+
+            // Launch points for the tick-driven two; the Drum Grid has its own.
+            if (launchPoint && s.kind != Kind::Drums && s.running.load())
+                atLaunchPoint (t);
+
+            if (s.want.load() && ! s.running.load() && globalTick % (SeqPPQN / 4) == 0)
             {
-                if (w == Drums)
+                if (s.kind == Kind::Drums)
                 {
-                    nextDrumSixteenth = globalTick / (SeqPPQN / 4);   // fires right after this tick
-                    running[w].store (true);
+                    s.nextDrumSixteenth = globalTick / (SeqPPQN / 4);   // fires right after this tick
+                    s.running.store (true);
                     continue;
                 }
 
                 if (globalTick == 0)
-                    sequencer (w).clockStart();
+                    sequencer (t).clockStart();
                 else
-                    sequencer (w).clockSongPosition (globalTick / (SeqPPQN / 4));
-                running[w].store (true);
+                    sequencer (t).clockSongPosition (globalTick / (SeqPPQN / 4));
+                s.running.store (true);
             }
 
-            if (running[w].load() && w != Drums)
-                sequencer (w).clockTick();
+            if (s.running.load() && s.kind != Kind::Drums)
+                sequencer (t).clockTick();
         }
 
         ++globalTick;
@@ -1021,27 +1095,20 @@ private:
 
     TrackRack& rack;
 
-    // Declared before the engines: their destructors still send note-offs.
+    // Declared before the slots: the engines' destructors still send note-offs.
     mutable juce::SpinLock lock;
-    int tracks[NumSequencers] = { DefaultStepTrack, DefaultSliceTrack, DefaultDrumTrack };   // under lock
     std::array<Event, MaxEvents> events;
     int numEvents = 0;
+    int activeTrack = 0;   // under lock
 
-    QueueSink stepSink, sliceSink;
-    StepSequencerEngine stepSeq;
-    SliceSequencerEngine sliceSeq;
+    std::array<Slot, NumTracks> slots;
 
     double sampleRate = 48000.0;
     std::atomic<double> bpm { 120.0 };
-    std::atomic<bool> wantPlaying[NumSequencers] { { false }, { false }, { false } };
-    std::atomic<bool> running[NumSequencers]     { { false }, { false }, { false } };
-
-    // The drum grid.
-    static constexpr int DrumChannel = 10;
-    std::array<std::array<uint8_t, DrumSteps>, DrumLanes> drumPattern {};   // under lock
-    std::array<bool, DrumLanes> drumSounding {};                            // under lock
-    int nextDrumSixteenth = 0;                                              // under lock
-    std::atomic<float> drumSwing { 0.0f };
+    std::atomic<int> launchQuantize { Bar };
+    bool   clockRunning  = false;   // audio thread
+    int    globalTick    = 0;
+    double samplesToTick = 0.0;
 
     // Note clips and recording, under lock.
     std::array<NotePlayer, TrackRack::NumTracks> notePlayers {};
@@ -1056,22 +1123,6 @@ private:
     std::atomic<int> passCount { 0 };
     double clickHz = 1000.0;
     int clickPos = 0, clickLeft = 0;   // audio thread
-
-    // Session launching, under lock.
-    std::array<SeqPattern, NumSequencers> pending {};
-    bool hasPending[NumSequencers] {}, pendingStop[NumSequencers] {};
-    std::atomic<int> launches[NumSequencers] { { 0 }, { 0 }, { 0 } };
-    std::atomic<int> launchQuantize { Bar };
-    std::atomic<int> drumStep { -1 };
-    bool   clockRunning  = false;   // audio thread
-    int    globalTick    = 0;
-    double samplesToTick = 0.0;
-
-    bool sliceIsActive = false;
-    bool panicBreaks   = false;   // under lock
-    int  lastSliceBars = -1, lastSliceDivision = 2;
-    MidiMorf::RibbonTarget ribbonTargets[NumRibbons] = { MidiMorf::RibbonTarget::PitchBend,
-                                                         MidiMorf::RibbonTarget::StepRepeat };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LocalSequencers)
 };

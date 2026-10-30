@@ -34,19 +34,19 @@ namespace BreakImport
     // Pick a drum loop for the slicer. `chooser` must outlive the dialog —
     // callers keep it as a member. `onImported` runs only on success;
     // failures alert.
-    inline void launch (std::unique_ptr<juce::FileChooser>& chooser, LocalSequencers& seqs,
+    inline void launch (std::unique_ptr<juce::FileChooser>& chooser, LocalSequencers& seqs, int track,
                         std::function<void()> onImported)
     {
         chooser = std::make_unique<juce::FileChooser> ("Import a drum loop", juce::File(), "*.wav;*.aif;*.aiff");
         chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-            [&seqs, onImported] (const juce::FileChooser& fc)
+            [&seqs, track, onImported] (const juce::FileChooser& fc)
             {
                 auto url = fc.getURLResult();
                 if (url.isEmpty()) return;
 
                 juce::String error;
                 const auto dest = copyIn (url, error);
-                if (dest != juce::File() && seqs.importBreak (dest, error))
+                if (dest != juce::File() && seqs.importBreak (track, dest, error))
                 {
                     if (onImported) onImported();
                     return;

@@ -251,6 +251,20 @@ Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit
 - [ ] **Live remix lane** (JB, 2026-10-30), monome-mlr style: a sample laid across a row of 16 positions with the playhead walking along it; tap a position to jump playback there (quantized), hold two to loop between them, release to fall back in time. Builds on the Sampler's slice playback.
 - [ ] **More of JB's recreated breaks** bundled beside the Amen (`BreakLibrary::recorded()`). Never the "All The Breaks" pack.
 
+### Per-track instruments (2026-10-30)
+
+- [x] Every track can have its own **Step-Seq, Breaker or Drum Grid**: own engine, page, pattern, clips and playhead (`LocalSequencers` slots, one page per track). Two Step-Seqs in different keys play at once. Page messages go to the active track (the page shown or touched).
+- [ ] The live controllers (Morf-Chord, Morf-Pad, ...) are still one page each: giving one to a second track moves it. Per-track copies of those next.
+
+### Decision needed — the Mac server
+
+JB (2026-10-30): "rethink our server plugin, maybe this is a whole separate app". Recommendation:
+
+- **Retire the server for the groovebox.** Add an **External MIDI** sound source per track that sends the track's notes out on its own channel through CoreMIDI: network MIDI (built into macOS and iOS — Audio MIDI Setup → Network, no server), USB and Bluetooth MIDI. Send MIDI clock (and later Ableton Link) so the DAW follows the phone.
+- The phone is always the clock; the DAW-sync mode and the server-side copies of the sequencers go away. That also lifts the "extra Step-Seqs only play locally in WiFi mode" limit.
+- **Android** has no built-in network MIDI, so a tiny free **bridge** app (receive and pass MIDI to the DAW) may still be worth it there — but it would be a dumb pipe, not a second engine.
+- The current server keeps working for v2 users until then.
+
 ### Phase 8 — iOS release ($4.99)
 
 - [ ] Set the price in App Store Connect. No StoreKit, no unlock code.

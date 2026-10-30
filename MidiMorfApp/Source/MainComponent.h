@@ -105,7 +105,11 @@ private:
 
     //==========================================================================
     // Session clips
-    int  sequencerOf (int track) const;                 // LocalSequencers::Which, or -1
+    int  sequencerOf (int track) const;                 // LocalSequencers::Kind as int, or -1
+    int  pageOf (int track) const;                      // the track's instrument page, or -1
+    StepSequencerPage&  stepPage (int t)  { return *stepPages[(size_t) t]; }
+    SliceSequencerPage& slicePage (int t) { return *slicePages[(size_t) t]; }
+    DrumGridPage&       drumPage (int t)  { return *drumPages[(size_t) t]; }
     SeqPattern pagePattern (int which);
     void showOnPage (int which, const SeqPattern& p);
     void captureClip (int track);                       // the page's edits into the playing clip
@@ -132,7 +136,7 @@ private:
     bool recQuantize = false, recMetronome = true;
     struct Undo { int scene; NoteClip notes; };
     std::array<std::optional<Undo>, TrackRack::NumTracks> undo;
-    int  shownLaunches[3] { 0, 0, 0 };
+    int  shownLaunches[TrackRack::NumTracks] { 0, 0, 0, 0 };
 
     //==========================================================================
     // Projects: the working one autosaves to Current.midimorf, and a named
@@ -156,8 +160,12 @@ private:
     DualMPadPage dualMPadPage;
     MorfChordPage morfChordPage;
     RoseChordPage roseChordPage;
-    StepSequencerPage stepSequencerPage;
-    SliceSequencerPage sliceSequencerPage;
+    // Every track has its own sequencer pages; the one-of-each slots they
+    // replaced stay as placeholders so the page numbers don't move.
+    std::array<std::unique_ptr<StepSequencerPage>, TrackRack::NumTracks> stepPages;
+    std::array<std::unique_ptr<SliceSequencerPage>, TrackRack::NumTracks> slicePages;
+    std::array<std::unique_ptr<DrumGridPage>, TrackRack::NumTracks> drumPages;
+    juce::Component stepPlaceholder, slicePlaceholder, drumPlaceholder;
     WavetableSynthPage synthPage { audioEngine.getSynth() };
     AboutPage aboutPage;
     SettingsPage settingsPage { eventRouter };
@@ -165,7 +173,6 @@ private:
     std::unique_ptr<SessionPage> homePage;   // the Session page; Home before it
     SamplerPage samplerPage;
     PerformView performView;   // iPad only
-    DrumGridPage drumGridPage { audioEngine.getSequencers() };
     DrumKitPage drumKitPage;
     NoteEditorPage noteEditorPage;
     int editingScene = -1;   // the clip the note editor has open

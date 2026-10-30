@@ -827,7 +827,12 @@ private:
     juce::OwnedArray<juce::TextButton> dirButtons, modeButtons;
     juce::OwnedArray<StepBox> stepBoxes;
     LaneStrip lanes;
-    SeqTransportBar transport { eventRouter, LocalSequencers::Step, false };
+    SeqTransportBar transport { eventRouter, [this] { return track; }, false };
+
+public:
+    int track = 0;   // which track's Step-Seq this is (set by the page)
+
+private:
 
     std::array<StepState, NUM_STEPS> steps;
     std::vector<int> noteTable;
@@ -851,6 +856,8 @@ public:
 
     void setPlayhead (int step) { content.setPlayhead (step); }
     void pushFullState()        { content.pushFullState(); }
+    void setTrack (int t)       { content.track = t; }
+    int  getTrack() const       { return content.track; }
     SeqPattern getPattern() const               { return content.getPattern(); }
     juce::Rectangle<int> stepsBounds() const    { return content.stepsBounds(); }
     void showPattern (const SeqPattern& p)      { content.showPattern (p); }

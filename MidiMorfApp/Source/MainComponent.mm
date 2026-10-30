@@ -59,7 +59,11 @@ static constexpr int performPageIdx   = MidiMorf::NUM_CONTROLLERS + 5;
 static constexpr int drumGridPageIdx  = MidiMorf::NUM_CONTROLLERS + 6;   // an instrument, but the phone's own
 static constexpr int drumKitPageIdx   = MidiMorf::NUM_CONTROLLERS + 7;
 static constexpr int noteEditorPageIdx = MidiMorf::NUM_CONTROLLERS + 8;
-static constexpr int numPages         = MidiMorf::NUM_CONTROLLERS + 9;
+static constexpr int seqPageBase      = MidiMorf::NUM_CONTROLLERS + 9;   // then 4 Step-Seq, 4 Breaker, 4 Drum Grid pages, one per track
+static constexpr int numPages         = seqPageBase + 3 * TrackRack::NumTracks;
+
+static int seqPageIdx (int kind, int track) { return seqPageBase + kind * TrackRack::NumTracks + track; }
+static bool isSeqPage (int page)            { return page >= seqPageBase && page < numPages; }
 
 // The four-at-once Perform view is for iPad; an iPhone screen is too small.
 static bool isIPad()
@@ -78,12 +82,16 @@ static bool isSequencer (int mode)
         || mode == drumGridPageIdx;
 }
 
-static LocalSequencers::Which whichSequencer (int mode)
+// The sequencer kind an instrument id is (LocalSequencers::Kind as int).
+static int whichSequencer (int mode)
 {
     if (mode == drumGridPageIdx)
-        return LocalSequencers::Drums;
-    return mode == (int) MidiMorf::ControllerMode::StepSequencer ? LocalSequencers::Step : LocalSequencers::Slice;
+        return (int) LocalSequencers::Kind::Drums;
+    return mode == (int) MidiMorf::ControllerMode::StepSequencer ? (int) LocalSequencers::Kind::Step : (int) LocalSequencers::Kind::Slice;
 }
+
+static constexpr int KindStep = (int) LocalSequencers::Kind::Step, KindSlice = (int) LocalSequencers::Kind::Slice,
+                     KindDrums = (int) LocalSequencers::Kind::Drums;
 
 // An instrument's name on the rail.
 static juce::String instrumentShortName (int mode)
@@ -100,10 +108,18 @@ MainComponent::MainComponent()
       transportPage (eventRouter),
       dualMPadPage (eventRouter),
       morfChordPage (eventRouter),
-      roseChordPage (eventRouter),
-      stepSequencerPage (eventRouter),
-      sliceSequencerPage (eventRouter)
+      roseChordPage (eventRouter)
 {
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+    {
+        stepPages[(size_t) t] = std::make_unique<StepSequencerPage> (eventRouter);
+        stepPages[(size_t) t]->setTrack (t);
+        slicePages[(size_t) t] = std::make_unique<SliceSequencerPage> (eventRouter);
+        slicePages[(size_t) t]->setTrack (t);
+        drumPages[(size_t) t] = std::make_unique<DrumGridPage> (audioEngine.getSequencers());
+        drumPages[(size_t) t]->setTrack (t);
+    }
+
     // App properties for state persistence
     juce::PropertiesFile::Options options;
     options.applicationName = "MidiMorf";
@@ -134,7 +150,7 @@ MainComponent::MainComponent()
         const int w = sequencerOf (t);
         if (w < 0)
             return audioEngine.getSequencers().isNoteClipPlaying (t);
-        return audioEngine.getSequencers().getPlayhead ((LocalSequencers::Which) w) >= 0;
+        return audioEngine.getSequencers().getPlayhead (t) >= 0;
     };
     cb.launchClip    = [this] (int t, int s) { launchClip (t, s); };
     cb.newClip       = [this] (int t, int s) { newClip (t, s); };
@@ -237,24 +253,27 @@ MainComponent::MainComponent()
     pageContainer.addPage (&dualMPadPage);
     pageContainer.addPage (&morfChordPage);
     pageContainer.addPage (&roseChordPage);
-    pageContainer.addPage (&stepSequencerPage);
-    pageContainer.addPage (&sliceSequencerPage);
+    pageContainer.addPage (&stepPlaceholder);
+    pageContainer.addPage (&slicePlaceholder);
     pageContainer.addPage (&synthPage);
     pageContainer.addPage (&aboutPage);
     pageContainer.addPage (&settingsPage);
     pageContainer.addPage (homePage.get());
     pageContainer.addPage (&samplerPage);
     pageContainer.addPage (&performView);
-    pageContainer.addPage (&drumGridPage);
+    pageContainer.addPage (&drumPlaceholder);
     pageContainer.addPage (&drumKitPage);
     pageContainer.addPage (&noteEditorPage);
+    for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (stepPages[(size_t) t].get());
+    for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (slicePages[(size_t) t].get());
+    for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (drumPages[(size_t) t].get());
 
     // Perform borrows the tracks' instrument pages and hands them back.
     performView.onShow       = [this] { populatePerform(); };
     performView.onReturnPage = [this] (juce::Component* p) { pageContainer.reclaim (p); };
     performView.onExpand     = [this] (int t)
     {
-        pageContainer.setPage (instrumentOf[t] >= 0 ? instrumentOf[t] : homePageIdx);
+        pageContainer.setPage (instrumentOf[t] >= 0 ? pageOf (t) : homePageIdx);
     };
     performView.onMute       = [this] (int t, bool m) { audioEngine.getRack().setMuted (t, m); saveState(); };
 
@@ -263,6 +282,7 @@ MainComponent::MainComponent()
     // touched is the one they mean.
     performView.onTouched    = [this] (int t)
     {
+        audioEngine.getSequencers().setActiveTrack (t);
         const int mode = instrumentOf[t];
         if (juce::isPositiveAndBelow (mode, MidiMorf::NUM_CONTROLLERS) && mode != focusedMode)
         {
@@ -337,11 +357,13 @@ MainComponent::MainComponent()
         saveState();
     };
 
-    drumGridPage.onStateChanged = [this] { saveState(); };
-    drumGridPage.onAudition = [this] (int note, bool down)
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
-        audition (audioEngine.getSequencers().getTrack (LocalSequencers::Drums), note, down);
-    };
+        drumPage (t).onStateChanged = [this] { saveState(); };
+        drumPage (t).onAudition = [this, t] (int note, bool down) { audition (t, note, down); };
+        stepPage (t).setOnStateChanged ([this] { saveState(); });
+        slicePage (t).setOnStateChanged ([this] { saveState(); });
+    }
     drumKitPage.onChanged   = [this] { saveState(); };
     drumKitPage.onKitLoaded = [this] { homePage->refresh(); updateRail(); };
     drumKitPage.onAudition  = [this] (int note, bool down) { audition (drumKitPage.getTrack(), note, down); };
@@ -355,14 +377,12 @@ MainComponent::MainComponent()
     // own, as picking it on Slice-Seq does.
     samplerPage.onLoaded = [this] (int t, const Break* b)
     {
-        if (b != nullptr && t == eventRouter.getTrackFor (MidiMorf::ControllerMode::SliceSequencer)
+        if (b != nullptr && sequencerOf (t) == KindSlice
             && audioEngine.getTrackSampler (t).getMode() == SamplerSource::Slice)
             audioEngine.getSequencers().setBpm (b->bpm());
     };
     fxPage.onStateChanged = [this] { saveState(); };
     transportPage.onStateChanged = [this] { saveState(); };
-    stepSequencerPage.setOnStateChanged ([this] { saveState(); });
-    sliceSequencerPage.setOnStateChanged ([this] { saveState(); });
 
     // Network
     networkClient.setListener (this);
@@ -514,6 +534,11 @@ juce::String MainComponent::getPageDisplayName (int pageIndex) const
     if (pageIndex == samplerPageIdx)   return "Sampler";
     if (pageIndex == performPageIdx)   return "Perform";
     if (pageIndex == drumGridPageIdx)  return "Drum Grid";
+    if (isSeqPage (pageIndex))
+    {
+        static const char* names[3] = { "Step-Seq", "Breaker", "Drum Grid" };
+        return names[(pageIndex - seqPageBase) / TrackRack::NumTracks];
+    }
     if (pageIndex == drumKitPageIdx)   return "Drums";
     if (pageIndex == noteEditorPageIdx) return "Editor";
     return {};
@@ -537,23 +562,38 @@ void MainComponent::setInstrument (int track, int mode)
     if (! isInstrument)
         mode = -1;
 
-    for (int t = 0; t < TrackRack::NumTracks; ++t)
-        if (t != track && mode >= 0 && instrumentOf[t] == mode)
-            instrumentOf[t] = -1;
-
-    const int old = instrumentOf[track];
-    if (old >= 0 && old != mode && isSequencer (old))
-        audioEngine.getSequencers().setPlaying (whichSequencer (old), false);
+    // Sequencers: every track has its own. A live controller is still one
+    // page, so it moves.
+    if (! isSequencer (mode))
+        for (int t = 0; t < TrackRack::NumTracks; ++t)
+            if (t != track && mode >= 0 && instrumentOf[t] == mode)
+                instrumentOf[t] = -1;
 
     instrumentOf[track] = mode;
-    if (mode == drumGridPageIdx)
+
+    auto& seqs = audioEngine.getSequencers();
+    if (isSequencer (mode))
     {
-        audioEngine.getSequencers().setTrack (LocalSequencers::Drums, track);
-        drumGridPage.setTrack (track);
+        const int kind = whichSequencer (mode);
+        seqs.setKind (track, (LocalSequencers::Kind) kind);
+
+        // The engine starts from what the track's page shows.
+        if (kind == KindDrums)
+        {
+            seqs.queuePattern (track, drumPage (track).getPattern());
+        }
+        else
+        {
+            seqs.setActiveTrack (track);
+            if (kind == KindStep) stepPage (track).pushFullState();
+            else                  slicePage (track).pushFullState();
+        }
     }
-    else if (mode >= 0)
+    else
     {
-        eventRouter.setTrackFor (static_cast<MidiMorf::ControllerMode> (mode), track);
+        seqs.setKind (track, LocalSequencers::Kind::None);
+        if (mode >= 0)
+            eventRouter.setTrackFor (static_cast<MidiMorf::ControllerMode> (mode), track);
     }
 }
 
@@ -583,10 +623,22 @@ int MainComponent::trackOfPage (int pageIndex) const
     if (pageIndex == noteEditorPageIdx)
         return noteEditorPage.getTrack();
 
+    if (isSeqPage (pageIndex))
+    {
+        const int t = (pageIndex - seqPageBase) % TrackRack::NumTracks;
+        return pageOf (t) == pageIndex ? t : -1;
+    }
+
     for (int t = 0; t < TrackRack::NumTracks; ++t)
         if (instrumentOf[t] == pageIndex)
             return t;
     return -1;
+}
+
+int MainComponent::pageOf (int track) const
+{
+    const int inst = juce::isPositiveAndBelow (track, TrackRack::NumTracks) ? instrumentOf[track] : -1;
+    return isSequencer (inst) ? seqPageIdx (whichSequencer (inst), track) : inst;
 }
 
 bool MainComponent::pageIsSound (int pageIndex) const
@@ -619,7 +671,7 @@ void MainComponent::trackTapped (int track)
 void MainComponent::showInstrument (int track)
 {
     if (instrumentOf[track] >= 0)
-        pageContainer.setPage (instrumentOf[track]);
+        pageContainer.setPage (pageOf (track));
 }
 
 void MainComponent::showSound (int track)
@@ -660,26 +712,28 @@ void MainComponent::showSound (int track)
 int MainComponent::sequencerOf (int track) const
 {
     const int inst = juce::isPositiveAndBelow (track, TrackRack::NumTracks) ? instrumentOf[track] : -1;
-    return isSequencer (inst) ? (int) whichSequencer (inst) : -1;
+    return isSequencer (inst) ? whichSequencer (inst) : -1;
 }
 
-SeqPattern MainComponent::pagePattern (int which)
+// The pattern on a track's sequencer page.
+SeqPattern MainComponent::pagePattern (int track)
 {
-    switch (which)
+    switch (sequencerOf (track))
     {
-        case LocalSequencers::Step:  return stepSequencerPage.getPattern();
-        case LocalSequencers::Slice: return sliceSequencerPage.getPattern();
-        default:                     return drumGridPage.getPattern();
+        case KindStep:  return stepPage (track).getPattern();
+        case KindSlice: return slicePage (track).getPattern();
+        default:        return drumPage (track).getPattern();
     }
 }
 
-void MainComponent::showOnPage (int which, const SeqPattern& p)
+void MainComponent::showOnPage (int track, const SeqPattern& p)
 {
-    switch (which)
+    switch (sequencerOf (track))
     {
-        case LocalSequencers::Step:  stepSequencerPage.showPattern (p); break;
-        case LocalSequencers::Slice: sliceSequencerPage.showPattern (p); break;
-        default:                     drumGridPage.showPattern (p); break;
+        case KindStep:  stepPage (track).showPattern (p); break;
+        case KindSlice: slicePage (track).showPattern (p); break;
+        case KindDrums: drumPage (track).showPattern (p); break;
+        default: break;
     }
 }
 
@@ -687,7 +741,7 @@ void MainComponent::captureClip (int track)
 {
     const int w = sequencerOf (track), s = session.getPlaying (track);
     if (w >= 0 && session.hasClip (track, s) && session.clip (track, s)->sequencer == w)
-        session.clip (track, s)->pattern = pagePattern (w);
+        session.clip (track, s)->pattern = pagePattern (track);
 }
 
 void MainComponent::launchClip (int track, int scene)
@@ -716,32 +770,27 @@ void MainComponent::launchClip (int track, int scene)
     captureClip (track);
     const auto& pattern = session.clip (track, scene)->pattern;
     auto& seqs = audioEngine.getSequencers();
-    const auto which = (LocalSequencers::Which) w;
-
-    if (which == LocalSequencers::Drums || eventRouter.isLocalSync())
+    if (w == KindDrums || eventRouter.isLocalSync())
     {
-        const bool wasRunning = seqs.getPlayhead (which) >= 0;
-        seqs.queuePattern (which, pattern);
+        const bool wasRunning = seqs.getPlayhead (track) >= 0;
+        seqs.queuePattern (track, pattern);
         if (wasRunning)
         {
             session.setQueued (track, scene);   // takes over on the bar; pollLaunches moves it to playing
         }
         else
         {
-            showOnPage (w, pattern);
+            showOnPage (track, pattern);
             session.setPlaying (track, scene);
-            shownLaunches[w] = seqs.getLaunchCount (which);
+            shownLaunches[track] = seqs.getLaunchCount (track);
         }
-        seqs.setPlaying (which, true);
+        seqs.setPlaying (track, true);
     }
     else
     {
-        switch (which)
-        {
-            case LocalSequencers::Step:  stepSequencerPage.loadPattern (pattern); break;
-            case LocalSequencers::Slice: sliceSequencerPage.loadPattern (pattern); break;
-            default: break;
-        }
+        seqs.setActiveTrack (track);
+        if (w == KindStep) stepPage (track).loadPattern (pattern);
+        else               slicePage (track).loadPattern (pattern);
         session.setPlaying (track, scene);
     }
     saveState();
@@ -758,7 +807,7 @@ void MainComponent::newClip (int track, int scene)
         return;
     }
     captureClip (track);
-    session.setClip (track, scene, { session.freshName (track), pagePattern (w), w });
+    session.setClip (track, scene, { session.freshName (track), pagePattern (track), w });
     launchClip (track, scene);
     homePage->refresh();
 }
@@ -830,7 +879,7 @@ void MainComponent::stopTrack (int track)
         return;
     }
     session.setQueued (track, -1);
-    audioEngine.getSequencers().queueStop ((LocalSequencers::Which) w);
+    audioEngine.getSequencers().queueStop (track);
 }
 
 // Timer: a queued clip that has taken over becomes the playing one, and its
@@ -838,16 +887,17 @@ void MainComponent::stopTrack (int track)
 void MainComponent::pollLaunches()
 {
     auto& seqs = audioEngine.getSequencers();
-    for (int w = 0; w < LocalSequencers::NumSequencers; ++w)
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
-        const int count = seqs.getLaunchCount ((LocalSequencers::Which) w);
-        if (count == shownLaunches[w])
+        if (sequencerOf (t) < 0)
             continue;
-        shownLaunches[w] = count;
-        showOnPage (w, seqs.getPattern ((LocalSequencers::Which) w));
-        for (int t = 0; t < TrackRack::NumTracks; ++t)
-            if (sequencerOf (t) == w && session.getQueued (t) >= 0)
-                session.setPlaying (t, session.getQueued (t));
+        const int count = seqs.getLaunchCount (t);
+        if (count == shownLaunches[t])
+            continue;
+        shownLaunches[t] = count;
+        showOnPage (t, seqs.getPattern (t));
+        if (session.getQueued (t) >= 0)
+            session.setPlaying (t, session.getQueued (t));
     }
 
     // Note clips: a queued one has taken over once nothing is pending.
@@ -1013,7 +1063,7 @@ void MainComponent::seedClips()
         for (int s = 0; s < SessionModel::NumScenes; ++s)
             any |= session.hasClip (t, s);
         if (any) continue;
-        session.setClip (t, 0, { "Pattern 1", pagePattern (w), w });
+        session.setClip (t, 0, { "Pattern 1", pagePattern (t), w });
         session.setPlaying (t, 0);
     }
 }
@@ -1028,14 +1078,15 @@ void MainComponent::applySessionToSequencers()
         if (w < 0 || ! session.hasClip (t, s) || session.clip (t, s)->sequencer != w)
             continue;
         const auto& p = session.clip (t, s)->pattern;
-        seqs.queuePattern ((LocalSequencers::Which) w, p);   // stopped: applies at once
+        seqs.queuePattern (t, p);   // stopped: applies at once
+        seqs.setActiveTrack (t);    // the page's loadPattern sends to its own track
         switch (w)
         {
-            case LocalSequencers::Step:  stepSequencerPage.loadPattern (p); break;
-            case LocalSequencers::Slice: sliceSequencerPage.loadPattern (p); break;
-            default:                     drumGridPage.showPattern (p); break;
+            case KindStep:  stepPage (t).loadPattern (p); break;
+            case KindSlice: slicePage (t).loadPattern (p); break;
+            default:        drumPage (t).showPattern (p); break;
         }
-        shownLaunches[w] = seqs.getLaunchCount ((LocalSequencers::Which) w);
+        shownLaunches[t] = seqs.getLaunchCount (t);
     }
 }
 
@@ -1116,9 +1167,9 @@ static juce::ValueTree starterProject (int drumGridMode, bool tour = false)
             beat.drums[(size_t) laneOf[l]][(size_t) i] = (uint8_t) juce::roundToInt (BreakLibrary::detail::velocityFor (lanes[l][i]) * 127.0f);
     if (! tour)   // the tour's tracks get their clips as the player sets them up
     {
-        s.setClip (1, 0, { "Pattern 1", step, LocalSequencers::Step });
-        s.setClip (2, 0, { "Pattern 1", slice, LocalSequencers::Slice });
-        s.setClip (3, 0, { "Pattern 1", beat, LocalSequencers::Drums });
+        s.setClip (1, 0, { "Pattern 1", step, KindStep });
+        s.setClip (2, 0, { "Pattern 1", slice, KindSlice });
+        s.setClip (3, 0, { "Pattern 1", beat, KindDrums });
         for (int t = 1; t < 4; ++t)
             s.setPlaying (t, 0);
     }
@@ -1183,24 +1234,24 @@ void MainComponent::startWalkthrough()
     SeqPattern rests, inOrder;
     for (auto& st : rests.steps) st = { 0, 100, 50, 64, true };
     for (int i = 0; i < SeqPattern::MaxSteps; ++i) inOrder.steps[(size_t) i] = { (uint8_t) i, 100, 95, 64, false };
-    stepSequencerPage.loadPattern (rests);
-    sliceSequencerPage.loadPattern (inOrder);
+    stepPage (0).showPattern (rests);     // track 1's Step-Seq, sent when the player picks it
+    slicePage (1).showPattern (inOrder);  // track 2's Breaker, likewise
 
-    auto& breaker = sliceSequencerPage.getContent();
+    auto& breaker = slicePage (1).getContent();
     auto onPage    = [this] (int page) { return pageContainer.getCurrentPage() == page; };
     auto railTrack = [this] (int t) { return trackButtons[t]->getBounds(); };
     auto inPage    = [this] (juce::Component& c, juce::Rectangle<int> r) { return getLocalArea (&c, r); };
     auto onSession = [this] (juce::Rectangle<int> r) { return getLocalArea (homePage.get(), r); };
     auto stepsOn   = [this]
     {
-        const auto p = stepSequencerPage.getPattern();
+        const auto p = stepPage (0).getPattern();
         int on = 0;
         for (int i = 0; i < p.length; ++i) on += p.steps[(size_t) i].rest ? 0 : 1;
         return on;
     };
     auto notesUsed = [this]
     {
-        const auto p = stepSequencerPage.getPattern();
+        const auto p = stepPage (0).getPattern();
         std::set<int> degrees;
         for (int i = 0; i < p.length; ++i)
             if (! p.steps[(size_t) i].rest) degrees.insert (p.steps[(size_t) i].index);
@@ -1208,14 +1259,14 @@ void MainComponent::startWalkthrough()
     };
     auto slicesMoved = [this, &breaker]
     {
-        const auto p = sliceSequencerPage.getPattern();
+        const auto p = slicePage (1).getPattern();
         int moved = 0;
         for (int i = 0; i < breaker.numStepsShown(); ++i) moved += p.steps[(size_t) i].index != i || p.steps[(size_t) i].rest;
         return moved;
     };
     auto baseline = std::make_shared<std::array<int, 3>>();   // ribbon and looper counts when their step starts
-    const int stepPage  = (int) MidiMorf::ControllerMode::StepSequencer;
-    const int slicePage = (int) MidiMorf::ControllerMode::SliceSequencer;
+    const int stepPageIdx  = seqPageIdx (KindStep, 0);
+    const int slicePageIdx = seqPageIdx (KindSlice, 1);
 
     std::vector<Walkthrough::Step> steps = {
         { "Let's make something: a bassline you write yourself, then the Amen break, chopped up live. About two minutes.",
@@ -1225,18 +1276,18 @@ void MainComponent::startWalkthrough()
         { "And a sound for it to play: pick Synth.",
           [=] { return onSession (homePage->soundBounds (0)); }, [this] { return audioEngine.getTrackSound (0) == AudioEngine::Sound::Synth; } },
         { "Tap 1 to open its Step-Seq.",
-          [=] { return railTrack (0); }, [=] { return onPage (stepPage); } },
+          [=] { return railTrack (0); }, [=] { return onPage (stepPageIdx); } },
         { "Tap 1 again to get to its sound.",
           [=] { return railTrack (0); }, [=] { return onPage (synthPageIdx); } },
         { "Tap the name to browse the synth sounds and pick one. Try the Bass ones.",
           [this] { return getLocalArea (&synthPage, synthPage.presetBarBounds()); },
           [this] { return audioEngine.getSoundName (0) != "Init"; } },
         { "Tap 1 to go back to the steps.",
-          [=] { return railTrack (0); }, [=] { return onPage (stepPage); } },
+          [=] { return railTrack (0); }, [=] { return onPage (stepPageIdx); } },
         { "Every step is off. Tap a few to switch them on.",
-          [=] { return inPage (stepSequencerPage, stepSequencerPage.stepsBounds()); }, [=] { return stepsOn() >= 4; } },
+          [=] { return inPage (stepPage (0), stepPage (0).stepsBounds()); }, [=] { return stepsOn() >= 4; } },
         { "Now drag the sliders up and down to change each step's note.",
-          [=] { return inPage (stepSequencerPage, stepSequencerPage.stepsBounds()); }, [=] { return notesUsed() >= 3; } },
+          [=] { return inPage (stepPage (0), stepPage (0).stepsBounds()); }, [=] { return notesUsed() >= 3; } },
         { "Press play.",
           [this] { return playButton.getBounds(); }, [&seqs] { return seqs.isAnyPlaying(); } },
         { "That's your bassline. Now the drums. Tap the house.",
@@ -1246,8 +1297,8 @@ void MainComponent::startWalkthrough()
         { "And for its sound, pick Sampler. It already holds the Amen break.",
           [=] { return onSession (homePage->soundBounds (1)); }, [this] { return audioEngine.getTrackSound (1) == AudioEngine::Sound::Sampler; } },
         { "Tap 2 to open Breaker.",
-          [=] { return railTrack (1); }, [=] { return onPage (slicePage); },
-          {}, [&seqs] { seqs.setPlaying (LocalSequencers::Slice, true); } },
+          [=] { return railTrack (1); }, [=] { return onPage (slicePageIdx); },
+          {}, [&seqs] { seqs.setPlaying (1, true); } },
         { "It's playing the Amen in order, one slice per step. Tap and drag in the grid to change which slice plays where.",
           [=, &breaker] { return inPage (breaker, breaker.gridBounds()); }, [=] { return slicesMoved() >= 3; } },
         { "Now drag along the right-hand strip on top: it stutters each step, faster as you go.",
@@ -1313,7 +1364,7 @@ void MainComponent::populatePerform()
     focusedMode = -1;
     for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
-        const int inst = instrumentOf[t];
+        const int inst = pageOf (t);
         const juce::String text = inst >= 0 ? headerText (inst)
                                             : "T" + juce::String (t + 1) + juce::String::fromUTF8 ("  \xc2\xb7  ") + audioEngine.getSoundName (t);
         performView.setQuarter (t, inst >= 0 ? pageContainer.getPage (inst) : nullptr, text,
@@ -1380,7 +1431,7 @@ void MainComponent::togglePlay()
     for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
         if (isSequencer (instrumentOf[t]))
-            seqs.setPlaying (whichSequencer (instrumentOf[t]), true);
+            seqs.setPlaying (t, true);
         else if (const int s = session.getPlaying (t); session.hasClip (t, s) && session.clip (t, s)->isNotes())
             seqs.queueNoteClip (t, session.clip (t, s)->notes);
     }
@@ -1432,12 +1483,25 @@ void MainComponent::pageChanged (int newPageIndex)
         auto mode = static_cast<MidiMorf::ControllerMode> (newPageIndex);
         eventRouter.sendScreenMode (mode);
 
-        // The server keeps no per-page memory, so the sequencers have to
-        // resend their whole state whenever their page comes back into focus.
-        if (mode == MidiMorf::ControllerMode::StepSequencer)
-            stepSequencerPage.pushFullState();
-        else if (mode == MidiMorf::ControllerMode::SliceSequencer)
-            sliceSequencerPage.pushFullState();
+    }
+
+    // A track's sequencer page: its messages go to that track's engine, and
+    // the server (which keeps no per-page memory) gets its whole state.
+    if (isSeqPage (newPageIndex))
+    {
+        const int t = (newPageIndex - seqPageBase) % TrackRack::NumTracks;
+        const int kind = (newPageIndex - seqPageBase) / TrackRack::NumTracks;
+        audioEngine.getSequencers().setActiveTrack (t);
+        if (kind == KindStep)
+        {
+            eventRouter.sendScreenMode (MidiMorf::ControllerMode::StepSequencer);
+            stepPage (t).pushFullState();
+        }
+        else if (kind == KindSlice)
+        {
+            eventRouter.sendScreenMode (MidiMorf::ControllerMode::SliceSequencer);
+            slicePage (t).pushFullState();
+        }
     }
 
     updateRail();
@@ -1497,7 +1561,8 @@ void MainComponent::saveNow()
     roseChordPage.saveState (pageState);
     fxPage.saveState (pageState);
     audioEngine.getSequencers().saveState (pageState);
-    drumGridPage.saveState (pageState);
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+        drumPage (t).saveState (pageState);
     pageState.setValue ("rec_bars", recBars);
     pageState.setValue ("rec_quantize", recQuantize);
     pageState.setValue ("rec_metronome", recMetronome);
@@ -1614,7 +1679,8 @@ void MainComponent::restoreState()
     roseChordPage.restoreState (pages);
     fxPage.restoreState (pages);
     audioEngine.getSequencers().restoreState (pages);
-    drumGridPage.restoreState (pages);
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+        drumPage (t).restoreState (pages);
     recBars      = juce::jlimit (1, 8, pages.getIntValue ("rec_bars", 2));
     recQuantize  = pages.getBoolValue ("rec_quantize", false);
     recMetronome = pages.getBoolValue ("rec_metronome", true);
@@ -1735,11 +1801,11 @@ void MainComponent::restoreState()
     // instrument (Morf-Chord on first launch), or Home.
     int lastPage = settings->getIntValue ("lastPage", -1);
     const bool reachable = lastPage >= 0 && lastPage < numPages
-                           && ((lastPage >= MidiMorf::NUM_CONTROLLERS && lastPage != drumGridPageIdx && lastPage != noteEditorPageIdx)
+                           && ((lastPage >= MidiMorf::NUM_CONTROLLERS && lastPage < seqPageBase && lastPage != drumGridPageIdx && lastPage != noteEditorPageIdx)
                                || lastPage == (int) CM::Transport || lastPage == (int) CM::FXPunchIn
                                || trackOfPage (lastPage) >= 0);
     if (! reachable)
-        lastPage = instrumentOf[0] >= 0 ? instrumentOf[0] : homePageIdx;
+        lastPage = instrumentOf[0] >= 0 ? pageOf (0) : homePageIdx;
     if (lastPage == performPageIdx && ! isIPad())
         lastPage = homePageIdx;
 
@@ -1755,6 +1821,7 @@ void MainComponent::seqPlayheadChanged (int step)
 {
     // The server only streams the playhead for the page it thinks the phone
     // is on; applying it to both pages is harmless and keeps this simple.
-    stepSequencerPage.setPlayhead (step);
-    sliceSequencerPage.setPlayhead (step);
+    const int t = audioEngine.getSequencers().getActiveTrack();
+    stepPage (t).setPlayhead (step);
+    slicePage (t).setPlayhead (step);
 }

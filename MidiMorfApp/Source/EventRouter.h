@@ -53,8 +53,8 @@ public:
 
         switch (page)
         {
-            case CM::StepSequencer:  sequencers.setTrack (LocalSequencers::Step, track);  return;
-            case CM::SliceSequencer: sequencers.setTrack (LocalSequencers::Slice, track); return;
+            case CM::StepSequencer:
+            case CM::SliceSequencer: return;   // every track has its own (LocalSequencers::setKind)
             default: break;
         }
 
@@ -81,8 +81,7 @@ public:
     int getTrackFor (MidiMorf::ControllerMode page) const
     {
         using CM = MidiMorf::ControllerMode;
-        if (page == CM::StepSequencer)  return sequencers.getTrack (LocalSequencers::Step);
-        if (page == CM::SliceSequencer) return sequencers.getTrack (LocalSequencers::Slice);
+        if (page == CM::StepSequencer || page == CM::SliceSequencer) return -1;   // per track
         if (auto* sink = sinkFor (page))
             return sink->getTrack();
         return -1;
@@ -157,7 +156,7 @@ public:
 
     // Transport / global — always WiFi.
     void sendTiltUpdate (float tx, float ty)     { network.sendTiltUpdate (tx, ty); }
-    void sendScreenMode (MidiMorf::ControllerMode m) { network.sendScreenMode (m); sequencers.setActivePage (m); }
+    void sendScreenMode (MidiMorf::ControllerMode m) { network.sendScreenMode (m); }
     void sendTransportButton (uint8_t buttonId)  { network.sendTransportButton (buttonId); }
 
     // Creative Sequencer Pack. With DAW sync the server runs the sequencers on

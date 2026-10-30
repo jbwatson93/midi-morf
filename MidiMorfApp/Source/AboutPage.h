@@ -114,16 +114,16 @@ public:
         const float sectionGap = 16.0f;
 
         drawSection (g, area, "What's Inside",
-            "7 expressive controllers + a built-in synth.\n"
+            "4 tracks, 7 controllers, synths and breaks.\n"
             "Play standalone, or send MIDI to a DAW over WiFi.\n"
-            "Tap the menu button to switch modes or jump\n"
-            "between controllers.");
+            "Tap 1-4 on the right to play a track; tap it\n"
+            "again for its sound. Set tracks up on Home.");
         area.removeFromTop (sectionGap);
 
         drawSection (g, area, "Local Play (no setup)",
-            "Open Settings, choose Local mode, play any controller.\n"
-            "The built-in synth makes the sound. Tap Synth to\n"
-            "design your own patches.");
+            "In Settings choose Local mode, then play any track.\n"
+            "The built-in synths and breaks make the sound;\n"
+            "press Play at the bottom to start the sequencers.");
         area.removeFromTop (sectionGap);
 
         drawSection (g, area, "DAW Setup (WiFi mode)",

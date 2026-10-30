@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "EventRouter.h"
 #include "LocalSequencers.h"
+#include "BreakImport.h"
 
 //==============================================================================
 // The strip along the bottom of both sequencer pages.
@@ -182,50 +183,10 @@ private:
         if (onStateChanged) onStateChanged();
     }
 
-    // iOS hands back a security-scoped URL, so the loop is copied into the
-    // app's Documents/Breaks folder first. That copy is what gets remembered,
-    // so it still loads on the next launch.
     void launchImport()
     {
-        chooser = std::make_unique<juce::FileChooser> ("Import a drum loop", juce::File(), "*.wav;*.aif;*.aiff");
         juce::Component::SafePointer<SeqTransportBar> safe (this);
-        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-            [safe] (const juce::FileChooser& fc)
-            {
-                if (safe == nullptr) return;
-                auto url = fc.getURLResult();
-                if (url.isEmpty()) return;
-
-                auto dir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
-                               .getChildFile ("Breaks");
-                dir.createDirectory();
-                auto name = url.getFileName().isNotEmpty() ? url.getFileName() : juce::String ("Imported.wav");
-                auto dest = dir.getChildFile (juce::URL::removeEscapeChars (name));
-
-                bool copied = false;
-                if (auto in = url.createInputStream (juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)))
-                {
-                    dest.deleteFile();
-                    juce::FileOutputStream out (dest);
-                    copied = out.openedOk() && out.writeFromInputStream (*in, -1) > 0;
-                }
-
-                juce::String error;
-                if (! copied)
-                    error = "Couldn't read " + name;
-                else if (safe->seqs.importBreak (dest, error))
-                {
-                    safe->breakChanged();
-                    return;
-                }
-
-                juce::AlertWindow::showAsync (juce::MessageBoxOptions()
-                                                  .withIconType (juce::MessageBoxIconType::WarningIcon)
-                                                  .withTitle ("Import failed")
-                                                  .withMessage (error)
-                                                  .withButton ("OK"),
-                                              nullptr);
-            });
+        BreakImport::launch (chooser, seqs, [safe] { if (safe != nullptr) safe->breakChanged(); });
     }
 
     EventRouter& router;

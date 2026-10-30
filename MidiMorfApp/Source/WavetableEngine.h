@@ -6,6 +6,7 @@
 #include <vector>
 #include "Wavetable.h"
 #include "MasterFx.h"
+#include "TrackRack.h"
 
 //==============================================================================
 // WavetableVoice: two wavetable oscillators (with stereo unison) + sine sub
@@ -250,7 +251,7 @@ public:
 // Table swaps are lock-free: the audio thread reads a raw pointer per block;
 // the UI thread swaps it atomically and keeps the old table alive for a
 // while before freeing it, so a render in flight never reads freed memory.
-class WavetableEngine : public juce::AudioSource
+class WavetableEngine : public juce::AudioSource, public SoundSource
 {
 public:
     enum ModSource
@@ -296,12 +297,15 @@ public:
     enum LFOWaveform { LFOSine = 0, LFOTri = 1, LFOSaw = 2, LFOSquare = 3, NumLFOWaves = 4 };
 
     static constexpr int NumRoutingSlots = 4;
-    static constexpr int NumVoices = 32;
+    // Each track's synth gets its own voice budget: voices only cost CPU
+    // while sounding, but the cap bounds the worst case when four tracks
+    // all play at once.
+    static constexpr int DefaultVoices = 32;
 
-    WavetableEngine()
+    explicit WavetableEngine (int numVoices = DefaultVoices)
     {
         synth.addSound (new WavetableSound());
-        for (int i = 0; i < NumVoices; ++i)
+        for (int i = 0; i < juce::jmax (1, numVoices); ++i)
             synth.addVoice (new WavetableVoice());
 
         resetToDefaults();
@@ -366,24 +370,44 @@ public:
     // Audio-thread twins of noteOn/noteOff, for the local sequencers, which
     // fire from inside the audio callback. The FIFO above has one producer
     // (the UI); these land at the start of the next getNextAudioBlock call.
-    void noteOnFromAudioThread (int midiNote, int velocity127)
+    void noteOnFromAudioThread (int midiNote, int velocity127, int channel = 1)
     {
         if (midiNote < 0 || midiNote > 127) return;
         const int v = juce::jlimit (1, 127, velocity127);
         lastVelocity.store ((float) v / 127.0f);
-        audioThreadMidi.addEvent (juce::MidiMessage::noteOn (1, midiNote, (juce::uint8) v), 0);
+        audioThreadMidi.addEvent (juce::MidiMessage::noteOn (juce::jlimit (1, 16, channel), midiNote, (juce::uint8) v), 0);
     }
 
-    void noteOffFromAudioThread (int midiNote)
+    void noteOffFromAudioThread (int midiNote, int channel = 1)
     {
         if (midiNote < 0 || midiNote > 127) return;
-        audioThreadMidi.addEvent (juce::MidiMessage::noteOff (1, midiNote), 0);
+        audioThreadMidi.addEvent (juce::MidiMessage::noteOff (juce::jlimit (1, 16, channel), midiNote), 0);
     }
 
-    void allNotesOff()
+    void allNotesOff() override
     {
         // One flag instead of 2048 queued note-offs — the FIFO is only 1024 deep.
         killAll.store (true);
+    }
+
+    //==========================================================================
+    // SoundSource — the track rack's view of this engine.
+    juce::String typeId() const override                  { return "wavetable"; }
+    void prepare (double sr, int maxBlockSize) override   { prepareToPlay (maxBlockSize, sr); }
+    void release() override                               { releaseResources(); }
+    void noteOnAudio (int ch, int note, int velocity127) override { noteOnFromAudioThread (note, velocity127, ch); }
+    void noteOffAudio (int ch, int note) override                 { noteOffFromAudioThread (note, ch); }
+
+    void render (juce::AudioBuffer<float>& buffer, int start, int num) override
+    {
+        getNextAudioBlock (juce::AudioSourceChannelInfo (&buffer, start, num));
+    }
+
+    // CC1 is the mod wheel; nothing else is mapped yet.
+    void controller (int cc, int value) override
+    {
+        if (cc == 1)
+            setModWheel ((float) juce::jlimit (0, 127, value) / 127.0f);
     }
 
     void setModWheel (float v) { modWheel.store (juce::jlimit (0.0f, 1.0f, v)); }
@@ -395,7 +419,7 @@ public:
     void setBuiltInTable (int osc, int index)
     {
         index = juce::jlimit (0, WavetableLibrary::builtInNames().size() - 1, index);
-        installTable (osc, WavetableLibrary::build (index));
+        installTable (osc, WavetableLibrary::shared (index));
         oscState (osc).builtInIndex = index;
         oscState (osc).importedFile = juce::File();
     }
@@ -505,6 +529,138 @@ public:
         routings[1] = { ModSrcModWheel, ModDestCutoff, 0.5f };
     }
 
+    //==========================================================================
+    // The whole patch as one ValueTree — what presets, projects and autosave
+    // all store. Property names are the old "wt_*" settings keys without the
+    // prefix, so a patch saved key-by-key converts by just stripping it.
+    static inline const juce::Identifier stateType { "Wavetable" };
+
+    juce::ValueTree getState() const override
+    {
+        juce::ValueTree t (stateType);
+        t.setProperty ("version", 1, nullptr);
+
+        for (int o = 0; o < 2; ++o)
+        {
+            const juce::String p = "osc" + juce::String (o) + "_";
+            const int builtIn = getBuiltInIndex (o);
+            t.setProperty (p + "tableName", builtIn >= 0 ? WavetableLibrary::builtInNames()[builtIn] : juce::String(), nullptr);
+            t.setProperty (p + "file",  getImportedFile (o).getFullPathName(), nullptr);
+            t.setProperty (p + "level", getOscLevel (o), nullptr);
+            t.setProperty (p + "pos",   getOscPosition (o), nullptr);
+            t.setProperty (p + "semi",  getOscSemitones (o), nullptr);
+            t.setProperty (p + "fine",  getOscFineCents (o), nullptr);
+        }
+        t.setProperty ("unison",  unison, nullptr);
+        t.setProperty ("detune",  unisonDetune, nullptr);
+        t.setProperty ("sub",     subLevel, nullptr);
+        t.setProperty ("drive",   drive, nullptr);
+        t.setProperty ("gain",    gain, nullptr);
+        t.setProperty ("cutoff",  filterCutoff, nullptr);
+        t.setProperty ("reso",    filterReso, nullptr);
+        t.setProperty ("filtEnv", filterEnvAmount, nullptr);
+        t.setProperty ("envPos",  envToPos, nullptr);
+
+        auto adsr = [] (float a, float d, float s, float r)
+        {
+            return juce::String (a) + "," + juce::String (d) + "," + juce::String (s) + "," + juce::String (r);
+        };
+        t.setProperty ("amp",  adsr (ampA, ampD, ampS, ampR), nullptr);
+        t.setProperty ("fenv", adsr (filA, filD, filS, filR), nullptr);
+
+        t.setProperty ("lfoRate",  lfoRate, nullptr);
+        t.setProperty ("lfoDepth", lfoDepth, nullptr);
+        t.setProperty ("lfoWave",  lfoWaveform, nullptr);
+        for (int i = 0; i < NumRoutingSlots; ++i)
+        {
+            const juce::String n (i);
+            t.setProperty ("routeSrc_" + n,    routings[i].source, nullptr);
+            t.setProperty ("routeDest_" + n,   routings[i].dest, nullptr);
+            t.setProperty ("routeAmount_" + n, routings[i].amount, nullptr);
+        }
+
+        t.setProperty ("distDrive", fx.distDrive, nullptr);
+        t.setProperty ("distOn",    fx.distEnabled, nullptr);
+        t.setProperty ("delayTime", fx.delayTimeMs, nullptr);
+        t.setProperty ("delayFb",   fx.delayFeedback, nullptr);
+        t.setProperty ("delayMix",  fx.delayMix, nullptr);
+        t.setProperty ("delayOn",   fx.delayEnabled, nullptr);
+        t.setProperty ("revMix",    fx.reverbWet, nullptr);
+        t.setProperty ("revSize",   fx.reverbSize, nullptr);
+        t.setProperty ("revOn",     fx.reverbEnabled, nullptr);
+        return t;
+    }
+
+    // Anything missing from `t` keeps its current value. Values may arrive as
+    // strings (a converted settings file), so everything goes through var's
+    // numeric conversions rather than assuming a type.
+    void setState (const juce::ValueTree& t) override
+    {
+        auto f = [&t] (const juce::String& id, float cur) { return (float) (double) t.getProperty (id, cur); };
+        auto i = [&t] (const juce::String& id, int cur)   { return (int) t.getProperty (id, cur); };
+        auto b = [&t] (const juce::String& id, bool cur)  { return (bool) t.getProperty (id, cur); };
+
+        for (int o = 0; o < 2; ++o)
+        {
+            const juce::String p = "osc" + juce::String (o) + "_";
+            if (t.hasProperty (p + "tableName") || t.hasProperty (p + "file"))
+            {
+                const int table = WavetableLibrary::indexForName (t[p + "tableName"].toString());
+                const juce::File file (t[p + "file"].toString());
+                juce::String error;
+                if (table >= 0)
+                    setBuiltInTable (o, table);
+                else if (! file.existsAsFile() || ! importTable (o, file, error))
+                    setBuiltInTable (o, WavetableLibrary::indexForName ("Morph")); // imported file has gone
+            }
+            setOscLevel (o,     f (p + "level", getOscLevel (o)));
+            setOscPosition (o,  f (p + "pos",   getOscPosition (o)));
+            setOscSemitones (o, i (p + "semi",  getOscSemitones (o)));
+            setOscFineCents (o, f (p + "fine",  getOscFineCents (o)));
+        }
+        setUnison          (i ("unison",  unison));
+        setUnisonDetune    (f ("detune",  unisonDetune));
+        setSubLevel        (f ("sub",     subLevel));
+        setDrive           (f ("drive",   drive));
+        setGain            (f ("gain",    gain));
+        setFilterCutoff    (f ("cutoff",  filterCutoff));
+        setFilterResonance (f ("reso",    filterReso));
+        setFilterEnvAmount (f ("filtEnv", filterEnvAmount));
+        setEnvToPosition   (f ("envPos",  envToPos));
+
+        auto adsr = [&t] (const char* id, float* out)
+        {
+            auto parts = juce::StringArray::fromTokens (t[id].toString(), ",", "");
+            if (parts.size() != 4) return false;
+            for (int k = 0; k < 4; ++k) out[k] = parts[k].getFloatValue();
+            return true;
+        };
+        float v[4];
+        if (adsr ("amp", v))  setAmpADSR (v[0], v[1], v[2], v[3]);
+        if (adsr ("fenv", v)) setFilterADSR (v[0], v[1], v[2], v[3]);
+
+        setLFORate     (f ("lfoRate",  lfoRate));
+        setLFODepth    (f ("lfoDepth", lfoDepth));
+        setLFOWaveform (i ("lfoWave",  lfoWaveform));
+        for (int s = 0; s < NumRoutingSlots; ++s)
+        {
+            const juce::String n (s);
+            setRoutingSource (s, i ("routeSrc_" + n,    routings[s].source));
+            setRoutingDest   (s, i ("routeDest_" + n,   routings[s].dest));
+            setRoutingAmount (s, f ("routeAmount_" + n, routings[s].amount));
+        }
+
+        fx.distDrive     = f ("distDrive", fx.distDrive);
+        fx.distEnabled   = b ("distOn",    fx.distEnabled);
+        fx.delayTimeMs   = f ("delayTime", fx.delayTimeMs);
+        fx.delayFeedback = f ("delayFb",   fx.delayFeedback);
+        fx.delayMix      = f ("delayMix",  fx.delayMix);
+        fx.delayEnabled  = b ("delayOn",   fx.delayEnabled);
+        fx.reverbWet     = f ("revMix",    fx.reverbWet);
+        fx.reverbSize    = f ("revSize",   fx.reverbSize);
+        fx.reverbEnabled = b ("revOn",     fx.reverbEnabled);
+    }
+
 private:
     struct OscState
     {
@@ -518,7 +674,10 @@ private:
     const OscState& oscState (int osc) const { return osc == 0 ? oscStateA : oscStateB; }
     static bool validSlot (int s) { return s >= 0 && s < NumRoutingSlots; }
 
-    void installTable (int osc, std::unique_ptr<Wavetable> table)
+    // Tables are shared between synths (see WavetableLibrary::shared), so a
+    // table retired here may still be playing in another engine — that one
+    // holds its own reference. The audio thread reads the raw pointer.
+    void installTable (int osc, std::shared_ptr<const Wavetable> table)
     {
         const auto now = juce::Time::getMillisecondCounter();
 
@@ -630,7 +789,7 @@ private:
     };
 
     struct Routing { int source = ModSrcOff; int dest = ModDestOff; float amount = 0.0f; };
-    struct Retired { std::unique_ptr<Wavetable> table; juce::uint32 when; };
+    struct Retired { std::shared_ptr<const Wavetable> table; juce::uint32 when; };
 
     LockFreeFifo midiQueue;
     juce::MidiBuffer audioThreadMidi;
@@ -638,7 +797,7 @@ private:
     MasterFx fx;
     double currentSampleRate = 44100.0;
 
-    std::unique_ptr<Wavetable> ownedA, ownedB;
+    std::shared_ptr<const Wavetable> ownedA, ownedB;
     std::atomic<const Wavetable*> tableA { nullptr }, tableB { nullptr };
     std::vector<Retired> retired;
 

@@ -676,7 +676,7 @@ public:
     {
         setLookAndFeel (&laf);
 
-        title.setText ("SYNTH", juce::dontSendNotification);
+        title.setText ("SOUND", juce::dontSendNotification);
         // Accent, not textLight: it sits straight on the panel, which is light
         // in some themes and dark in others.
         title.setFont (juce::FontOptions (14.0f, juce::Font::bold));
@@ -779,6 +779,12 @@ public:
             t->refresh();
     }
 
+    void setTitle (const juce::String& text, juce::Colour colour)
+    {
+        title.setText (text, juce::dontSendNotification);
+        title.setColour (juce::Label::textColourId, colour);
+    }
+
 private:
     std::vector<WtTab*> tabs() { return { &oscTab, &envTab, &routingTab, &fxTab }; }
 
@@ -797,151 +803,91 @@ private:
 };
 
 //==============================================================================
+// The Sound page for any wavetable track. It edits one engine at a time —
+// edit() points it at another track's synth by rebuilding the editor, whose
+// controls all hold a reference to the engine they edit.
+//
+// saveState / restoreState are for the engine it was built with (T1's synth),
+// under the settings key that synth has always used.
 class WavetableSynthPage : public juce::Component
 {
 public:
-    WavetableSynthPage (WavetableEngine& e)
-        : engine (e), content (e, [this] { if (onPatchChanged) onPatchChanged(); })
+    WavetableSynthPage (WavetableEngine& e) : engine (e)
     {
-        addAndMakeVisible (content);
+        edit (e, "SOUND", MidiMorfColors::accent);
     }
 
     std::function<void()> onPatchChanged;
 
-    void resized() override { content.setBounds (getLocalBounds()); }
-
-    void saveState (juce::PropertiesFile& props) const
+    void edit (WavetableEngine& e, const juce::String& title, juce::Colour titleColour)
     {
-        for (int o = 0; o < 2; ++o)
+        if (editing != &e || content == nullptr)
         {
-            const juce::String p = "wt_osc" + juce::String (o) + "_";
-            const int builtIn = engine.getBuiltInIndex (o);
-            props.setValue (p + "tableName", builtIn >= 0 ? WavetableLibrary::builtInNames()[builtIn] : juce::String());
-            props.setValue (p + "file",     engine.getImportedFile (o).getFullPathName());
-            props.setValue (p + "level",    engine.getOscLevel (o));
-            props.setValue (p + "pos",      engine.getOscPosition (o));
-            props.setValue (p + "semi",     engine.getOscSemitones (o));
-            props.setValue (p + "fine",     engine.getOscFineCents (o));
+            editing = &e;
+            content = std::make_unique<WavetableSynthContent> (e, [this] { if (onPatchChanged) onPatchChanged(); });
+            addAndMakeVisible (*content);
+            resized();
         }
-        props.setValue ("wt_unison",  engine.getUnison());
-        props.setValue ("wt_detune",  engine.getUnisonDetune());
-        props.setValue ("wt_sub",     engine.getSubLevel());
-        props.setValue ("wt_drive",   engine.getDrive());
-        props.setValue ("wt_gain",    engine.getGain());
-        props.setValue ("wt_cutoff",  engine.getFilterCutoff());
-        props.setValue ("wt_reso",    engine.getFilterResonance());
-        props.setValue ("wt_filtEnv", engine.getFilterEnvAmount());
-        props.setValue ("wt_envPos",  engine.getEnvToPosition());
-
-        float a, d, s, r;
-        engine.getAmpADSR (a, d, s, r);
-        props.setValue ("wt_amp", juce::String (a) + "," + juce::String (d) + "," + juce::String (s) + "," + juce::String (r));
-        engine.getFilterADSR (a, d, s, r);
-        props.setValue ("wt_fenv", juce::String (a) + "," + juce::String (d) + "," + juce::String (s) + "," + juce::String (r));
-
-        props.setValue ("wt_lfoRate",  engine.getLFORate());
-        props.setValue ("wt_lfoDepth", engine.getLFODepth());
-        props.setValue ("wt_lfoWave",  engine.getLFOWaveform());
-        for (int i = 0; i < WavetableEngine::NumRoutingSlots; ++i)
-        {
-            props.setValue ("wt_routeSrc_"    + juce::String (i), engine.getRoutingSource (i));
-            props.setValue ("wt_routeDest_"   + juce::String (i), engine.getRoutingDest (i));
-            props.setValue ("wt_routeAmount_" + juce::String (i), engine.getRoutingAmount (i));
-        }
-
-        auto& fx = engine.getFx();
-        props.setValue ("wt_distDrive", fx.distDrive);
-        props.setValue ("wt_distOn",    fx.distEnabled);
-        props.setValue ("wt_delayTime", fx.delayTimeMs);
-        props.setValue ("wt_delayFb",   fx.delayFeedback);
-        props.setValue ("wt_delayMix",  fx.delayMix);
-        props.setValue ("wt_delayOn",   fx.delayEnabled);
-        props.setValue ("wt_revMix",    fx.reverbWet);
-        props.setValue ("wt_revSize",   fx.reverbSize);
-        props.setValue ("wt_revOn",     fx.reverbEnabled);
+        content->setTitle (title, titleColour);
+        content->refreshAll();
     }
 
-    void restoreState (juce::PropertiesFile& props)
+    WavetableEngine& getEditedEngine() const noexcept { return *editing; }
+
+    void resized() override
     {
-        if (! props.containsKey ("wt_unison"))
-        {
-            // Nothing saved by this synth yet. Someone updating from the
-            // original subtractive synth gets their patch carried over;
-            // a fresh install keeps the engine defaults.
-            if (props.containsKey ("synth_mainWave"))
-                migrateClassicPatch (props);
-            return;
-        }
+        if (content != nullptr)
+            content->setBounds (getLocalBounds());
+    }
 
-        for (int o = 0; o < 2; ++o)
-        {
-            const juce::String p = "wt_osc" + juce::String (o) + "_";
-            const int table = WavetableLibrary::indexForName (props.getValue (p + "tableName"));
-            const juce::File file (props.getValue (p + "file"));
-            juce::String error;
-            if (table >= 0)
-                engine.setBuiltInTable (o, table);
-            else if (! file.existsAsFile() || ! engine.importTable (o, file, error))
-                engine.setBuiltInTable (o, WavetableLibrary::indexForName ("Morph")); // imported file has gone
+    // The patch lives in the engine as one ValueTree (WavetableEngine::
+    // getState), stored here under a single settings key.
+    void saveState (juce::PropertySet& props) const
+    {
+        if (auto xml = engine.getState().createXml())
+            props.setValue ("wt_state", xml.get());
 
-            engine.setOscLevel (o,      (float) props.getDoubleValue (p + "level", engine.getOscLevel (o)));
-            engine.setOscPosition (o,   (float) props.getDoubleValue (p + "pos",   engine.getOscPosition (o)));
-            engine.setOscSemitones (o,  props.getIntValue (p + "semi", engine.getOscSemitones (o)));
-            engine.setOscFineCents (o,  (float) props.getDoubleValue (p + "fine",  engine.getOscFineCents (o)));
-        }
-        engine.setUnison          (props.getIntValue ("wt_unison", engine.getUnison()));
-        engine.setUnisonDetune    ((float) props.getDoubleValue ("wt_detune",  engine.getUnisonDetune()));
-        engine.setSubLevel        ((float) props.getDoubleValue ("wt_sub",     engine.getSubLevel()));
-        engine.setDrive           ((float) props.getDoubleValue ("wt_drive",   engine.getDrive()));
-        engine.setGain            ((float) props.getDoubleValue ("wt_gain",    engine.getGain()));
-        engine.setFilterCutoff    ((float) props.getDoubleValue ("wt_cutoff",  engine.getFilterCutoff()));
-        engine.setFilterResonance ((float) props.getDoubleValue ("wt_reso",    engine.getFilterResonance()));
-        engine.setFilterEnvAmount ((float) props.getDoubleValue ("wt_filtEnv", engine.getFilterEnvAmount()));
-        engine.setEnvToPosition   ((float) props.getDoubleValue ("wt_envPos",  engine.getEnvToPosition()));
+        // The patch used to be saved key by key; those keys are now stale.
+        const auto keys = props.getAllProperties().getAllKeys();   // copy: removing while iterating
+        for (auto& key : keys)
+            if (key.startsWith ("wt_") && key != "wt_state")
+                props.removeValue (key);
+    }
 
-        auto adsr = [&props] (const char* key, float* out)
-        {
-            auto parts = juce::StringArray::fromTokens (props.getValue (key), ",", "");
-            if (parts.size() != 4) return false;
-            for (int i = 0; i < 4; ++i) out[i] = parts[i].getFloatValue();
-            return true;
-        };
-        float v[4];
-        if (adsr ("wt_amp", v))  engine.setAmpADSR (v[0], v[1], v[2], v[3]);
-        if (adsr ("wt_fenv", v)) engine.setFilterADSR (v[0], v[1], v[2], v[3]);
+    void restoreState (juce::PropertySet& props)
+    {
+        if (auto xml = props.getXmlValue ("wt_state"))
+            engine.setState (juce::ValueTree::fromXml (*xml));
+        else if (props.containsKey ("wt_unison"))
+            engine.setState (stateFromLegacyKeys (props));
+        else if (props.containsKey ("synth_mainWave"))
+            migrateClassicPatch (props);   // updating from the original subtractive synth
+        // else: a fresh install keeps the engine defaults
 
-        engine.setLFORate     ((float) props.getDoubleValue ("wt_lfoRate",  engine.getLFORate()));
-        engine.setLFODepth    ((float) props.getDoubleValue ("wt_lfoDepth", engine.getLFODepth()));
-        engine.setLFOWaveform (props.getIntValue ("wt_lfoWave", engine.getLFOWaveform()));
-        for (int i = 0; i < WavetableEngine::NumRoutingSlots; ++i)
-        {
-            engine.setRoutingSource (i, props.getIntValue ("wt_routeSrc_"  + juce::String (i), engine.getRoutingSource (i)));
-            engine.setRoutingDest   (i, props.getIntValue ("wt_routeDest_" + juce::String (i), engine.getRoutingDest (i)));
-            engine.setRoutingAmount (i, (float) props.getDoubleValue ("wt_routeAmount_" + juce::String (i), engine.getRoutingAmount (i)));
-        }
-
-        auto& fx = engine.getFx();
-        fx.distDrive     = (float) props.getDoubleValue ("wt_distDrive", fx.distDrive);
-        fx.distEnabled   = props.getBoolValue ("wt_distOn", fx.distEnabled);
-        fx.delayTimeMs   = (float) props.getDoubleValue ("wt_delayTime", fx.delayTimeMs);
-        fx.delayFeedback = (float) props.getDoubleValue ("wt_delayFb",   fx.delayFeedback);
-        fx.delayMix      = (float) props.getDoubleValue ("wt_delayMix",  fx.delayMix);
-        fx.delayEnabled  = props.getBoolValue ("wt_delayOn", fx.delayEnabled);
-        fx.reverbWet     = (float) props.getDoubleValue ("wt_revMix",    fx.reverbWet);
-        fx.reverbSize    = (float) props.getDoubleValue ("wt_revSize",   fx.reverbSize);
-        fx.reverbEnabled = props.getBoolValue ("wt_revOn", fx.reverbEnabled);
-
-        content.refreshAll();
+        if (&engine == editing)
+            content->refreshAll();
     }
 
 private:
+    // A patch saved before the engine owned its state: the same names with a
+    // "wt_" prefix, one settings key each.
+    static juce::ValueTree stateFromLegacyKeys (juce::PropertySet& props)
+    {
+        juce::ValueTree t (WavetableEngine::stateType);
+        const auto& all = props.getAllProperties();
+        for (int i = 0; i < all.size(); ++i)
+            if (all.getAllKeys()[i].startsWith ("wt_"))
+                t.setProperty (all.getAllKeys()[i].substring (3), all.getAllValues()[i], nullptr);
+        return t;
+    }
+
     // Maps a patch saved by the original synth (SynthEngine, "synth_*" keys)
     // onto this engine. Its four waveforms are this engine's analog tables in
     // the same order, so OSC 1/2 come across as-is; unison is off and the
     // env-to-position amount is zero, so the voice is the same shape.
     // Fallbacks are that synth's factory defaults. The old keys are left in
-    // place; once this synth saves, its own keys take over.
-    void migrateClassicPatch (juce::PropertiesFile& props)
+    // place; once this synth saves, "wt_state" takes over.
+    void migrateClassicPatch (juce::PropertySet& props)
     {
         auto f = [&props] (const char* key, double def) { return (float) props.getDoubleValue (key, def); };
 
@@ -1004,9 +950,11 @@ private:
         fx.reverbSize    = f ("synth_reverbSize", 0.5);
         fx.reverbEnabled = props.getBoolValue ("synth_reverbOn", true);
 
-        content.refreshAll();
+        if (&engine == editing)
+            content->refreshAll();
     }
 
     WavetableEngine& engine;
-    WavetableSynthContent content;
+    WavetableEngine* editing = nullptr;
+    std::unique_ptr<WavetableSynthContent> content;
 };

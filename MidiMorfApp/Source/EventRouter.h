@@ -2,7 +2,7 @@
 
 #include <JuceHeader.h>
 #include "NetworkClient.h"
-#include "WavetableEngine.h"
+#include "TrackRack.h"
 #include "MidiSink.h"
 #include "MorfPadHandler.h"
 #include "OmnichordHandler.h"
@@ -14,7 +14,7 @@
 // EventRouter sits between controller pages and the two MIDI backends:
 //   • WiFi mode  → forward semantic events to NetworkClient (existing behaviour).
 //   • Local mode → translate semantic events into MIDI notes via per-controller
-//                  Handlers, then call the built-in synth for audio.
+//                  Handlers, which play the track that page is assigned to.
 // FX Punch-in and Transport are always WiFi-only — they don't play notes that
 // the local synth model can sensibly render.
 class EventRouter
@@ -27,18 +27,67 @@ public:
     // built-in synth and breaks. DAW: the server, following DAW MIDI clock.
     enum class SyncSource { Local, DAW };
 
-    EventRouter (NetworkClient& nc, WavetableEngine& synthRef, LocalSequencers& seqs)
+    // Default tracks (0-based): every controller plays T1.
+    EventRouter (NetworkClient& nc, TrackRack& r, LocalSequencers& seqs)
         : network (nc),
+          rack (r),
           sequencers (seqs),
-          sink (synthRef),
-          morfPad (sink, 3),
-          omnichord (sink),
-          dualMPadLeft (sink, 3),
-          dualMPadRight (sink, 4),
-          morfChord (sink),
-          roseChord (sink, 7)
+          morfPadSink (r, 0), omnichordSink (r, 0), dualMPadSink (r, 0), morfChordSink (r, 0), roseChordSink (r, 0),
+          morfPad (morfPadSink, 3),
+          omnichord (omnichordSink),
+          dualMPadLeft (dualMPadSink, 3),
+          dualMPadRight (dualMPadSink, 4),
+          morfChord (morfChordSink),
+          roseChord (roseChordSink, 7)
     {
     }
+
+    //==========================================================================
+    // Which track each page plays — message thread. Sequencer pages hand off
+    // to LocalSequencers; FX Punch-in and Transport play no notes.
+    void setTrackFor (MidiMorf::ControllerMode page, int track)
+    {
+        using CM = MidiMorf::ControllerMode;
+        track = juce::jlimit (0, TrackRack::NumTracks - 1, track);
+
+        switch (page)
+        {
+            case CM::StepSequencer:  sequencers.setTrack (LocalSequencers::Step, track);  return;
+            case CM::SliceSequencer: sequencers.setTrack (LocalSequencers::Slice, track); return;
+            default: break;
+        }
+
+        if (auto* sink = sinkFor (page))
+        {
+            if (sink->getTrack() == track)
+                return;
+
+            // Note-offs go out before the switch, so they reach the old track.
+            switch (page)
+            {
+                case CM::MorfPad:   morfPad.allNotesOff(); break;
+                case CM::Omnichord: omnichord.allNotesOff(); break;
+                case CM::DualMPad:  dualMPadLeft.allNotesOff(); dualMPadRight.allNotesOff(); break;
+                case CM::MorfChord: morfChord.allNotesOff(); break;
+                case CM::RoseChord: roseChord.allNotesOff(); break;
+                default: break;
+            }
+            sink->setTrack (track);
+        }
+    }
+
+    // -1 for pages that play no notes.
+    int getTrackFor (MidiMorf::ControllerMode page) const
+    {
+        using CM = MidiMorf::ControllerMode;
+        if (page == CM::StepSequencer)  return sequencers.getTrack (LocalSequencers::Step);
+        if (page == CM::SliceSequencer) return sequencers.getTrack (LocalSequencers::Slice);
+        if (auto* sink = sinkFor (page))
+            return sink->getTrack();
+        return -1;
+    }
+
+    TrackRack& getRack() noexcept { return rack; }
 
     void setMode (Mode m)
     {
@@ -284,9 +333,29 @@ public:
     }
 
 private:
+    PhoneMidiSink* sinkFor (MidiMorf::ControllerMode page)
+    {
+        return const_cast<PhoneMidiSink*> (std::as_const (*this).sinkFor (page));
+    }
+
+    const PhoneMidiSink* sinkFor (MidiMorf::ControllerMode page) const
+    {
+        using CM = MidiMorf::ControllerMode;
+        switch (page)
+        {
+            case CM::MorfPad:   return &morfPadSink;
+            case CM::Omnichord: return &omnichordSink;
+            case CM::DualMPad:  return &dualMPadSink;
+            case CM::MorfChord: return &morfChordSink;
+            case CM::RoseChord: return &roseChordSink;
+            default:            return nullptr;
+        }
+    }
+
     NetworkClient& network;
+    TrackRack& rack;
     LocalSequencers& sequencers;
-    PhoneMidiSink sink;
+    PhoneMidiSink morfPadSink, omnichordSink, dualMPadSink, morfChordSink, roseChordSink;
 
     MorfPadHandler morfPad;
     OmnichordHandler omnichord;

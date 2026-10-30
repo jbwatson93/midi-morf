@@ -1,5 +1,7 @@
 # MidiMorf v3 — Creative Sequencer Pack
 
+> **Superseded 2026-10-29 by `GROOVEBOX-PLAN.md`.** The Creative Sequencer Pack is dropped. The sequencers are free, and the paid tier is now a one-time Groovebox unlock (Session + Mixer). Keep this file for the measurements and the rejected directions.
+
 _Rewritten 2026-08-24. Supersedes the 2026-08-21 draft (paid-VST model — now rejected, see **Rejected Directions**). Companion to `midi-morf-plan.md` (the v2 plan, shipped)._
 
 ## Context

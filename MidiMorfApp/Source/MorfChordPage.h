@@ -487,13 +487,13 @@ public:
         networkClient.sendMorfChordStrum (position, velocity);
     }
 
-    void saveState (juce::PropertiesFile& props)
+    void saveState (juce::PropertySet& props)
     {
         props.setValue ("morfChord_rootNote", (int) rootNote);
         props.setValue ("morfChord_scaleMode", (int) scaleMode);
     }
 
-    void restoreState (const juce::PropertiesFile& props)
+    void restoreState (const juce::PropertySet& props)
     {
         rootNote = (uint8_t) props.getIntValue ("morfChord_rootNote", 0);
         scaleMode = (uint8_t) props.getIntValue ("morfChord_scaleMode", 0);
@@ -606,8 +606,8 @@ public:
         Glassmorphism::paintPanel (g, getLocalBounds().toFloat(), morfChordPagePalette);
     }
 
-    void saveState (juce::PropertiesFile& props) { content.saveState (props); }
-    void restoreState (const juce::PropertiesFile& props) { content.restoreState (props); }
+    void saveState (juce::PropertySet& props) { content.saveState (props); }
+    void restoreState (const juce::PropertySet& props) { content.restoreState (props); }
 
     void resized() override
     {

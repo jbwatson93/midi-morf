@@ -18,7 +18,7 @@ static const PagePalette settingsPagePalette {
 // App-level settings: connection status + WiFi/Local output mode toggle.
 // MainComponent owns the network/router state and pushes updates here via
 // setConnectionStatus / refreshFromRouter.
-class SettingsPage : public juce::Component
+class SettingsPage : public juce::Component, private juce::Timer
 {
 public:
     SettingsPage (EventRouter& r) : router (r)
@@ -88,6 +88,10 @@ public:
     // mode from the settings page.
     std::function<void()> onModeChanged;
 
+    // Share of the audio callback's time budget in use, 0..1 — MainComponent
+    // points this at the audio device. Shown while the page is visible.
+    std::function<double()> getAudioLoad;
+
     void paint (juce::Graphics& g) override
     {
         Glassmorphism::paintPanel (g, getLocalBounds().toFloat(), settingsPagePalette);
@@ -145,6 +149,29 @@ public:
             ? "Local: the phone's built-in synth produces audio. WiFi server is ignored for synth-capable controllers."
             : "WiFi: notes + CCs are sent over WiFi to the macOS server, which routes MIDI to your DAW.";
         g.drawFittedText (help, helperArea.removeFromTop (44), juce::Justification::topLeft, 2);
+
+        // Audio load: now, and the recent peak (what matters for dropouts).
+        helperArea.removeFromTop (12);
+        g.setColour (MidiMorfColors::textLight.withAlpha (0.6f));
+        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.drawText ("AUDIO LOAD", helperArea.removeFromTop (22), juce::Justification::centredLeft);
+
+        auto meter = helperArea.removeFromTop (14).withWidth (juce::jmin (320, helperArea.getWidth())).toFloat();
+        g.setColour (juce::Colours::black.withAlpha (0.35f));
+        g.fillRoundedRectangle (meter, 4.0f);
+        const auto loadColour = peakLoad < 0.5 ? MidiMorfColors::statusGreen
+                              : peakLoad < 0.8 ? MidiMorfColors::statusAmber
+                                               : juce::Colours::red;
+        g.setColour (loadColour);
+        g.fillRoundedRectangle (meter.withWidth (meter.getWidth() * (float) juce::jlimit (0.0, 1.0, load)), 4.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.8f));
+        const float px = meter.getX() + meter.getWidth() * (float) juce::jlimit (0.0, 1.0, peakLoad);
+        g.fillRect (px - 1.0f, meter.getY(), 2.0f, meter.getHeight());
+
+        g.setColour (MidiMorfColors::textLight);
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawText (juce::String (juce::roundToInt (load * 100.0)) + "%   peak " + juce::String (juce::roundToInt (peakLoad * 100.0)) + "%",
+                    helperArea.removeFromTop (22), juce::Justification::centredLeft);
     }
 
     void resized() override
@@ -163,7 +190,24 @@ public:
     }
 
 private:
+    void visibilityChanged() override
+    {
+        if (isShowing()) { peakLoad = 0.0; startTimerHz (5); }
+        else             stopTimer();
+    }
+
+    // The peak falls back over ~5 s, so a spike stays readable.
+    void timerCallback() override
+    {
+        if (! getAudioLoad)
+            return;
+        load = getAudioLoad();
+        peakLoad = juce::jmax (load, peakLoad * 0.97);
+        repaint();
+    }
+
     EventRouter& router;
+    double load = 0.0, peakLoad = 0.0;
     GlassButtonLookAndFeel glassLnf { settingsPagePalette, MidiMorfColors::accent, 8.0f };
 
     juce::TextButton wifiBtn, localBtn;

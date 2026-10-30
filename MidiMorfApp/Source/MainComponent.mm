@@ -16,21 +16,37 @@ static const juce::String controllerNames[] = {
     "Slice-Seq"
 };
 
+// Short names for the rail, same order.
+static const juce::String controllerShortNames[] = {
+    "FX", "Pad", "Strum", "Transport", "Dual", "Chord", "Rose", "Step", "Slice"
+};
+
 // Guards the invariant that broke once already: NUM_CONTROLLERS is the index
-// base for the synth/about/settings pages AND the bound on this array, so the
-// two must not drift apart.
+// base for the pages after the controllers AND the bound on these arrays, so
+// they must not drift apart.
 static_assert (juce::numElementsInArray (controllerNames) == MidiMorf::NUM_CONTROLLERS,
                "controllerNames must have exactly NUM_CONTROLLERS entries");
+static_assert (juce::numElementsInArray (controllerShortNames) == MidiMorf::NUM_CONTROLLERS,
+               "controllerShortNames must have exactly NUM_CONTROLLERS entries");
 
-static const juce::String synthPageName    = "Synth";
-static const juce::String settingsPageName = "Settings";
-static const juce::String aboutPageName    = "About";
-
-// Page indices after the controllers.
+// Page indices after the controllers, in the order they're added.
 static constexpr int synthPageIdx     = MidiMorf::NUM_CONTROLLERS;
 static constexpr int aboutPageIdx     = MidiMorf::NUM_CONTROLLERS + 1;
 static constexpr int settingsPageIdx  = MidiMorf::NUM_CONTROLLERS + 2;
-static constexpr int numPages         = MidiMorf::NUM_CONTROLLERS + 3;
+static constexpr int homePageIdx      = MidiMorf::NUM_CONTROLLERS + 3;
+static constexpr int breaksPageIdx    = MidiMorf::NUM_CONTROLLERS + 4;
+static constexpr int numPages         = MidiMorf::NUM_CONTROLLERS + 5;
+
+static bool isSequencer (int mode)
+{
+    return mode == (int) MidiMorf::ControllerMode::StepSequencer
+        || mode == (int) MidiMorf::ControllerMode::SliceSequencer;
+}
+
+static LocalSequencers::Which whichSequencer (int mode)
+{
+    return mode == (int) MidiMorf::ControllerMode::StepSequencer ? LocalSequencers::Step : LocalSequencers::Slice;
+}
 
 MainComponent::MainComponent()
     : fxPage (eventRouter),
@@ -57,8 +73,21 @@ MainComponent::MainComponent()
     // the next foreground.
     juce::Timer::callAfterDelay (250, [this] { audioEngine.start(); });
 
-    // Page container — controller pages, then Synth editor, then About.
-    // Pages first so the floating menu button sits on top of them.
+    HomePage::Callbacks cb;
+    cb.getInstrument = [this] (int t) { return instrumentOf[t]; };
+    cb.setInstrument = [this] (int t, int mode) { setInstrument (t, mode); updateRail(); };
+    cb.getSound      = [this] (int t) { return (int) audioEngine.getTrackSound (t); };
+    cb.setSound      = [this] (int t, int s) { setSound (t, s); updateRail(); };
+    cb.getVolume     = [this] (int t) { return audioEngine.getRack().getVolume (t); };
+    cb.setVolume     = [this] (int t, float g) { audioEngine.getRack().setVolume (t, g); };
+    cb.openPage      = [this] (int page) { pageContainer.setPage (page); };
+    cb.changed       = [this] { saveState(); };
+    homePage = std::make_unique<HomePage> (cb, HomePage::Pages { (int) MidiMorf::ControllerMode::Transport,
+                                                                 (int) MidiMorf::ControllerMode::FXPunchIn,
+                                                                 settingsPageIdx, aboutPageIdx });
+
+    // Page container — controllers, then Sound, About, Settings, Home, Breaks.
+    // The order is the page indices above.
     pageContainer.addPage (&fxPage);
     pageContainer.addPage (&morfPadPage);
     pageContainer.addPage (&omnichordPage);
@@ -71,35 +100,32 @@ MainComponent::MainComponent()
     pageContainer.addPage (&synthPage);
     pageContainer.addPage (&aboutPage);
     pageContainer.addPage (&settingsPage);
+    pageContainer.addPage (homePage.get());
+    pageContainer.addPage (&breaksPage);
     pageContainer.setListener (this);
     addAndMakeVisible (pageContainer);
+    addAndMakeVisible (header);
 
-    // Settings page persists its mode change like everything else.
     settingsPage.onModeChanged = [this] { saveState(); };
+    settingsPage.getAudioLoad  = [this] { return audioEngine.getCpuUsage(); };
 
-    // Floating menu + synth shortcut (sit on top of the page, in the right gutter).
-    menuButton.onClick = [this] { showNavigationMenu(); };
-    addAndMakeVisible (menuButton);
+    // The rail: Home, the four tracks, Play/Stop. It sits in the right gutter,
+    // outside the safe area, on top of the wood.
+    homeButton.onClick = [this] { pageContainer.setPage (homePageIdx); };
+    addAndMakeVisible (homeButton);
 
-    synthButton.onClick = [this]
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
-        pageContainer.setPage (synthPageIdx);
-    };
-    addAndMakeVisible (synthButton);
+        auto* b = trackButtons.add (new RailTrackButton (t));
+        b->onClick = [this, t] { trackTapped (t); };
+        addAndMakeVisible (b);
+    }
 
-    // Favorite quick-jump button. Short tap navigates to the assigned page;
-    // long-press opens a picker so the user can rebind it. Empty slot routes
-    // a short tap to the picker as well, so the first interaction is useful.
-    favoriteButton.onShortTap = [this]
-    {
-        int idx = favoriteButton.getAssignment();
-        if (idx >= 0 && idx < pageContainer.getNumPages())
-            pageContainer.setPage (idx);
-    };
-    favoriteButton.onLongPress = [this] { showFavoritePicker(); };
-    addAndMakeVisible (favoriteButton);
+    playButton.onClick = [this] { togglePlay(); };
+    addAndMakeVisible (playButton);
 
     synthPage.onPatchChanged = [this] { saveState(); };
+    breaksPage.onChanged = [this] { saveState(); };
     transportPage.onStateChanged = [this] { saveState(); };
     stepSequencerPage.setOnStateChanged ([this] { saveState(); });
     sliceSequencerPage.setOnStateChanged ([this] { saveState(); });
@@ -112,11 +138,11 @@ MainComponent::MainComponent()
     accelerometer.setListener (this);
     accelerometer.start();
 
-    // Restore saved state (last page, scale settings, etc.)
+    // Restore saved state (track setup, last page, scale settings, etc.)
     restoreState();
 
-    // Ping timer
-    startTimerHz (2);
+    // Keeps Play/Stop's light in step with the sequencers.
+    startTimerHz (10);
 
     // Landscape initial size hint
     setSize (800, 400);
@@ -124,12 +150,13 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
-    saveState();
+    saveNow();
     stopTimer();
     accelerometer.stop();
     networkClient.setListener (nullptr);
     networkClient.stopSearching();
     audioEngine.stop();
+    pageContainer.setListener (nullptr);
 }
 
 void MainComponent::paint (juce::Graphics& g)
@@ -158,9 +185,8 @@ void MainComponent::resized()
 {
     auto area = getLocalBounds();
 
-    // Floating-button geometry needs to be in scope for both the page trim
-    // (so we never let page content land under the buttons) and the button
-    // layout below.
+    // Rail geometry needs to be in scope for both the page trim (so we never
+    // let page content land under the rail) and the rail layout below.
     const int btnW          = 56;
     const int floatingPadR  = 4;            // gap between button right edge and screen
     const int floatingGapLR = 4;            // gap between button left edge and page right
@@ -168,12 +194,11 @@ void MainComponent::resized()
 
 #if JUCE_IOS
     // iPad has tiny rounded-corner safe-area insets — page content would
-    // slide right under the floating Menu / Synth / Favourite buttons (and
-    // cover things like the right-edge strum bar on Strum-Chord and
-    // Morf-Chord) unless we floor the trim at the button gutter. iPhone with
-    // Dynamic Island already gives ~44pt of inset which is enough; iPhone
-    // landscape is also tight on horizontal real estate so we don't want to
-    // widen the wood frame there unnecessarily.
+    // slide right under the rail (and cover things like the right-edge strum
+    // bar on Strum-Chord and Morf-Chord) unless we floor the trim at the rail
+    // gutter. iPhone with Dynamic Island already gives ~44pt of inset which is
+    // enough; iPhone landscape is also tight on horizontal real estate so we
+    // don't want to widen the wood frame there unnecessarily.
     const bool isIPad = ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad);
 
     if (auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
@@ -192,89 +217,231 @@ void MainComponent::resized()
         area = area.withTrimmedLeft  (rightGutter)
                    .withTrimmedRight (rightGutter);
     }
+#else
+    juce::ignoreUnused (rightGutter);
 #endif
 
-    // PageContainer fills the safe area so page content never lands behind a
-    // rounded corner or under the Dynamic Island.
+    // The header strip says which track the screen belongs to; the page
+    // fills the rest of the safe area.
+    header.setBounds (area.removeFromTop (22));
     pageContainer.setBounds (area);
 
-    // The menu button intentionally lives OUTSIDE the safe area, in the
-    // rounded-corner gutter on the right edge — that's the dead space JB
-    // wants reclaimed. It uses the full screen rect, not the safe-area one.
-    auto full = getLocalBounds();
-    const int btnH = 60;
-    const int gap  = 6;
-    int x = full.getRight() - btnW - 4;
-    menuButton.setBounds     (x, full.getY() + 36,                       btnW, btnH);
-    synthButton.setBounds    (x, full.getY() + 36 +     (btnH + gap),    btnW, btnH);
-    favoriteButton.setBounds (x, full.getY() + 36 + 2 * (btnH + gap),    btnW, btnH);
-}
-
-void MainComponent::showNavigationMenu()
-{
-    juce::PopupMenu menu;
-
-    // Controller pages
-    for (int i = 0; i < MidiMorf::NUM_CONTROLLERS; ++i)
+    // The rail lives OUTSIDE the safe area, in the rounded-corner gutter on
+    // the right edge — dead space reclaimed. Home on top, Play/Stop at the
+    // bottom, the four tracks sharing what's between. 30 pt from the top and
+    // bottom so the screen's rounded corners (~60 pt radius on recent
+    // iPhones) don't clip Home and Play.
+    auto rail = getLocalBounds().reduced (0, 30);
+    rail = rail.withX (rail.getRight() - btnW - floatingPadR).withWidth (btnW);
+    const int gap = 6;
+    homeButton.setBounds (rail.removeFromTop (44));
+    playButton.setBounds (rail.removeFromBottom (44));
+    rail.removeFromTop (gap);
+    rail.removeFromBottom (gap);
+    const int trackH = (rail.getHeight() - gap * (TrackRack::NumTracks - 1)) / TrackRack::NumTracks;
+    for (auto* b : trackButtons)
     {
-        bool isCurrent = (i == pageContainer.getCurrentPage());
-        menu.addItem (i + 1, controllerNames[i], true, isCurrent);
+        b->setBounds (rail.removeFromTop (trackH));
+        rail.removeFromTop (gap);
     }
-
-    // Synth, Settings, About
-    menu.addSeparator();
-    const int current = pageContainer.getCurrentPage();
-    menu.addItem (synthPageIdx     + 1, synthPageName,     true, current == synthPageIdx);
-    menu.addItem (settingsPageIdx  + 1, settingsPageName,  true, current == settingsPageIdx);
-    menu.addItem (aboutPageIdx     + 1, aboutPageName,     true, current == aboutPageIdx);
-
-    menu.showMenuAsync (juce::PopupMenu::Options()
-                            .withTargetComponent (&menuButton)
-                            .withStandardItemHeight (36),
-        [this] (int result)
-        {
-            if (result <= 0) return;
-            pageContainer.setPage (result - 1);
-        });
 }
 
 juce::String MainComponent::getPageDisplayName (int pageIndex) const
 {
     if (pageIndex >= 0 && pageIndex < MidiMorf::NUM_CONTROLLERS)
         return controllerNames[pageIndex];
-    if (pageIndex == synthPageIdx)     return synthPageName;
-    if (pageIndex == aboutPageIdx)     return aboutPageName;
-    if (pageIndex == settingsPageIdx)  return settingsPageName;
+    if (pageIndex == synthPageIdx)     return "Sound";
+    if (pageIndex == aboutPageIdx)     return "About";
+    if (pageIndex == settingsPageIdx)  return "Settings";
+    if (pageIndex == homePageIdx)      return "Home";
+    if (pageIndex == breaksPageIdx)    return "Breaks";
     return {};
 }
 
-void MainComponent::showFavoritePicker()
+//==============================================================================
+// Tracks
+
+// An instrument plays exactly one track: giving it to this track takes it
+// from any other. A sequencer that loses its track stops.
+void MainComponent::setInstrument (int track, int mode)
 {
-    juce::PopupMenu menu;
-    menu.addItem (juce::PopupMenu::Item ("Set favorite to...").setEnabled (false));
-    menu.addSeparator();
+    if (! juce::isPositiveAndBelow (track, TrackRack::NumTracks))
+        return;
 
-    const int currentAssignment = favoriteButton.getAssignment();
-    for (int i = 0; i < MidiMorf::NUM_CONTROLLERS; ++i)
-        menu.addItem (i + 1, controllerNames[i], true, i == currentAssignment);
+    // Only pages that play notes are instruments; anything else (e.g. a
+    // damaged settings file) means no instrument.
+    using CM = MidiMorf::ControllerMode;
+    const bool isInstrument = mode == (int) CM::MorfPad || mode == (int) CM::Omnichord || mode == (int) CM::DualMPad
+                           || mode == (int) CM::MorfChord || mode == (int) CM::RoseChord || isSequencer (mode);
+    if (! isInstrument)
+        mode = -1;
 
-    menu.addSeparator();
-    menu.addItem (synthPageIdx     + 1, synthPageName,     true, synthPageIdx     == currentAssignment);
-    menu.addItem (settingsPageIdx  + 1, settingsPageName,  true, settingsPageIdx  == currentAssignment);
-    menu.addItem (aboutPageIdx     + 1, aboutPageName,     true, aboutPageIdx     == currentAssignment);
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+        if (t != track && mode >= 0 && instrumentOf[t] == mode)
+            instrumentOf[t] = -1;
 
-    menu.showMenuAsync (juce::PopupMenu::Options()
-                            .withTargetComponent (&favoriteButton)
-                            .withStandardItemHeight (36),
-        [this] (int result)
-        {
-            if (result <= 0) return;
-            const int idx = result - 1;
-            favoriteButton.setAssignment (idx, getPageDisplayName (idx));
-            saveState();
-        });
+    const int old = instrumentOf[track];
+    if (old >= 0 && old != mode && isSequencer (old))
+        audioEngine.getSequencers().setPlaying (whichSequencer (old), false);
+
+    instrumentOf[track] = mode;
+    if (mode >= 0)
+        eventRouter.setTrackFor (static_cast<MidiMorf::ControllerMode> (mode), track);
 }
 
+void MainComponent::setSound (int track, int sound)
+{
+    audioEngine.setTrackSound (track, static_cast<AudioEngine::Sound> (juce::jlimit (0, 2, sound)));
+
+    // The Sound page can't keep editing a synth its track no longer plays.
+    if (pageContainer.getCurrentPage() == synthPageIdx && audioEngine.getWavetable (soundTrack) == nullptr)
+        pageContainer.setPage (homePageIdx);
+}
+
+// -1 for pages that belong to no track.
+int MainComponent::trackOfPage (int pageIndex) const
+{
+    if (pageIndex == synthPageIdx)
+        return soundTrack;
+
+    if (pageIndex == breaksPageIdx)
+    {
+        for (int t = 0; t < TrackRack::NumTracks; ++t)
+            if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Breaks)
+                return t;
+        return -1;
+    }
+
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+        if (instrumentOf[t] == pageIndex)
+            return t;
+    return -1;
+}
+
+bool MainComponent::pageIsSound (int pageIndex) const
+{
+    return pageIndex == synthPageIdx || pageIndex == breaksPageIdx;
+}
+
+// First tap: the track's instrument. Tapping the lit track again flips
+// between its instrument and its sound. A track with no instrument goes
+// straight to its sound; an empty track opens Home to set it up.
+void MainComponent::trackTapped (int track)
+{
+    const int page = pageContainer.getCurrentPage();
+    const bool onThisTrack   = trackOfPage (page) == track;
+    const bool hasInstrument = instrumentOf[track] >= 0;
+    const bool hasSound      = audioEngine.getTrackSound (track) != AudioEngine::Sound::Empty;
+
+    if (onThisTrack && ! pageIsSound (page) && hasSound)
+        showSound (track);
+    else if (hasInstrument)
+        showInstrument (track);
+    else if (hasSound)
+        showSound (track);
+    else
+        pageContainer.setPage (homePageIdx);
+
+    updateRail();
+}
+
+void MainComponent::showInstrument (int track)
+{
+    if (instrumentOf[track] >= 0)
+        pageContainer.setPage (instrumentOf[track]);
+}
+
+void MainComponent::showSound (int track)
+{
+    switch (audioEngine.getTrackSound (track))
+    {
+        case AudioEngine::Sound::Synth:
+            soundTrack = track;
+            synthPage.edit (audioEngine.getTrackSynth (track),
+                            "T" + juce::String (track + 1) + " " + audioEngine.getSoundName (track).toUpperCase(),
+                            TrackColours::get (track));
+            pageContainer.setPage (synthPageIdx);
+            break;
+
+        case AudioEngine::Sound::Breaks:
+            breaksPage.setTrack (track);
+            pageContainer.setPage (breaksPageIdx);
+            break;
+
+        case AudioEngine::Sound::Empty:
+            break;
+    }
+    updateRail();
+}
+
+juce::String MainComponent::headerText (int pageIndex) const
+{
+    const int t = trackOfPage (pageIndex);
+    if (t < 0)
+        return getPageDisplayName (pageIndex);
+
+    const juce::String dot   = juce::String::fromUTF8 ("  \xc2\xb7  ");
+    const juce::String arrow = juce::String::fromUTF8 ("  \xe2\x86\x92  ");
+    const juce::String track = "T" + juce::String (t + 1) + dot;
+
+    if (pageIsSound (pageIndex))
+        return track + audioEngine.getSoundName (t) + " sound";
+
+    const auto sound = audioEngine.getTrackSound (t) == AudioEngine::Sound::Empty ? juce::String ("nothing")
+                                                                                   : audioEngine.getSoundName (t);
+    return track + getPageDisplayName (pageIndex) + arrow + sound;
+}
+
+void MainComponent::updateRail()
+{
+    const int page = pageContainer.getCurrentPage();
+    const int current = trackOfPage (page);
+
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+    {
+        const bool lit      = (t == current);
+        const bool hasSound = audioEngine.getTrackSound (t) != AudioEngine::Sound::Empty;
+        const int  inst     = instrumentOf[t];
+
+        juce::String caption = inst >= 0 ? controllerShortNames[inst]
+                             : hasSound  ? juce::String ("Sound")
+                                         : juce::String::fromUTF8 ("\xe2\x80\x94");
+        if (lit && pageIsSound (page))
+            caption = "Sound";
+
+        trackButtons[t]->setState (caption, lit, inst < 0 && ! hasSound);
+    }
+
+    homeButton.setLit (page == homePageIdx);
+    header.set (current, headerText (page));
+}
+
+// Local sync: Play starts every sequencer that's some track's instrument;
+// Stop stops them all. DAW sync: Play/Stop go to the DAW's transport.
+void MainComponent::togglePlay()
+{
+    auto& seqs = audioEngine.getSequencers();
+
+    if (! eventRouter.isLocalSync())
+    {
+        dawPlaying = ! dawPlaying;
+        eventRouter.sendTransportButton ((uint8_t) (dawPlaying ? 0 : 1));   // 0 Play, 1 Stop
+        playButton.setLit (dawPlaying);
+        return;
+    }
+
+    if (seqs.isPlaying (LocalSequencers::Step) || seqs.isPlaying (LocalSequencers::Slice))
+    {
+        seqs.stopAll();
+        return;
+    }
+
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+        if (isSequencer (instrumentOf[t]))
+            seqs.setPlaying (whichSequencer (instrumentOf[t]), true);
+}
+
+//==============================================================================
 // NetworkClient::Listener
 void MainComponent::connectedToPlugin (const juce::String& hostName)
 {
@@ -309,8 +476,7 @@ void MainComponent::tiltUpdated (float tiltX, float tiltY)
 {
     eventRouter.sendTiltUpdate (tiltX, tiltY);
     // Local modulation: accel feeds the routing matrix's AccelX/AccelY sources.
-    audioEngine.getSynth().setAccelX (tiltX);
-    audioEngine.getSynth().setAccelY (tiltY);
+    audioEngine.setTilt (tiltX, tiltY);
 }
 
 // PageContainer::Listener
@@ -329,6 +495,8 @@ void MainComponent::pageChanged (int newPageIndex)
             sliceSequencerPage.pushFullState();
     }
 
+    updateRail();
+
     // Persist current state whenever page changes
     saveState();
 }
@@ -336,60 +504,207 @@ void MainComponent::pageChanged (int newPageIndex)
 // Timer
 void MainComponent::timerCallback()
 {
-    // Keep-alive — handled by network layer
+    if (eventRouter.isLocalSync())
+    {
+        auto& seqs = audioEngine.getSequencers();
+        playButton.setLit (seqs.isPlaying (LocalSequencers::Step) || seqs.isPlaying (LocalSequencers::Slice));
+    }
+
+    // Write the project once things have been still for half a second, so
+    // dragging a knob doesn't rewrite the file on every tick.
+    if (saveRequested && juce::Time::getMillisecondCounter() - saveRequestedAt > 500)
+        saveNow();
 }
 
+//==============================================================================
 // State persistence
+//
+// The project — the music: each track's instrument, sound, volume and synth
+// patch, the controller pages' settings, tempo and break — lives in one file,
+// Documents/Projects/Current.midimorf. The settings file keeps only app
+// preferences: WiFi/Local, sync source, last page, the edited sound.
+
+static const juce::StringArray appSettingKeys { "lastPage", "mode", "seq_sync", "sound_track" };
+
+static juce::File projectFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+               .getChildFile ("Projects").getChildFile ("Current.midimorf");
+}
+
 void MainComponent::saveState()
 {
+    saveRequested = true;
+    saveRequestedAt = juce::Time::getMillisecondCounter();
+}
+
+void MainComponent::saveNow()
+{
+    saveRequested = false;
+
+    // The project. Page settings go through a PropertySet, as they always
+    // have, and ride along as one child.
+    juce::PropertySet pageState;
+    morfPadPage.saveState (pageState);
+    dualMPadPage.saveState (pageState);
+    morfChordPage.saveState (pageState);
+    roseChordPage.saveState (pageState);
+    audioEngine.getSequencers().saveState (pageState);
+
+    juce::ValueTree project ("MidiMorfProject");
+    project.setProperty ("version", 1, nullptr);
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+    {
+        juce::ValueTree track ("Track");
+        track.setProperty ("index", t, nullptr);
+        track.setProperty ("instrument", instrumentOf[t], nullptr);
+        track.setProperty ("sound", (int) audioEngine.getTrackSound (t), nullptr);
+        track.setProperty ("volume", audioEngine.getRack().getVolume (t), nullptr);
+        track.appendChild (audioEngine.getTrackSynth (t).getState(), nullptr);   // kept even when not playing
+        project.appendChild (track, nullptr);
+    }
+    if (auto xml = pageState.createXml ("PageState"))
+        project.appendChild (juce::ValueTree::fromXml (*xml), nullptr);
+
+    // Written beside the old file and swapped in, so a crash mid-write
+    // can't leave half a project.
+    bool written = false;
+    if (auto xml = project.createXml())
+    {
+        const auto file = projectFile();
+        file.getParentDirectory().createDirectory();
+        juce::TemporaryFile temp (file);
+        written = xml->writeTo (temp.getFile()) && temp.overwriteTargetFileWithTemporary();
+    }
+
     if (auto* props = appProperties.getUserSettings())
     {
         props->setValue ("lastPage", pageContainer.getCurrentPage());
         props->setValue ("mode", eventRouter.getMode() == EventRouter::Mode::Local ? 1 : 0);
-        props->setValue ("favorite_0", favoriteButton.getAssignment());
-        morfPadPage.saveState (*props);
-        dualMPadPage.saveState (*props);
-        morfChordPage.saveState (*props);
-        roseChordPage.saveState (*props);
-        synthPage.saveState (*props);
-        audioEngine.getSequencers().saveState (*props);
         props->setValue ("seq_sync", eventRouter.isLocalSync() ? 0 : 1);
+        props->setValue ("sound_track", soundTrack);
+
+        // Once the project is safely on disk, everything else in the settings
+        // file is from before it existed.
+        if (written)
+        {
+            const auto keys = props->getAllProperties().getAllKeys();   // copy: removing while iterating
+            for (auto& key : keys)
+                if (! appSettingKeys.contains (key))
+                    props->removeValue (key);
+        }
         props->saveIfNeeded();
     }
 }
 
 void MainComponent::restoreState()
 {
-    if (auto* props = appProperties.getUserSettings())
+    auto* settings = appProperties.getUserSettings();
+    if (settings == nullptr)
+        return;
+
+    // The project, if there is one. Without it (first launch of this
+    // version) everything comes from the settings file, as it used to.
+    juce::ValueTree project;
+    if (auto xml = juce::XmlDocument::parse (projectFile()))
+        project = juce::ValueTree::fromXml (*xml);
+    if (! project.hasType ("MidiMorfProject"))
     {
-        morfPadPage.restoreState (*props);
-        dualMPadPage.restoreState (*props);
-        morfChordPage.restoreState (*props);
-        roseChordPage.restoreState (*props);
-        synthPage.restoreState (*props);
-        audioEngine.getSequencers().restoreState (*props);
-        eventRouter.setSyncSource (props->getIntValue ("seq_sync", 0) == 1 ? EventRouter::SyncSource::DAW
-                                                                           : EventRouter::SyncSource::Local);
+        project = {};
 
-        // First-launch default: Local mode. New users hear the built-in
-        // synth immediately when they tap a controller — no server setup
-        // needed for a satisfying first-play. Existing users' saved mode
-        // still wins because it's read from the same key.
-        int savedMode = props->getIntValue ("mode", 1);
-        eventRouter.setMode (savedMode == 1 ? EventRouter::Mode::Local : EventRouter::Mode::WiFi);
-        settingsPage.refreshFromRouter();
-
-        int favIdx = props->getIntValue ("favorite_0", -1);
-        if (favIdx >= 0 && favIdx < numPages)
-            favoriteButton.setAssignment (favIdx, getPageDisplayName (favIdx));
-
-        // First-launch default: Morf-Chord (index 5). It's synth-capable so
-        // Local mode plays immediately, and full chords make a stronger first
-        // impression than single notes. Existing users' saved page still wins.
-        int lastPage = props->getIntValue ("lastPage", 5);
-        if (lastPage >= 0 && lastPage < numPages)
-            pageContainer.setPage (lastPage);
+        // A file that's there but unreadable is set aside, not overwritten
+        // by the defaults this launch will save.
+        if (projectFile().existsAsFile())
+            projectFile().moveFileTo (projectFile().withFileExtension ("corrupt"));
     }
+
+    juce::PropertySet projectPages;
+    if (project.isValid())
+        if (auto xml = project.getChildWithName ("PageState").createXml())
+            projectPages.restoreFromXml (*xml);
+    juce::PropertySet& pages = project.isValid() ? projectPages : static_cast<juce::PropertySet&> (*settings);
+
+    morfPadPage.restoreState (pages);
+    dualMPadPage.restoreState (pages);
+    morfChordPage.restoreState (pages);
+    roseChordPage.restoreState (pages);
+    audioEngine.getSequencers().restoreState (pages);
+    eventRouter.setSyncSource (settings->getIntValue ("seq_sync", 0) == 1 ? EventRouter::SyncSource::DAW
+                                                                          : EventRouter::SyncSource::Local);
+
+    // First-launch default: Local mode. New users hear the built-in
+    // synth immediately when they tap a controller — no server setup
+    // needed for a satisfying first-play. Existing users' saved mode
+    // still wins because it's read from the same key.
+    eventRouter.setMode (settings->getIntValue ("mode", 1) == 1 ? EventRouter::Mode::Local : EventRouter::Mode::WiFi);
+    settingsPage.refreshFromRouter();
+
+    // Tracks. Defaults: T1 Morf-Chord on a synth, T2 Step-Seq on the bass
+    // synth, T3 Slice-Seq on the breaks, T4 empty.
+    using CM = MidiMorf::ControllerMode;
+    const int defaultInst[TrackRack::NumTracks]  = { (int) CM::MorfChord, (int) CM::StepSequencer, (int) CM::SliceSequencer, -1 };
+    const int defaultSound[TrackRack::NumTracks] = { 1, 1, 2, 0 };
+
+    if (project.isValid())
+    {
+        for (int t = 0; t < TrackRack::NumTracks; ++t)
+        {
+            const auto track = project.getChildWithProperty ("index", t);
+            setSound (t, track.getProperty ("sound", defaultSound[t]));
+            if (auto synth = track.getChildWithName (WavetableEngine::stateType); synth.isValid())
+                audioEngine.getTrackSynth (t).setState (synth);
+            setInstrument (t, track.getProperty ("instrument", defaultInst[t]));
+            audioEngine.getRack().setVolume (t, (float) (double) track.getProperty ("volume", 1.0));
+        }
+    }
+    else
+    {
+        // From the settings file: T1's patch under its original key (or the
+        // older formats WavetableSynthPage still reads), the rest per track.
+        synthPage.restoreState (*settings);
+
+        for (int t = 0; t < TrackRack::NumTracks; ++t)
+            setSound (t, settings->getIntValue ("trk_sound_" + juce::String (t), defaultSound[t]));
+
+        for (int t = 1; t < TrackRack::NumTracks; ++t)
+        {
+            auto xml = settings->getXmlValue ("trk_synth_" + juce::String (t));
+            if (xml == nullptr && t == 1)
+                xml = settings->getXmlValue ("t2_state");   // the bass, as saved before tracks had their own keys
+            if (xml != nullptr)
+                audioEngine.getTrackSynth (t).setState (juce::ValueTree::fromXml (*xml));
+        }
+
+        for (int t = 0; t < TrackRack::NumTracks; ++t)
+        {
+            const juce::String n (t);
+            setInstrument (t, settings->getIntValue ("trk_inst_" + n, defaultInst[t]));
+            audioEngine.getRack().setVolume (t, (float) settings->getDoubleValue ("trk_vol_" + n, 1.0));
+        }
+    }
+
+    soundTrack = juce::jlimit (0, TrackRack::NumTracks - 1, settings->getIntValue ("sound_track", 0));
+    if (audioEngine.getWavetable (soundTrack) != nullptr)
+        synthPage.edit (audioEngine.getTrackSynth (soundTrack),
+                        "T" + juce::String (soundTrack + 1) + " " + audioEngine.getSoundName (soundTrack).toUpperCase(),
+                        TrackColours::get (soundTrack));
+
+    // Last page, if it still belongs somewhere; otherwise T1's
+    // instrument (Morf-Chord on first launch), or Home.
+    int lastPage = settings->getIntValue ("lastPage", -1);
+    const bool reachable = lastPage >= 0 && lastPage < numPages
+                           && (lastPage >= MidiMorf::NUM_CONTROLLERS
+                               || lastPage == (int) CM::Transport || lastPage == (int) CM::FXPunchIn
+                               || trackOfPage (lastPage) >= 0);
+    if (! reachable)
+        lastPage = instrumentOf[0] >= 0 ? instrumentOf[0] : homePageIdx;
+
+    pageContainer.setPage (lastPage);
+    updateRail();   // setPage does nothing if lastPage is already showing
+
+    // Writes the project straight away, which also moves an older install's
+    // settings into it.
+    saveNow();
 }
 
 void MainComponent::seqPlayheadChanged (int step)

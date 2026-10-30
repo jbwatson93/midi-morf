@@ -35,7 +35,18 @@ static constexpr int aboutPageIdx     = MidiMorf::NUM_CONTROLLERS + 1;
 static constexpr int settingsPageIdx  = MidiMorf::NUM_CONTROLLERS + 2;
 static constexpr int homePageIdx      = MidiMorf::NUM_CONTROLLERS + 3;
 static constexpr int breaksPageIdx    = MidiMorf::NUM_CONTROLLERS + 4;
-static constexpr int numPages         = MidiMorf::NUM_CONTROLLERS + 5;
+static constexpr int performPageIdx   = MidiMorf::NUM_CONTROLLERS + 5;
+static constexpr int numPages         = MidiMorf::NUM_CONTROLLERS + 6;
+
+// The four-at-once Perform view is for iPad; an iPhone screen is too small.
+static bool isIPad()
+{
+   #if JUCE_IOS
+    return [UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad;
+   #else
+    return false;
+   #endif
+}
 
 static bool isSequencer (int mode)
 {
@@ -105,6 +116,29 @@ MainComponent::MainComponent()
     pageContainer.addPage (&settingsPage);
     pageContainer.addPage (homePage.get());
     pageContainer.addPage (&breaksPage);
+    pageContainer.addPage (&performView);
+
+    // Perform borrows the tracks' instrument pages and hands them back.
+    performView.onShow       = [this] { populatePerform(); };
+    performView.onReturnPage = [this] (juce::Component* p) { pageContainer.reclaim (p); };
+    performView.onExpand     = [this] (int t)
+    {
+        pageContainer.setPage (instrumentOf[t] >= 0 ? instrumentOf[t] : homePageIdx);
+    };
+    performView.onMute       = [this] (int t, bool m) { audioEngine.getRack().setMuted (t, m); saveState(); };
+
+    // Step-Seq and Slice-Seq share some messages (steps, transport, ratchet)
+    // that go to the page last shown. With several on screen, the one being
+    // touched is the one they mean.
+    performView.onTouched    = [this] (int t)
+    {
+        const int mode = instrumentOf[t];
+        if (mode >= 0 && mode != focusedMode)
+        {
+            focusedMode = mode;
+            eventRouter.sendScreenMode (static_cast<MidiMorf::ControllerMode> (mode));
+        }
+    };
     pageContainer.setListener (this);
     addAndMakeVisible (pageContainer);
     addAndMakeVisible (header);
@@ -116,6 +150,10 @@ MainComponent::MainComponent()
     // outside the safe area, on top of the wood.
     homeButton.onClick = [this] { pageContainer.setPage (homePageIdx); };
     addAndMakeVisible (homeButton);
+
+    performButton.onClick = [this] { pageContainer.setPage (performPageIdx); };
+    if (isIPad())
+        addAndMakeVisible (performButton);
 
     for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
@@ -210,7 +248,7 @@ void MainComponent::resized()
     // gutter. iPhone with Dynamic Island already gives ~44pt of inset which is
     // enough; iPhone landscape is also tight on horizontal real estate so we
     // don't want to widen the wood frame there unnecessarily.
-    const bool isIPad = ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad);
+    const bool onIPad = isIPad();
 
     if (auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
     {
@@ -218,12 +256,13 @@ void MainComponent::resized()
         const int hMax      = juce::jmax (insets.getLeft(), insets.getRight());
         const int extraPad  = 8;
         const int safeTrim  = hMax + extraPad;
-        const int trim      = isIPad ? juce::jmax (safeTrim, rightGutter)
+        const int trim      = onIPad ? juce::jmax (safeTrim, rightGutter)
                                      : safeTrim;
         area = area.withTrimmedLeft  (trim)
-                   .withTrimmedRight (trim);
+                   .withTrimmedRight (trim)
+                   .withTrimmedTop   (insets.getTop());   // iPad keeps its status bar in landscape
     }
-    else if (isIPad)
+    else if (onIPad)
     {
         area = area.withTrimmedLeft  (rightGutter)
                    .withTrimmedRight (rightGutter);
@@ -246,6 +285,11 @@ void MainComponent::resized()
     rail = rail.withX (rail.getRight() - btnW - floatingPadR).withWidth (btnW);
     const int gap = 6;
     homeButton.setBounds (rail.removeFromTop (44));
+    if (performButton.isVisible())
+    {
+        rail.removeFromTop (gap);
+        performButton.setBounds (rail.removeFromTop (44));
+    }
     playButton.setBounds (rail.removeFromBottom (44));
     rail.removeFromTop (gap);
     rail.removeFromBottom (gap);
@@ -266,6 +310,7 @@ juce::String MainComponent::getPageDisplayName (int pageIndex) const
     if (pageIndex == settingsPageIdx)  return "Settings";
     if (pageIndex == homePageIdx)      return "Home";
     if (pageIndex == breaksPageIdx)    return "Breaks";
+    if (pageIndex == performPageIdx)   return "Perform";
     return {};
 }
 
@@ -401,6 +446,21 @@ juce::String MainComponent::headerText (int pageIndex) const
     return track + getPageDisplayName (pageIndex) + arrow + sound;
 }
 
+// Each quarter gets its track's instrument page (or nothing) and a header
+// in the same words as the top strip.
+void MainComponent::populatePerform()
+{
+    focusedMode = -1;
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+    {
+        const int inst = instrumentOf[t];
+        const juce::String text = inst >= 0 ? headerText (inst)
+                                            : "T" + juce::String (t + 1) + juce::String::fromUTF8 ("  \xc2\xb7  ") + audioEngine.getSoundName (t);
+        performView.setQuarter (t, inst >= 0 ? pageContainer.getPage (inst) : nullptr, text,
+                                audioEngine.getRack().isMuted (t));
+    }
+}
+
 void MainComponent::updateRail()
 {
     const int page = pageContainer.getCurrentPage();
@@ -422,6 +482,7 @@ void MainComponent::updateRail()
     }
 
     homeButton.setLit (page == homePageIdx);
+    performButton.setLit (page == performPageIdx);
     header.set (current, headerText (page));
 }
 
@@ -571,6 +632,7 @@ void MainComponent::saveNow()
         track.setProperty ("sound", (int) audioEngine.getTrackSound (t), nullptr);
         track.setProperty ("volume", audioEngine.getRack().getVolume (t), nullptr);
         track.setProperty ("soundName", audioEngine.getSynthName (t), nullptr);
+        track.setProperty ("muted", audioEngine.getRack().isMuted (t), nullptr);
         track.appendChild (audioEngine.getTrackSynth (t).getState(), nullptr);   // kept even when not playing
         project.appendChild (track, nullptr);
     }
@@ -669,6 +731,7 @@ void MainComponent::restoreState()
             setInstrument (t, track.getProperty ("instrument", defaultInst[t]));
             audioEngine.getRack().setVolume (t, (float) (double) track.getProperty ("volume", 1.0));
             audioEngine.setSoundName (t, track["soundName"].toString());
+            audioEngine.getRack().setMuted (t, track.getProperty ("muted", false));
         }
     }
     else
@@ -710,6 +773,8 @@ void MainComponent::restoreState()
                                || trackOfPage (lastPage) >= 0);
     if (! reachable)
         lastPage = instrumentOf[0] >= 0 ? instrumentOf[0] : homePageIdx;
+    if (lastPage == performPageIdx && ! isIPad())
+        lastPage = homePageIdx;
 
     pageContainer.setPage (lastPage);
     updateRail();   // setPage does nothing if lastPage is already showing

@@ -16,6 +16,7 @@
 #include "SettingsPage.h"
 #include "HomePage.h"
 #include "BreaksPage.h"
+#include "PerformView.h"
 #include "NetworkClient.h"
 #include "AccelerometerManager.h"
 #include "MidiMorfProtocol.h"
@@ -92,6 +93,8 @@ private:
     int instrumentOf[TrackRack::NumTracks] { -1, -1, -1, -1 };
     int soundTrack = 0;     // whose synth the Sound page is editing
     bool dawPlaying = false;
+    int  focusedMode = -1;   // the page shared sequencer messages go to, in Perform
+    void populatePerform();
 
     //==========================================================================
     PageContainer pageContainer;
@@ -109,9 +112,11 @@ private:
     SettingsPage settingsPage { eventRouter };
     std::unique_ptr<HomePage> homePage;
     BreaksPage breaksPage { audioEngine.getSequencers() };
+    PerformView performView;   // iPad only
 
     TrackHeader header;
     RailIconButton homeButton { RailIconButton::Kind::Home };
+    RailIconButton performButton { RailIconButton::Kind::Perform };
     RailIconButton playButton { RailIconButton::Kind::PlayStop };
     juce::OwnedArray<RailTrackButton> trackButtons;
 

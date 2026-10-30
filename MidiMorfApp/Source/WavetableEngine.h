@@ -419,7 +419,7 @@ public:
     void setBuiltInTable (int osc, int index)
     {
         index = juce::jlimit (0, WavetableLibrary::builtInNames().size() - 1, index);
-        installTable (osc, WavetableLibrary::build (index));
+        installTable (osc, WavetableLibrary::shared (index));
         oscState (osc).builtInIndex = index;
         oscState (osc).importedFile = juce::File();
     }
@@ -674,7 +674,10 @@ private:
     const OscState& oscState (int osc) const { return osc == 0 ? oscStateA : oscStateB; }
     static bool validSlot (int s) { return s >= 0 && s < NumRoutingSlots; }
 
-    void installTable (int osc, std::unique_ptr<Wavetable> table)
+    // Tables are shared between synths (see WavetableLibrary::shared), so a
+    // table retired here may still be playing in another engine — that one
+    // holds its own reference. The audio thread reads the raw pointer.
+    void installTable (int osc, std::shared_ptr<const Wavetable> table)
     {
         const auto now = juce::Time::getMillisecondCounter();
 
@@ -786,7 +789,7 @@ private:
     };
 
     struct Routing { int source = ModSrcOff; int dest = ModDestOff; float amount = 0.0f; };
-    struct Retired { std::unique_ptr<Wavetable> table; juce::uint32 when; };
+    struct Retired { std::shared_ptr<const Wavetable> table; juce::uint32 when; };
 
     LockFreeFifo midiQueue;
     juce::MidiBuffer audioThreadMidi;
@@ -794,7 +797,7 @@ private:
     MasterFx fx;
     double currentSampleRate = 44100.0;
 
-    std::unique_ptr<Wavetable> ownedA, ownedB;
+    std::shared_ptr<const Wavetable> ownedA, ownedB;
     std::atomic<const Wavetable*> tableA { nullptr }, tableB { nullptr };
     std::vector<Retired> retired;
 

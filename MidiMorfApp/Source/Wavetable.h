@@ -4,6 +4,7 @@
 #include <vector>
 #include <complex>
 #include <memory>
+#include <map>
 
 //==============================================================================
 // Wavetable — a stack of single-cycle frames, each pre-rendered at several
@@ -417,6 +418,23 @@ namespace WavetableLibrary
         if (isAnalog (index))
             return std::make_unique<Wavetable> (builtInNames()[index], std::vector<Spectrum> { analogWave (index) });
         return std::make_unique<Wavetable> (builtInNames()[index], generate (index - NumAnalogWaves));
+    }
+
+    // Built-in tables are read-only once built, so every synth that has the
+    // same one selected shares a single copy — Morph is ~5.8 MB. The cache
+    // only holds weak references: a table nobody uses is freed, as before.
+    // Message thread.
+    inline std::shared_ptr<const Wavetable> shared (int index)
+    {
+        static std::map<int, std::weak_ptr<const Wavetable>> cache;
+        index = juce::jlimit (0, builtInNames().size() - 1, index);
+
+        if (auto existing = cache[index].lock())
+            return existing;
+
+        std::shared_ptr<const Wavetable> table = build (index);
+        cache[index] = table;
+        return table;
     }
 
     //--------------------------------------------------------------------------

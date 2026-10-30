@@ -99,6 +99,9 @@ public:
     LocalSequencers& getSequencers() noexcept { return sequencers; }
     TrackRack& getRack() noexcept             { return rack; }
 
+    // 0..1 of the callback's time budget, averaged by JUCE.
+    double getCpuUsage() const { return deviceManager.getCpuUsage(); }
+
 private:
     // A mono-ish acid bass: saw plus a square an octave down, a resonant
     // ladder snapped shut by a fast filter envelope, velocity on cutoff so

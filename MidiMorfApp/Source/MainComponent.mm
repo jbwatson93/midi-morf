@@ -76,6 +76,7 @@ MainComponent::MainComponent()
 
     // Settings page persists its mode change like everything else.
     settingsPage.onModeChanged = [this] { saveState(); };
+    settingsPage.getAudioLoad  = [this] { return audioEngine.getCpuUsage(); };
 
     // Floating menu + synth shortcut (sit on top of the page, in the right gutter).
     menuButton.onClick = [this] { showNavigationMenu(); };

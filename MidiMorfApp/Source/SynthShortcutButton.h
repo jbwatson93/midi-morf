@@ -4,8 +4,9 @@
 #include "MidiMorfColors.h"
 
 //==============================================================================
-// Floating shortcut that jumps to the Synth settings page. Renders a sine-wave
-// glyph + "Synth" label, styled to match PianoKeysButton.
+// Floating shortcut to the Sound page — the sound of the track the current
+// page plays. Renders a sine-wave glyph + "Sound" label, styled to match
+// PianoKeysButton.
 class SynthShortcutButton : public juce::Button
 {
 public:
@@ -53,7 +54,7 @@ protected:
         // Label
         g.setColour (MidiMorfColors::textLight);
         g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-        g.drawText ("Synth", labelArea, juce::Justification::centred);
+        g.drawText ("Sound", labelArea, juce::Justification::centred);
 
         if (isDown)
         {

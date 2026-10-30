@@ -99,6 +99,20 @@ public:
     LocalSequencers& getSequencers() noexcept { return sequencers; }
     TrackRack& getRack() noexcept             { return rack; }
 
+    // What a track is called in the UI, by what it plays. Presets will name
+    // the synths later.
+    juce::String getTrackName (int track) const
+    {
+        const auto* s = rack.getSource (track);
+        if (s == &synth)  return "Synth";
+        if (s == &bass)   return "Bass";
+        if (s == &breaks) return "Breaks";
+        return "Empty";
+    }
+
+    // The track's synth, or nullptr if it plays something else.
+    WavetableEngine* getWavetable (int track) { return dynamic_cast<WavetableEngine*> (rack.getSource (track)); }
+
     // 0..1 of the callback's time budget, averaged by JUCE.
     double getCpuUsage() const { return deviceManager.getCpuUsage(); }
 

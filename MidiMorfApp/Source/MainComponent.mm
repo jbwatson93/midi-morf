@@ -22,7 +22,7 @@ static const juce::String controllerNames[] = {
 static_assert (juce::numElementsInArray (controllerNames) == MidiMorf::NUM_CONTROLLERS,
                "controllerNames must have exactly NUM_CONTROLLERS entries");
 
-static const juce::String synthPageName    = "Synth";
+static const juce::String synthPageName    = "Sound";
 static const juce::String settingsPageName = "Settings";
 static const juce::String aboutPageName    = "About";
 
@@ -82,11 +82,11 @@ MainComponent::MainComponent()
     menuButton.onClick = [this] { showNavigationMenu(); };
     addAndMakeVisible (menuButton);
 
-    synthButton.onClick = [this]
-    {
-        pageContainer.setPage (synthPageIdx);
-    };
+    synthButton.onClick = [this] { openSound(); };
     addAndMakeVisible (synthButton);
+
+    trackBadge.onClick = [this] { showTrackPicker(); };
+    addAndMakeVisible (trackBadge);
 
     // Favorite quick-jump button. Short tap navigates to the assigned page;
     // long-press opens a picker so the user can rebind it. Empty slot routes
@@ -207,8 +207,9 @@ void MainComponent::resized()
     const int gap  = 6;
     int x = full.getRight() - btnW - 4;
     menuButton.setBounds     (x, full.getY() + 36,                       btnW, btnH);
-    synthButton.setBounds    (x, full.getY() + 36 +     (btnH + gap),    btnW, btnH);
-    favoriteButton.setBounds (x, full.getY() + 36 + 2 * (btnH + gap),    btnW, btnH);
+    trackBadge.setBounds     (x, full.getY() + 36 +     (btnH + gap),    btnW, btnH);
+    synthButton.setBounds    (x, full.getY() + 36 + 2 * (btnH + gap),    btnW, btnH);
+    favoriteButton.setBounds (x, full.getY() + 36 + 3 * (btnH + gap),    btnW, btnH);
 }
 
 void MainComponent::showNavigationMenu()
@@ -329,8 +330,116 @@ void MainComponent::pageChanged (int newPageIndex)
             sliceSequencerPage.pushFullState();
     }
 
+    updateTrackBadge();
+
     // Persist current state whenever page changes
     saveState();
+}
+
+//==============================================================================
+// Tracks
+
+// -1 for pages that play nothing. The Sound page shows the track it edits.
+int MainComponent::trackForPage (int pageIndex) const
+{
+    if (pageIndex >= 0 && pageIndex < MidiMorf::NUM_CONTROLLERS)
+        return eventRouter.getTrackFor (static_cast<MidiMorf::ControllerMode> (pageIndex));
+    if (pageIndex == synthPageIdx)
+        return soundTrack;
+    return -1;
+}
+
+void MainComponent::updateTrackBadge()
+{
+    const int t = trackForPage (pageContainer.getCurrentPage());
+    trackBadge.setTrack (t, t >= 0 ? audioEngine.getTrackName (t) : juce::String());
+}
+
+// On a controller or sequencer page: which track it plays, plus that track's
+// volume. On the Sound page: which track's sound to edit.
+void MainComponent::showTrackPicker()
+{
+    const int page    = pageContainer.getCurrentPage();
+    const int current = trackForPage (page);
+    if (current < 0)
+        return;
+
+    const bool onSound = (page == synthPageIdx);
+    juce::PopupMenu menu;
+    menu.addSectionHeader (onSound ? juce::String ("Edit the sound of")
+                                   : getPageDisplayName (page) + " plays");
+
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+    {
+        const bool empty    = audioEngine.getRack().getSource (t) == nullptr;
+        const bool editable = audioEngine.getWavetable (t) != nullptr;
+        juce::String text = "T" + juce::String (t + 1) + "  " + audioEngine.getTrackName (t);
+        if (empty)                      text << "  (drums coming)";
+        else if (onSound && ! editable) text << "  (edit on Slice-Seq)";
+
+        juce::PopupMenu::Item item (text);
+        item.itemID    = t + 1;
+        item.isTicked  = (t == current);
+        item.isEnabled = ! empty;
+        item.colour    = TrackColours::get (t);
+        menu.addItem (item);
+    }
+
+    menu.addSeparator();
+    menu.addCustomItem (100, std::make_unique<TrackVolumeMenuItem> (audioEngine.getRack(), current,
+                                                                    [this] { saveState(); }),
+                        nullptr, "Volume");
+
+    menu.showMenuAsync (juce::PopupMenu::Options()
+                            .withTargetComponent (&trackBadge)
+                            .withStandardItemHeight (36),
+        [this, page, onSound] (int result)
+        {
+            if (result >= 1 && result <= TrackRack::NumTracks)
+            {
+                const int t = result - 1;
+                if (! onSound)
+                    eventRouter.setTrackFor (static_cast<MidiMorf::ControllerMode> (page), t);
+                else if (audioEngine.getWavetable (t) != nullptr)
+                    editSound (t);
+                else
+                    pageContainer.setPage ((int) MidiMorf::ControllerMode::SliceSequencer);
+            }
+            updateTrackBadge();
+            saveState();   // also catches a volume change
+        });
+}
+
+// The Sound button: the sound of whatever the current page plays. A synth
+// track opens the Sound page on that synth; the break player's sound is
+// picked on Slice-Seq; pages that play nothing reopen the last edited sound.
+void MainComponent::openSound()
+{
+    const int page = pageContainer.getCurrentPage();
+    int t = trackForPage (page);
+    if (t < 0 || page == synthPageIdx)
+        t = soundTrack;
+
+    if (audioEngine.getWavetable (t) != nullptr)
+    {
+        editSound (t);
+        pageContainer.setPage (synthPageIdx);
+    }
+    else if (audioEngine.getRack().getSource (t) != nullptr)
+    {
+        pageContainer.setPage ((int) MidiMorf::ControllerMode::SliceSequencer);
+    }
+}
+
+void MainComponent::editSound (int track)
+{
+    if (auto* synth = audioEngine.getWavetable (track))
+    {
+        soundTrack = track;
+        synthPage.edit (*synth, "T" + juce::String (track + 1) + " " + audioEngine.getTrackName (track).toUpperCase(),
+                        TrackColours::get (track));
+        updateTrackBadge();
+    }
 }
 
 // Timer
@@ -353,6 +462,19 @@ void MainComponent::saveState()
         roseChordPage.saveState (*props);
         synthPage.saveState (*props);
         audioEngine.getSequencers().saveState (*props);
+
+        // Tracks — until the project file (Phase 1 step 6) takes these over.
+        if (auto xml = audioEngine.getBassSynth().getState().createXml())
+            props->setValue ("t2_state", xml.get());
+        for (int m = 0; m < MidiMorf::NUM_CONTROLLERS; ++m)
+        {
+            const int t = eventRouter.getTrackFor (static_cast<MidiMorf::ControllerMode> (m));
+            if (t >= 0)
+                props->setValue ("track_page_" + juce::String (m), t);
+        }
+        for (int t = 0; t < TrackRack::NumTracks; ++t)
+            props->setValue ("track_vol_" + juce::String (t), audioEngine.getRack().getVolume (t));
+        props->setValue ("sound_track", soundTrack);
         props->setValue ("seq_sync", eventRouter.isLocalSync() ? 0 : 1);
         props->saveIfNeeded();
     }
@@ -368,6 +490,18 @@ void MainComponent::restoreState()
         roseChordPage.restoreState (*props);
         synthPage.restoreState (*props);
         audioEngine.getSequencers().restoreState (*props);
+
+        if (auto xml = props->getXmlValue ("t2_state"))
+            audioEngine.getBassSynth().setState (juce::ValueTree::fromXml (*xml));
+        for (int m = 0; m < MidiMorf::NUM_CONTROLLERS; ++m)
+        {
+            const juce::String key = "track_page_" + juce::String (m);
+            if (props->containsKey (key))
+                eventRouter.setTrackFor (static_cast<MidiMorf::ControllerMode> (m), props->getIntValue (key));
+        }
+        for (int t = 0; t < TrackRack::NumTracks; ++t)
+            audioEngine.getRack().setVolume (t, (float) props->getDoubleValue ("track_vol_" + juce::String (t), 1.0));
+        editSound (props->getIntValue ("sound_track", 0));
         eventRouter.setSyncSource (props->getIntValue ("seq_sync", 0) == 1 ? EventRouter::SyncSource::DAW
                                                                            : EventRouter::SyncSource::Local);
 

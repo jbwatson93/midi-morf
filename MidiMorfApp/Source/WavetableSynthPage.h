@@ -676,7 +676,7 @@ public:
     {
         setLookAndFeel (&laf);
 
-        title.setText ("SYNTH", juce::dontSendNotification);
+        title.setText ("SOUND", juce::dontSendNotification);
         // Accent, not textLight: it sits straight on the panel, which is light
         // in some themes and dark in others.
         title.setFont (juce::FontOptions (14.0f, juce::Font::bold));
@@ -779,6 +779,12 @@ public:
             t->refresh();
     }
 
+    void setTitle (const juce::String& text, juce::Colour colour)
+    {
+        title.setText (text, juce::dontSendNotification);
+        title.setColour (juce::Label::textColourId, colour);
+    }
+
 private:
     std::vector<WtTab*> tabs() { return { &oscTab, &envTab, &routingTab, &fxTab }; }
 
@@ -797,18 +803,42 @@ private:
 };
 
 //==============================================================================
+// The Sound page for any wavetable track. It edits one engine at a time —
+// edit() points it at another track's synth by rebuilding the editor, whose
+// controls all hold a reference to the engine they edit.
+//
+// saveState / restoreState are for the engine it was built with (T1's synth),
+// under the settings key that synth has always used.
 class WavetableSynthPage : public juce::Component
 {
 public:
-    WavetableSynthPage (WavetableEngine& e)
-        : engine (e), content (e, [this] { if (onPatchChanged) onPatchChanged(); })
+    WavetableSynthPage (WavetableEngine& e) : engine (e)
     {
-        addAndMakeVisible (content);
+        edit (e, "SOUND", MidiMorfColors::accent);
     }
 
     std::function<void()> onPatchChanged;
 
-    void resized() override { content.setBounds (getLocalBounds()); }
+    void edit (WavetableEngine& e, const juce::String& title, juce::Colour titleColour)
+    {
+        if (editing != &e || content == nullptr)
+        {
+            editing = &e;
+            content = std::make_unique<WavetableSynthContent> (e, [this] { if (onPatchChanged) onPatchChanged(); });
+            addAndMakeVisible (*content);
+            resized();
+        }
+        content->setTitle (title, titleColour);
+        content->refreshAll();
+    }
+
+    WavetableEngine& getEditedEngine() const noexcept { return *editing; }
+
+    void resized() override
+    {
+        if (content != nullptr)
+            content->setBounds (getLocalBounds());
+    }
 
     // The patch lives in the engine as one ValueTree (WavetableEngine::
     // getState), stored here under a single settings key.
@@ -834,7 +864,8 @@ public:
             migrateClassicPatch (props);   // updating from the original subtractive synth
         // else: a fresh install keeps the engine defaults
 
-        content.refreshAll();
+        if (&engine == editing)
+            content->refreshAll();
     }
 
 private:
@@ -919,9 +950,11 @@ private:
         fx.reverbSize    = f ("synth_reverbSize", 0.5);
         fx.reverbEnabled = props.getBoolValue ("synth_reverbOn", true);
 
-        content.refreshAll();
+        if (&engine == editing)
+            content->refreshAll();
     }
 
     WavetableEngine& engine;
-    WavetableSynthContent content;
+    WavetableEngine* editing = nullptr;
+    std::unique_ptr<WavetableSynthContent> content;
 };

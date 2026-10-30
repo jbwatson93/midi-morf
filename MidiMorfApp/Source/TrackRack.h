@@ -62,6 +62,12 @@ public:
 
     SoundSource* getSource (int track) const { return validTrack (track) ? sources[(size_t) track] : nullptr; }
 
+    // Track volume, 0..MaxVolume linear (1 = unity). Any thread; the audio
+    // thread ramps to it over 20 ms so a fader move never clicks.
+    static constexpr float MaxVolume = 1.5f;
+    void  setVolume (int track, float v) { if (validTrack (track)) volumes[(size_t) track].store (juce::jlimit (0.0f, MaxVolume, v)); }
+    float getVolume (int track) const    { return validTrack (track) ? volumes[(size_t) track].load() : 0.0f; }
+
     void prepare (double sampleRate, int maxBlockSize)
     {
         scratch.setSize (2, juce::jmax (maxBlockSize, 1024));
@@ -71,6 +77,12 @@ public:
 
         limiterRelease = (float) std::exp (-1.0 / (0.08 * sampleRate));   // 80 ms
         limiterEnv = 0.0f;
+
+        for (int t = 0; t < NumTracks; ++t)
+        {
+            gains[(size_t) t].reset (sampleRate, 0.02);
+            gains[(size_t) t].setCurrentAndTargetValue (volumes[(size_t) t].load());
+        }
     }
 
     void release()
@@ -120,14 +132,14 @@ public:
         {
             const int n = juce::jmin (num - done, scratch.getNumSamples());
 
-            for (auto* s : sources)
+            for (int t = 0; t < NumTracks; ++t)
             {
+                auto* s = sources[(size_t) t];
                 if (s == nullptr)
                     continue;
 
                 s->render (scratch, 0, n);
-                for (int ch = 0; ch < out.getNumChannels(); ++ch)
-                    out.addFrom (ch, start + done, scratch, juce::jmin (ch, scratch.getNumChannels() - 1), 0, n);
+                mixTrack (t, out, start + done, n);
             }
 
             done += n;
@@ -176,6 +188,35 @@ private:
         handle (scope.startIndex2, scope.blockSize2);
     }
 
+    // Adds the track's scratch render into `out` at its volume. Steady
+    // volume is a plain (gained) add — unity is exactly the unscaled signal;
+    // while a change is ramping, per sample.
+    void mixTrack (int t, juce::AudioBuffer<float>& out, int start, int n)
+    {
+        auto& gain = gains[(size_t) t];
+        gain.setTargetValue (volumes[(size_t) t].load());
+        const int numOut = out.getNumChannels(), numIn = scratch.getNumChannels();
+
+        if (! gain.isSmoothing())
+        {
+            const float g = gain.getCurrentValue();
+            if (g <= 0.0f)
+                return;
+            for (int ch = 0; ch < numOut; ++ch)
+                out.addFrom (ch, start, scratch, juce::jmin (ch, numIn - 1), 0, n, g);
+            return;
+        }
+
+        float* dst[2] = { out.getWritePointer (0, start), numOut > 1 ? out.getWritePointer (1, start) : nullptr };
+        const float* src[2] = { scratch.getReadPointer (0), scratch.getReadPointer (juce::jmin (1, numIn - 1)) };
+        for (int i = 0; i < n; ++i)
+        {
+            const float g = gain.getNextValue();
+            dst[0][i] += g * src[0][i];
+            if (dst[1] != nullptr) dst[1][i] += g * src[1][i];
+        }
+    }
+
     // Peak limiter at -0.5 dBFS: instant attack, so no sample ever passes
     // the threshold; 80 ms release. Below the threshold the gain is exactly
     // 1, so it costs nothing to normal levels. One gain for both channels
@@ -205,6 +246,8 @@ private:
     }
 
     std::array<SoundSource*, NumTracks> sources {};
+    std::array<std::atomic<float>, NumTracks> volumes { 1.0f, 1.0f, 1.0f, 1.0f };
+    std::array<juce::SmoothedValue<float>, NumTracks> gains;   // audio thread
     juce::AudioBuffer<float> scratch;
 
     juce::AbstractFifo fifo { FifoSize };

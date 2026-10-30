@@ -23,6 +23,7 @@
 #include "PianoKeysButton.h"
 #include "SynthShortcutButton.h"
 #include "FavoriteButton.h"
+#include "TrackBadge.h"
 
 class MainComponent : public juce::Component,
                       public NetworkClient::Listener,
@@ -83,8 +84,17 @@ private:
     SettingsPage settingsPage { eventRouter };
 
     PianoKeysButton menuButton;
+    TrackBadge trackBadge;
     SynthShortcutButton synthButton;
     FavoriteButton favoriteButton;
+
+    // Tracks: which one each page plays, the picker, and the Sound page.
+    int  trackForPage (int pageIndex) const;
+    void updateTrackBadge();
+    void showTrackPicker();
+    void openSound();
+    void editSound (int track);
+    int  soundTrack = 0;   // the track the Sound page edits
 
     void showFavoritePicker();
     juce::String getPageDisplayName (int pageIndex) const;

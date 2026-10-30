@@ -39,6 +39,7 @@ public:
 
         punch.setTempoSource ([this] { return sequencers.getBpm(); });
         rack.setMasterProcessor (&punch);
+        rack.setTempoSource ([this] { return sequencers.getBpm(); });
 
         if (auto* acid = WavetablePresets::findFactory ("Acid Bass"))
             synths[1]->setState (acid->state);

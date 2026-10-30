@@ -237,10 +237,11 @@ Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit
 
 ### Phase 7 — Mixer
 
-- [ ] Per track: level, pan, mute, solo, and 2 sends (Delay, Reverb) on shared send buses.
-- [ ] Per-track insert FX, reusing `MasterFx`.
-- [ ] Master level, plus a limiter so 4 tracks can't clip.
-- [ ] The full snap point of the Session mixer (see *Screens*). There's no separate Mixer page.
+- [x] Per track: level, pan, mute, **solo**, and 2 sends (Delay, Reverb) on shared send buses (`MixerFx.h`: a tempo-synced ping-pong delay — 1/4, dotted 1/8, 1/8, 1/16 — and a reverb). Sends are post-fader.
+- [x] **Per-track insert:** Filter (one knob, low-pass left / high-pass right), Drive and Crush. *Changed from "reusing MasterFx":* that chain is the synth's own distortion → delay → reverb, which fits the send buses better than an insert; delay and reverb live on the buses instead.
+- [x] Master level before the limiter (already there), and the bus settings: delay time and feedback, reverb size.
+- [x] The full mixer is Session's MIXER view (no separate page): sound, six knobs, M and S per track, the master section across the top.
+- Untouched, the mix is bit-exact; inserts and buses cost nothing until used (all of it busy is under 1% of a Mac core).
 
 ### Phase 8 — iOS release ($4.99)
 

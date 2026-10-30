@@ -27,7 +27,9 @@ static const PagePalette sessionPagePalette {
 //     stop), hold a take for Edit / Record over / Quantize / Undo last pass.
 //   • the track column — what plays the track, its sound, its volume, ■.
 //   • MIXER (instead of the grid) — per track: its sound (tap to edit it),
-//     pan and mute. Volume is in the track column.
+//     pan, the delay and reverb sends, the insert (filter, drive, crush),
+//     mute and solo; the master level and the send buses along the top.
+//     Volume is the fader in the track column.
 //   • the bottom strip — the project, CLIPS / MIXER, launch quantize, and
 //     the pages that belong to no track.
 //
@@ -65,11 +67,15 @@ public:
         std::function<int()> getLaunchQuantize;                  // 0 bar, 1 beat, 2 off
         std::function<void (int)> setLaunchQuantize;
 
-        // Mixer
+        // Mixer. Knob params: MixParam. Master params: MasterParam.
+        std::function<float (int track, int param)> getMix;
+        std::function<void (int track, int param, float value)> setMix;
+        std::function<bool (int track)> getSolo;
+        std::function<void (int track, bool solo)> setSolo;
+        std::function<float (int param)> getMaster;
+        std::function<void (int param, float value)> setMaster;
         std::function<juce::String (int track)> soundName;
         std::function<void (int track)> openSound;
-        std::function<float (int track)> getPan;
-        std::function<void (int track, float pan)> setPan;
         std::function<bool (int track)> getMuted;
         std::function<void (int track, bool muted)> setMuted;
 
@@ -78,6 +84,9 @@ public:
         std::function<juce::String()> projectName;
         std::function<void()> changed;                            // persist
     };
+
+    enum MixParam { Pan = 0, SendDelay, SendReverb, Filter, Drive, Crush, NumKnobs };
+    enum MasterParam { MasterVolume = 0, DelayTime, DelayFeedback, ReverbSize };
 
     // The page indices the bottom buttons open, and the Drum Grid's (an
     // instrument that isn't a ControllerMode).
@@ -125,6 +134,30 @@ public:
         for (int t = 0; t < TrackRack::NumTracks; ++t)
             addChildComponent (strips.add (new Strip (*this, t)));
 
+        // The master section, over the strips in MIXER.
+        for (int m : { MasterVolume, DelayFeedback, ReverbSize })
+        {
+            auto* sl = masterSliders.add (new juce::Slider (juce::Slider::LinearHorizontal, juce::Slider::NoTextBox));
+            sl->setRange (0.0, m == MasterVolume ? 1.5 : (m == DelayFeedback ? 0.9 : 1.0), 0.01);
+            sl->setDoubleClickReturnValue (m == MasterVolume, 1.0);
+            sl->setPopupDisplayEnabled (true, true, this);
+            sl->textFromValueFunction = [m] (double v)
+            {
+                return m == MasterVolume ? juce::String (juce::Decibels::gainToDecibels (v, -60.0), 1) + " dB"
+                                         : juce::String (juce::roundToInt (v * 100.0)) + "%";
+            };
+            sl->onValueChange = [this, m, sl] { if (callbacks.setMaster) callbacks.setMaster (m, (float) sl->getValue()); };
+            sl->onDragEnd = [this] { if (callbacks.changed) callbacks.changed(); };
+            addChildComponent (sl);
+        }
+        delayTimeCombo.addItemList (SendBuses::delayTimeNames(), 1);
+        delayTimeCombo.onChange = [this]
+        {
+            if (callbacks.setMaster) callbacks.setMaster (DelayTime, (float) (delayTimeCombo.getSelectedId() - 1));
+            if (callbacks.changed) callbacks.changed();
+        };
+        addChildComponent (delayTimeCombo);
+
         const std::pair<const char*, int> links[] = {
             { "Transport", pages.transport }, { "Morf FX", pages.fx },
             { "Settings", pages.settings },   { "About", pages.about } };
@@ -156,6 +189,13 @@ public:
             r->refresh();
         for (auto* st : strips)
             st->refresh();
+        if (callbacks.getMaster)
+        {
+            masterSliders[0]->setValue (callbacks.getMaster (MasterVolume), juce::dontSendNotification);
+            masterSliders[1]->setValue (callbacks.getMaster (DelayFeedback), juce::dontSendNotification);
+            masterSliders[2]->setValue (callbacks.getMaster (ReverbSize), juce::dontSendNotification);
+            delayTimeCombo.setSelectedId (juce::roundToInt (callbacks.getMaster (DelayTime)) + 1, juce::dontSendNotification);
+        }
         quantize.setSelectedId ((callbacks.getLaunchQuantize ? callbacks.getLaunchQuantize() : 0) + 1, juce::dontSendNotification);
         const int recBars = callbacks.getRecBars ? callbacks.getRecBars() : 2;
         recButton.setButtonText ("REC " + juce::String (recBars) + (recBars == 1 ? " bar" : " bars"));
@@ -169,17 +209,12 @@ public:
     {
         Glassmorphism::paintPanel (g, getLocalBounds().toFloat(), sessionPagePalette);
 
-        if (mixerShown && ! strips.isEmpty())
+        if (mixerShown)
         {
-            // Column heads over the strips, from the first strip's layout.
-            const auto off = strips[0]->getPosition();
-            g.setColour (MidiMorfColors::textLight.withAlpha (0.5f));
-            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-            for (auto [label, r] : { std::pair { "SOUND", strips[0]->sound.getBounds() },
-                                     std::pair { "PAN", strips[0]->pan.getBounds() },
-                                     std::pair { "MUTE", strips[0]->mute.getBounds() } })
-                g.drawText (label, r.translated (off.x, 0).withY (mixerHead.getY()).withHeight (mixerHead.getHeight()),
-                            juce::Justification::centredLeft);
+            g.setColour (MidiMorfColors::textLight.withAlpha (0.55f));
+            g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+            for (auto& [text, r] : masterLabels)
+                g.drawText (text, r, juce::Justification::centredRight);
         }
     }
 
@@ -215,6 +250,20 @@ public:
         for (int t = 0; t < strips.size(); ++t)
             strips[t]->setBounds (area.getX(), area.getY() + headH + t * rowH, area.getWidth(), rowH - 4);
         mixerHead = area.withHeight (headH);
+
+        // MASTER [====]  DELAY [1/8 dotted] FB [===]  REVERB [===]
+        auto head = mixerHead.reduced (0, 2);
+        masterLabels.clear();
+        auto label = [&] (const char* text, int w) { masterLabels.push_back ({ text, head.removeFromLeft (w) }); head.removeFromLeft (4); };
+        const int unit = head.getWidth() / 10;
+        label ("MASTER", 50);
+        masterSliders[0]->setBounds (head.removeFromLeft (unit * 2));
+        label ("DELAY", 42);
+        delayTimeCombo.setBounds (head.removeFromLeft (unit * 2 + 6));
+        label ("FB", 18);
+        masterSliders[1]->setBounds (head.removeFromLeft (unit + 10));
+        label ("REVERB", 50);
+        masterSliders[2]->setBounds (head);
         const int sceneW = juce::jmax (84, area.getWidth() / 4);
         grid.setSize (sceneW * SessionModel::NumScenes, area.getHeight());
         grid.sceneW = sceneW;
@@ -256,12 +305,16 @@ private:
             st->setVisible (m);
             st->refresh();
         }
+        for (auto* sl : masterSliders)
+            sl->setVisible (m);
+        delayTimeCombo.setVisible (m);
         repaint();
     }
 
     //==========================================================================
-    // A track's mixer strip (compact): its sound, pan, mute. Sends and insert
-    // FX come with the full mixer.
+    // A track's mixer strip: its sound (tap to edit), then knobs for pan,
+    // the delay and reverb sends, and the insert (filter, drive, crush), then
+    // mute and solo. Volume is the fader in the track column.
     struct Strip : public juce::Component
     {
         Strip (SessionPage& o, int t) : owner (o), track (t)
@@ -270,29 +323,50 @@ private:
             sound.setColour (juce::TextButton::textColourOffId, TrackColours::get (t).brighter (0.3f));
             addAndMakeVisible (sound);
 
-            pan.setSliderStyle (juce::Slider::LinearHorizontal);
-            pan.setTextBoxStyle (juce::Slider::TextBoxRight, false, 44, 20);
-            pan.setRange (-1.0, 1.0, 0.01);
-            pan.setDoubleClickReturnValue (true, 0.0);
-            pan.textFromValueFunction = [] (double v)
+            static const char* names[NumKnobs] = { "PAN", "DLY", "REV", "FILT", "DRV", "CRSH" };
+            for (int k = 0; k < NumKnobs; ++k)
             {
-                const int pct = juce::roundToInt (std::abs (v) * 100.0);
-                return pct == 0 ? juce::String ("C") : juce::String (pct) + (v < 0 ? "L" : "R");
-            };
-            pan.updateText();
-            pan.setColour (juce::Slider::thumbColourId, TrackColours::get (t));
-            pan.onValueChange = [this] { if (owner.callbacks.setPan) owner.callbacks.setPan (track, (float) pan.getValue()); };
-            pan.onDragEnd = [this] { if (owner.callbacks.changed) owner.callbacks.changed(); };
-            addAndMakeVisible (pan);
+                auto* s = knobs.add (new juce::Slider (juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::NoTextBox));
+                const bool bipolar = k == Pan || k == Filter;
+                s->setRange (bipolar ? -1.0 : 0.0, 1.0, 0.01);
+                s->setDoubleClickReturnValue (true, 0.0);
+                s->setPopupDisplayEnabled (true, true, &owner);
+                s->setColour (juce::Slider::rotarySliderFillColourId, TrackColours::get (t));
+                s->textFromValueFunction = [k] (double v)
+                {
+                    if (k == Pan)    return std::abs (v) < 0.005 ? juce::String ("C") : juce::String (juce::roundToInt (std::abs (v) * 100.0)) + (v < 0 ? "L" : "R");
+                    if (k == Filter) return std::abs (v) < 0.005 ? juce::String ("off") : (v < 0 ? "LP " : "HP ") + juce::String (juce::roundToInt (std::abs (v) * 100.0));
+                    return juce::String (juce::roundToInt (v * 100.0)) + "%";
+                };
+                s->onValueChange = [this, k, s] { if (owner.callbacks.setMix) owner.callbacks.setMix (track, k, (float) s->getValue()); };
+                s->onDragEnd = [this] { if (owner.callbacks.changed) owner.callbacks.changed(); };
+                addAndMakeVisible (s);
 
-            mute.setClickingTogglesState (true);
+                auto* l = labels.add (new juce::Label ({}, names[k]));
+                l->setJustificationType (juce::Justification::centred);
+                l->setFont (juce::FontOptions (9.5f, juce::Font::bold));
+                l->setColour (juce::Label::textColourId, MidiMorfColors::textLight.withAlpha (0.55f));
+                l->setInterceptsMouseClicks (false, false);
+                addAndMakeVisible (l);
+            }
+
+            for (auto* b : { &mute, &solo })
+            {
+                b->setClickingTogglesState (true);
+                addAndMakeVisible (b);
+            }
             mute.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffB03A2E));
+            solo.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffD4A72C));
             mute.onClick = [this]
             {
                 if (owner.callbacks.setMuted) owner.callbacks.setMuted (track, mute.getToggleState());
                 if (owner.callbacks.changed) owner.callbacks.changed();
             };
-            addAndMakeVisible (mute);
+            solo.onClick = [this]
+            {
+                if (owner.callbacks.setSolo) owner.callbacks.setSolo (track, solo.getToggleState());
+                if (owner.callbacks.changed) owner.callbacks.changed();
+            };
         }
 
         void refresh()
@@ -300,8 +374,10 @@ private:
             const auto name = owner.callbacks.soundName ? owner.callbacks.soundName (track) : juce::String();
             sound.setButtonText (name);   // no pencil glyph: iOS draws those as emoji
             sound.setEnabled (owner.callbacks.getSound && owner.callbacks.getSound (track) != 0);
-            pan.setValue (owner.callbacks.getPan ? owner.callbacks.getPan (track) : 0.0f, juce::dontSendNotification);
+            for (int k = 0; k < NumKnobs; ++k)
+                knobs[k]->setValue (owner.callbacks.getMix ? owner.callbacks.getMix (track, k) : 0.0f, juce::dontSendNotification);
             mute.setToggleState (owner.callbacks.getMuted && owner.callbacks.getMuted (track), juce::dontSendNotification);
+            solo.setToggleState (owner.callbacks.getSolo && owner.callbacks.getSolo (track), juce::dontSendNotification);
         }
 
         void paint (juce::Graphics& g) override
@@ -315,18 +391,28 @@ private:
 
         void resized() override
         {
-            auto r = getLocalBounds().reduced (10, 6);
-            mute.setBounds (r.removeFromRight (64).withSizeKeepingCentre (64, juce::jmin (36, r.getHeight())));
-            r.removeFromRight (10);
-            sound.setBounds (r.removeFromLeft (r.getWidth() * 45 / 100).withSizeKeepingCentre (r.getWidth() * 45 / 100, juce::jmin (36, r.getHeight())));
-            r.removeFromLeft (10);
-            pan.setBounds (r.withSizeKeepingCentre (r.getWidth(), juce::jmin (36, r.getHeight())));
+            auto r = getLocalBounds().reduced (8, 3);
+            const int btnH = juce::jmin (28, r.getHeight() / 2 - 1);
+            auto buttons = r.removeFromRight (40);
+            mute.setBounds (buttons.removeFromTop (r.getHeight() / 2).withSizeKeepingCentre (40, btnH));
+            solo.setBounds (buttons.withSizeKeepingCentre (40, btnH));
+            r.removeFromRight (4);
+            sound.setBounds (r.removeFromLeft (juce::jmin (110, r.getWidth() / 4)).withSizeKeepingCentre (juce::jmin (110, r.getWidth() / 4), juce::jmin (34, r.getHeight())));
+            r.removeFromLeft (4);
+            const int kw = r.getWidth() / NumKnobs;
+            for (int k = 0; k < NumKnobs; ++k)
+            {
+                auto cell = r.removeFromLeft (kw);
+                labels[k]->setBounds (cell.removeFromTop (12));
+                knobs[k]->setBounds (cell.withSizeKeepingCentre (juce::jmin (kw, cell.getHeight()), cell.getHeight()));
+            }
         }
 
         SessionPage& owner;
         const int track;
-        juce::TextButton sound, mute { "MUTE" };
-        juce::Slider pan;
+        juce::TextButton sound, mute { "M" }, solo { "S" };
+        juce::OwnedArray<juce::Slider> knobs;
+        juce::OwnedArray<juce::Label> labels;
     };
 
     //==========================================================================
@@ -672,6 +758,9 @@ private:
     juce::ComboBox quantize;
     juce::TextButton recButton;
     juce::OwnedArray<Strip> strips;
+    juce::OwnedArray<juce::Slider> masterSliders;   // master volume, delay feedback, reverb size
+    juce::ComboBox delayTimeCombo;
+    std::vector<std::pair<juce::String, juce::Rectangle<int>>> masterLabels;
     juce::Rectangle<int> mixerHead;
     bool mixerShown = false;
     juce::OwnedArray<juce::TextButton> linkButtons;

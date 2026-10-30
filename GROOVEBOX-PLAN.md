@@ -151,6 +151,17 @@ Phases 1–4 are entirely free-side, so they can ship as free updates while the 
 
 ### Phase 1 — Track rack (free)
 
+> **Done 2026-10-29** on `phase1-track-rack`, plus a layout change JB asked for after trying it.
+>
+> - **Track-first layout.** The rail is just ⌂ Home, tracks 1–4 and ▶/■.
+>   - Tap a track for its instrument; tap it again for its sound.
+>   - A header strip says what you're looking at, e.g. "T2 · Step-Seq → Bass".
+> - **Home** sets each track's instrument, sound and volume, and links to Transport, Morf FX, Settings and About.
+> - **Removed:** the Menu, Sound and Fave buttons and the pop-up track picker. They were too confusing.
+> - **One instrument per track, one sound per track.** Each track has its own synth. The break player can be on only one track.
+> - **Project file:** `Documents/Projects/Current.midimorf`.
+> - **Home grows into the Session screen.** Its rows become Session's track column, and the rail's 1–4 replace the sketch's track buttons.
+
 - [ ] `SoundSource` interface. `WavetableEngine` implements it, and `getState`/`setState` replace the page's key-by-key save.
 - [ ] `TrackRack`: 4 sources, mixed to master, rendering inside the existing sample-accurate clock.
 - [ ] Multiple wavetable instances with a voice cap. **Measure CPU on the oldest iPhone you support** with 4 busy tracks.

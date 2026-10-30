@@ -57,7 +57,8 @@ static constexpr int samplerPageIdx   = MidiMorf::NUM_CONTROLLERS + 4;
 static constexpr int performPageIdx   = MidiMorf::NUM_CONTROLLERS + 5;
 static constexpr int drumGridPageIdx  = MidiMorf::NUM_CONTROLLERS + 6;   // an instrument, but the phone's own
 static constexpr int drumKitPageIdx   = MidiMorf::NUM_CONTROLLERS + 7;
-static constexpr int numPages         = MidiMorf::NUM_CONTROLLERS + 8;
+static constexpr int noteEditorPageIdx = MidiMorf::NUM_CONTROLLERS + 8;
+static constexpr int numPages         = MidiMorf::NUM_CONTROLLERS + 9;
 
 // The four-at-once Perform view is for iPad; an iPhone screen is too small.
 static bool isIPad()
@@ -130,7 +131,9 @@ MainComponent::MainComponent()
     cb.isRunning     = [this] (int t)
     {
         const int w = sequencerOf (t);
-        return w >= 0 && audioEngine.getSequencers().getPlayhead ((LocalSequencers::Which) w) >= 0;
+        if (w < 0)
+            return audioEngine.getSequencers().isNoteClipPlaying (t);
+        return audioEngine.getSequencers().getPlayhead ((LocalSequencers::Which) w) >= 0;
     };
     cb.launchClip    = [this] (int t, int s) { launchClip (t, s); };
     cb.newClip       = [this] (int t, int s) { newClip (t, s); };
@@ -139,6 +142,19 @@ MainComponent::MainComponent()
     cb.deleteClip    = [this] (int t, int s) { deleteClip (t, s); };
     cb.launchScene   = [this] (int s) { launchScene (s); };
     cb.stopTrack     = [this] (int t) { stopTrack (t); };
+    cb.recordingScene = [this] (int t) { return t == recordingTrack ? recordingScene : -1; };
+    cb.isCountingIn  = [this] { return audioEngine.getSequencers().getRecState() <= LocalSequencers::RecCountIn && recordingTrack >= 0; };
+    cb.recordClip    = [this] (int t, int s) { recordClip (t, s); };
+    cb.stopRecording = [this] { stopRecordingClip(); };
+    cb.quantizeClip  = [this] (int t, int s) { quantizeClip (t, s); };
+    cb.undoPass      = [this] (int t) { undoLastPass (t); };
+    cb.canUndo       = [this] (int t, int s) { return undo[(size_t) t].has_value() && undo[(size_t) t]->scene == s; };
+    cb.getRecBars    = [this] { return recBars; };
+    cb.setRecBars    = [this] (int b) { recBars = b; saveState(); };
+    cb.getRecQuantize = [this] { return recQuantize; };
+    cb.setRecQuantize = [this] (bool q) { recQuantize = q; saveState(); };
+    cb.getMetronome  = [this] { return recMetronome; };
+    cb.setMetronome  = [this] (bool m) { recMetronome = m; audioEngine.getSequencers().setMetronome (m); saveState(); };
     cb.getLaunchQuantize = [this] { return audioEngine.getSequencers().getLaunchQuantize(); };
     cb.setLaunchQuantize = [this] (int q) { audioEngine.getSequencers().setLaunchQuantize (q); };
     cb.soundName     = [this] (int t) { return audioEngine.getSoundName (t); };
@@ -174,6 +190,7 @@ MainComponent::MainComponent()
     pageContainer.addPage (&performView);
     pageContainer.addPage (&drumGridPage);
     pageContainer.addPage (&drumKitPage);
+    pageContainer.addPage (&noteEditorPage);
 
     // Perform borrows the tracks' instrument pages and hands them back.
     performView.onShow       = [this] { populatePerform(); };
@@ -221,6 +238,8 @@ MainComponent::MainComponent()
 
     playButton.onClick = [this] { togglePlay(); };
     addAndMakeVisible (playButton);
+    recordButton.onClick = [this] { railRecord(); };
+    addChildComponent (recordButton);
 
     synthPage.onPatchChanged = [this] { saveState(); };
     synthPage.onPresetChanged = [this] (const juce::String& name)
@@ -232,6 +251,23 @@ MainComponent::MainComponent()
     };
     samplerPage.onChanged = [this] { homePage->refresh(); updateRail(); saveState(); };
     samplerPage.setRecorder (audioEngine.getRecorder());
+
+    noteEditorPage.onBack = [this] { pageContainer.setPage (homePageIdx); };
+    noteEditorPage.getPlayPosition = [this]
+    {
+        const int t = noteEditorPage.getTrack();
+        return session.getPlaying (t) == editingScene ? audioEngine.getSequencers().getNoteClipPosition (t) : -1.0;
+    };
+    noteEditorPage.onChanged = [this] (const NoteClip& c)
+    {
+        const int t = noteEditorPage.getTrack();
+        if (! session.hasClip (t, editingScene) || ! session.clip (t, editingScene)->isNotes())
+            return;
+        session.clip (t, editingScene)->notes = c;
+        if (session.getPlaying (t) == editingScene)
+            audioEngine.getSequencers().updateNoteClip (t, c);
+        saveState();
+    };
 
     drumGridPage.onStateChanged = [this] { saveState(); };
     drumGridPage.onAudition = [this] (int note, bool down)
@@ -372,6 +408,11 @@ void MainComponent::resized()
         performButton.setBounds (rail.removeFromTop (44));
     }
     playButton.setBounds (rail.removeFromBottom (44));
+    if (recordButton.isVisible())
+    {
+        rail.removeFromBottom (gap);
+        recordButton.setBounds (rail.removeFromBottom (44));
+    }
     rail.removeFromTop (gap);
     rail.removeFromBottom (gap);
     const int trackH = (rail.getHeight() - gap * (TrackRack::NumTracks - 1)) / TrackRack::NumTracks;
@@ -394,6 +435,7 @@ juce::String MainComponent::getPageDisplayName (int pageIndex) const
     if (pageIndex == performPageIdx)   return "Perform";
     if (pageIndex == drumGridPageIdx)  return "Drum Grid";
     if (pageIndex == drumKitPageIdx)   return "Drums";
+    if (pageIndex == noteEditorPageIdx) return "Editor";
     return {};
 }
 
@@ -457,6 +499,9 @@ int MainComponent::trackOfPage (int pageIndex) const
 
     if (pageIndex == drumKitPageIdx)
         return drumKitPage.getTrack();
+
+    if (pageIndex == noteEditorPageIdx)
+        return noteEditorPage.getTrack();
 
     for (int t = 0; t < TrackRack::NumTracks; ++t)
         if (instrumentOf[t] == pageIndex)
@@ -568,6 +613,23 @@ void MainComponent::captureClip (int track)
 void MainComponent::launchClip (int track, int scene)
 {
     const int w = sequencerOf (track);
+
+    // A note clip on a controller track: its own player.
+    if (w < 0)
+    {
+        if (! session.hasClip (track, scene) || ! session.clip (track, scene)->isNotes())
+            return;
+        if (track == recordingTrack)
+            stopRecordingClip();
+        auto& seqs = audioEngine.getSequencers();
+        const bool wasPlaying = seqs.isNoteClipPlaying (track);
+        seqs.queueNoteClip (track, session.clip (track, scene)->notes);
+        if (wasPlaying) session.setQueued (track, scene);
+        else            session.setPlaying (track, scene);
+        saveState();
+        return;
+    }
+
     if (w < 0 || ! session.hasClip (track, scene) || session.clip (track, scene)->sequencer != w)
         return;
 
@@ -610,7 +672,11 @@ void MainComponent::launchClip (int track, int scene)
 void MainComponent::newClip (int track, int scene)
 {
     const int w = sequencerOf (track);
-    if (w < 0) return;
+    if (w < 0)
+    {
+        recordClip (track, scene);   // an empty slot on a controller track records
+        return;
+    }
     captureClip (track);
     session.setClip (track, scene, { session.freshName (track), pagePattern (w), w });
     launchClip (track, scene);
@@ -619,6 +685,11 @@ void MainComponent::newClip (int track, int scene)
 
 void MainComponent::editClip (int track, int scene)
 {
+    if (session.hasClip (track, scene) && session.clip (track, scene)->isNotes())
+    {
+        showNoteEditor (track, scene);
+        return;
+    }
     if (session.getPlaying (track) != scene)
         launchClip (track, scene);
     showInstrument (track);
@@ -634,7 +705,7 @@ void MainComponent::duplicateClip (int track, int scene)
         if (! session.hasClip (track, s))
         {
             auto copy = *session.clip (track, scene);
-            copy.name = session.freshName (track);
+            copy.name = session.freshName (track, copy.isNotes() ? "Take" : "Pattern");
             session.setClip (track, s, copy);
             saveState();
             return;
@@ -643,6 +714,10 @@ void MainComponent::duplicateClip (int track, int scene)
 
 void MainComponent::deleteClip (int track, int scene)
 {
+    if (track == recordingTrack && scene == recordingScene)
+        stopRecordingClip();
+    if (undo[(size_t) track] && undo[(size_t) track]->scene == scene)
+        undo[(size_t) track].reset();
     if (session.getPlaying (track) == scene)
         stopTrack (track);
     session.removeClip (track, scene);
@@ -655,8 +730,8 @@ void MainComponent::launchScene (int scene)
     for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
         const int w = sequencerOf (t);
-        if (w < 0) continue;
-        if (session.hasClip (t, scene) && session.clip (t, scene)->sequencer == w)
+        const int kind = w >= 0 ? w : SessionModel::NotesClip;
+        if (session.hasClip (t, scene) && session.clip (t, scene)->sequencer == kind)
             launchClip (t, scene);
         else
             stopTrack (t);
@@ -666,7 +741,14 @@ void MainComponent::launchScene (int scene)
 void MainComponent::stopTrack (int track)
 {
     const int w = sequencerOf (track);
-    if (w < 0) return;
+    if (w < 0)
+    {
+        if (track == recordingTrack)
+            stopRecordingClip();
+        session.setQueued (track, -1);
+        audioEngine.getSequencers().queueNoteStop (track);
+        return;
+    }
     session.setQueued (track, -1);
     audioEngine.getSequencers().queueStop ((LocalSequencers::Which) w);
 }
@@ -687,6 +769,156 @@ void MainComponent::pollLaunches()
             if (sequencerOf (t) == w && session.getQueued (t) >= 0)
                 session.setPlaying (t, session.getQueued (t));
     }
+
+    // Note clips: a queued one has taken over once nothing is pending.
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+        if (sequencerOf (t) < 0 && session.getQueued (t) >= 0 && ! seqs.isNoteLaunchPending (t))
+            session.setPlaying (t, session.getQueued (t));
+
+    collectPasses();
+}
+
+//==============================================================================
+// Recording note clips
+//
+// Recording runs in passes of the clip's length: each finished pass is merged
+// into the clip (and the clip plays underneath, so the next pass overdubs).
+// Undo takes back the last pass. With the clock stopped there's a one-bar
+// count-in.
+
+void MainComponent::recordClip (int track, int scene)
+{
+    if (sequencerOf (track) >= 0)
+        return;
+    if (recordingTrack >= 0)
+        stopRecordingClip();
+
+    if (! session.hasClip (track, scene))
+    {
+        NoteClip empty;
+        empty.lengthBeats = recBars * 4.0;
+        session.setClip (track, scene, { session.freshName (track, "Take"), {}, SessionModel::NotesClip, empty });
+    }
+    auto& clip = *session.clip (track, scene);
+    if (! clip.isNotes())
+        return;
+
+    auto& seqs = audioEngine.getSequencers();
+    session.setPlaying (track, scene);
+    session.setQueued (track, -1);
+    recordingTrack = track;
+    recordingScene = scene;
+    seenPasses = seqs.getPassCount();
+    seqs.startRecording (track, clip.notes, recMetronome);
+    homePage->refresh();
+    updateRail();
+}
+
+void MainComponent::showNoteEditor (int track, int scene)
+{
+    if (! session.hasClip (track, scene) || ! session.clip (track, scene)->isNotes())
+        return;
+    editingScene = scene;
+    const auto& c = *session.clip (track, scene);
+    noteEditorPage.edit (c.notes, c.name, track, audioEngine.getTrackSound (track) == AudioEngine::Sound::Drums);
+    pageContainer.setPage (noteEditorPageIdx);
+    updateRail();
+}
+
+void MainComponent::stopRecordingClip()
+{
+    if (recordingTrack < 0)
+        return;
+    audioEngine.getSequencers().stopRecording();
+    collectPasses();
+    recordingTrack = recordingScene = -1;
+    updateRail();
+    saveState();
+}
+
+void MainComponent::collectPasses()
+{
+    auto& seqs = audioEngine.getSequencers();
+    if (recordingTrack < 0)
+        return;
+
+    if (seqs.getPassCount() != seenPasses)
+    {
+        seenPasses = seqs.getPassCount();
+        const auto pass = seqs.takePass();
+        if (pass.numNotes > 0 && session.hasClip (recordingTrack, recordingScene))
+        {
+            auto& clip = session.clip (recordingTrack, recordingScene)->notes;
+            undo[(size_t) recordingTrack] = Undo { recordingScene, clip };
+            for (int i = 0; i < pass.numNotes; ++i)
+                clip.add (pass.notes[(size_t) i]);
+            if (recQuantize)
+                clip.quantize (0.25);
+            clip.sort();
+            seqs.updateNoteClip (recordingTrack, clip);
+            if (pageContainer.getCurrentPage() == noteEditorPageIdx && noteEditorPage.getTrack() == recordingTrack && editingScene == recordingScene)
+                showNoteEditor (recordingTrack, recordingScene);   // show the new pass
+            saveState();
+        }
+    }
+
+    // Stopped from elsewhere (the rail's ■ stops everything).
+    if (seqs.getRecordingTrack() < 0)
+    {
+        recordingTrack = recordingScene = -1;
+        updateRail();
+    }
+}
+
+void MainComponent::undoLastPass (int track)
+{
+    auto& u = undo[(size_t) track];
+    if (! u || ! session.hasClip (track, u->scene))
+        return;
+    session.clip (track, u->scene)->notes = u->notes;
+    if (session.getPlaying (track) == u->scene)
+        audioEngine.getSequencers().updateNoteClip (track, u->notes);
+    u.reset();
+    saveState();
+}
+
+void MainComponent::quantizeClip (int track, int scene)
+{
+    if (! session.hasClip (track, scene) || ! session.clip (track, scene)->isNotes())
+        return;
+    auto& clip = session.clip (track, scene)->notes;
+    undo[(size_t) track] = Undo { scene, clip };
+    clip.quantize (0.25);
+    if (session.getPlaying (track) == scene)
+        audioEngine.getSequencers().updateNoteClip (track, clip);
+    saveState();
+}
+
+// On a controller page: stop if recording; otherwise overdub the track's
+// playing note clip, or a new take in its first empty slot.
+void MainComponent::railRecord()
+{
+    if (recordingTrack >= 0)
+    {
+        stopRecordingClip();
+        return;
+    }
+    const int track = trackOfPage (pageContainer.getCurrentPage());
+    if (track < 0 || sequencerOf (track) >= 0)
+        return;
+
+    const int playing = session.getPlaying (track);
+    if (session.hasClip (track, playing) && session.clip (track, playing)->isNotes())
+    {
+        recordClip (track, playing);
+        return;
+    }
+    for (int s = 0; s < SessionModel::NumScenes; ++s)
+        if (! session.hasClip (track, s))
+        {
+            recordClip (track, s);
+            return;
+        }
 }
 
 // The first time a sequencer track has no clips: its current pattern
@@ -811,6 +1043,8 @@ static juce::ValueTree starterProject (int drumGridMode)
 // everything from it. The one being left is saved first.
 void MainComponent::openProject (const juce::File& file)
 {
+    stopRecordingClip();
+    for (auto& u : undo) u.reset();
     saveNow();
     audioEngine.allNotesOff();
 
@@ -910,6 +1144,17 @@ void MainComponent::updateRail()
 
     homeButton.setLit (page == homePageIdx);
     performButton.setLit (page == performPageIdx);
+
+    // ● on a controller track's own page (or its drum pads), to record what
+    // you play there.
+    const bool canRecord = current >= 0 && (! pageIsSound (page) || page == drumKitPageIdx)
+                           && page != noteEditorPageIdx && sequencerOf (current) < 0;
+    recordButton.setLit (recordingTrack >= 0);
+    if (recordButton.isVisible() != (canRecord || recordingTrack >= 0))
+    {
+        recordButton.setVisible (canRecord || recordingTrack >= 0);
+        resized();
+    }
     header.set (current, headerText (page));
 }
 
@@ -934,8 +1179,12 @@ void MainComponent::togglePlay()
     }
 
     for (int t = 0; t < TrackRack::NumTracks; ++t)
+    {
         if (isSequencer (instrumentOf[t]))
             seqs.setPlaying (whichSequencer (instrumentOf[t]), true);
+        else if (const int s = session.getPlaying (t); session.hasClip (t, s) && session.clip (t, s)->isNotes())
+            seqs.queueNoteClip (t, session.clip (t, s)->notes);
+    }
 }
 
 //==============================================================================
@@ -1050,6 +1299,9 @@ void MainComponent::saveNow()
     fxPage.saveState (pageState);
     audioEngine.getSequencers().saveState (pageState);
     drumGridPage.saveState (pageState);
+    pageState.setValue ("rec_bars", recBars);
+    pageState.setValue ("rec_quantize", recQuantize);
+    pageState.setValue ("rec_metronome", recMetronome);
 
     for (int t = 0; t < TrackRack::NumTracks; ++t)
         captureClip (t);
@@ -1146,6 +1398,9 @@ void MainComponent::restoreState()
     fxPage.restoreState (pages);
     audioEngine.getSequencers().restoreState (pages);
     drumGridPage.restoreState (pages);
+    recBars      = juce::jlimit (1, 8, pages.getIntValue ("rec_bars", 2));
+    recQuantize  = pages.getBoolValue ("rec_quantize", false);
+    recMetronome = pages.getBoolValue ("rec_metronome", true);
     eventRouter.setSyncSource (settings->getIntValue ("seq_sync", 0) == 1 ? EventRouter::SyncSource::DAW
                                                                           : EventRouter::SyncSource::Local);
 
@@ -1245,7 +1500,7 @@ void MainComponent::restoreState()
     // instrument (Morf-Chord on first launch), or Home.
     int lastPage = settings->getIntValue ("lastPage", -1);
     const bool reachable = lastPage >= 0 && lastPage < numPages
-                           && ((lastPage >= MidiMorf::NUM_CONTROLLERS && lastPage != drumGridPageIdx)
+                           && ((lastPage >= MidiMorf::NUM_CONTROLLERS && lastPage != drumGridPageIdx && lastPage != noteEditorPageIdx)
                                || lastPage == (int) CM::Transport || lastPage == (int) CM::FXPunchIn
                                || trackOfPage (lastPage) >= 0);
     if (! reachable)

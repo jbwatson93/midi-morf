@@ -228,10 +228,12 @@ Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit
 
 ### Phase 6 — Clip recording + editors
 
-- [ ] Arm a controller track and record what you play into a looping clip (1/2/4/8 bars), with quantize on or off.
-- [ ] Overdub, undo the last pass, and a count-in.
-- [ ] **Piano roll** for melodic tracks: draw, move, resize and delete notes, a velocity lane, snap and zoom, and the instrument's scale highlighted. **Required** (it used to be "could slip").
-- [ ] **Drum editor** for drum tracks: one row per drum, named like the Drum Grid lanes, hits that can sit off the grid, per-hit velocity, quantize and nudge. Recorded finger drumming lands here; the Drum Grid stays the quick 16-step way in.
+- [x] **Recording** (`LocalSequencers`, `NoteClip.h`): on a controller track, tap an empty Session slot (or the rail's ● on the track's page, or on the Drums pads) to record what you play into a looping clip of 1/2/4/8 bars. Notes are captured on the audio thread as they reach the track, to within one audio block.
+- [x] Overdub in passes (the clip plays underneath while you record the next pass), undo the last pass, a one-bar count-in when the clock is stopped, a metronome, and optional quantize-on-record (1/16). Settings are in Session's REC button.
+- [x] Note clips play on their own per-track player, sample-exact and looping, launched like the other clips.
+- [x] **Piano roll** (`NoteEditorPage.h`): add, move, resize and delete notes, a velocity lane, snap (1/4…1/32 or off), quantize, zoom and scroll, the playhead.
+- [x] **Drum editor**: the same page with a row per drum when the track plays the drum synth. Hits can sit off the grid.
+- [ ] Not yet: converting a Drum Grid pattern into a note clip for off-grid editing; a scale highlight in the piano roll; copy/paste of notes.
 
 ### Phase 7 — Mixer
 

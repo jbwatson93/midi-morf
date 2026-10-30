@@ -16,6 +16,7 @@
 #include "SettingsPage.h"
 #include "SessionPage.h"
 #include "ProjectBrowser.h"
+#include "NoteEditorPage.h"
 #include "SamplerPage.h"
 #include "DrumGridPage.h"
 #include "DrumKitPage.h"
@@ -116,6 +117,20 @@ private:
     void stopTrack (int track);
     void pollLaunches();
     void seedClips();                                   // a first clip per sequencer track
+
+    // Recording note clips (controller tracks)
+    void recordClip (int track, int scene);             // a new take into an empty slot, or overdub
+    void stopRecordingClip();
+    void collectPasses();                               // timer: finished passes into the clip
+    void undoLastPass (int track);
+    void quantizeClip (int track, int scene);
+    void railRecord();                                  // the rail's ● on a controller page
+    void showNoteEditor (int track, int scene);
+    int  recordingTrack = -1, recordingScene = -1, seenPasses = 0;
+    int  recBars = 2;
+    bool recQuantize = false, recMetronome = true;
+    struct Undo { int scene; NoteClip notes; };
+    std::array<std::optional<Undo>, TrackRack::NumTracks> undo;
     int  shownLaunches[3] { 0, 0, 0 };
 
     //==========================================================================
@@ -148,11 +163,14 @@ private:
     PerformView performView;   // iPad only
     DrumGridPage drumGridPage { audioEngine.getSequencers() };
     DrumKitPage drumKitPage;
+    NoteEditorPage noteEditorPage;
+    int editingScene = -1;   // the clip the note editor has open
 
     TrackHeader header;
     RailIconButton homeButton { RailIconButton::Kind::Home };
     RailIconButton performButton { RailIconButton::Kind::Perform };
     RailIconButton playButton { RailIconButton::Kind::PlayStop };
+    RailIconButton recordButton { RailIconButton::Kind::Record };
     juce::OwnedArray<RailTrackButton> trackButtons;
 
     bool connected { false };

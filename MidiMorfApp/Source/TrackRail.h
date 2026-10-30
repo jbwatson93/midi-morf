@@ -83,15 +83,18 @@ private:
 };
 
 //==============================================================================
-// Home (house glyph), Perform (2x2 grid, iPad) and Play/Stop on the rail.
+// Home (house glyph), Perform (2x2 grid, iPad), Record and Play/Stop on the
+// rail.
 class RailIconButton : public juce::Button
 {
 public:
-    enum class Kind { Home, PlayStop, Perform };
+    enum class Kind { Home, PlayStop, Perform, Record };
 
-    explicit RailIconButton (Kind k) : juce::Button (k == Kind::Home ? "Home" : k == Kind::Perform ? "Perform" : "PlayStop"), kind (k) {}
+    explicit RailIconButton (Kind k)
+        : juce::Button (k == Kind::Home ? "Home" : k == Kind::Perform ? "Perform" : k == Kind::Record ? "Record" : "PlayStop"), kind (k) {}
 
-    // Home: lit on the Home screen. Play/Stop: lit while playing (shows stop).
+    // Home: lit on the Session screen. Play/Stop: lit while playing (shows
+    // stop). Record: lit while recording.
     void setLit (bool shouldBeLit)
     {
         if (lit != shouldBeLit) { lit = shouldBeLit; repaint(); }
@@ -101,7 +104,8 @@ protected:
     void paintButton (juce::Graphics& g, bool, bool isDown) override
     {
         auto bounds = getLocalBounds().toFloat().reduced (1.5f);
-        const auto edge = kind == Kind::PlayStop ? MidiMorfColors::statusGreen : MidiMorfColors::textLight;
+        const auto red = juce::Colour (0xffE0342A);
+        const auto edge = kind == Kind::PlayStop ? MidiMorfColors::statusGreen : kind == Kind::Record ? red : MidiMorfColors::textLight;
         RailCard::paint (g, bounds, edge, lit, isDown);
 
         auto glyph = bounds.withSizeKeepingCentre (bounds.getHeight() * 0.5f, bounds.getHeight() * 0.5f);
@@ -113,6 +117,13 @@ protected:
             g.setColour (MidiMorfColors::textLight);
             for (int i = 0; i < 4; ++i)
                 g.drawRoundedRectangle (glyph.getX() + (i % 2) * (cell + gap), glyph.getY() + (i / 2) * (cell + gap), cell, cell, 2.0f, 1.8f);
+            return;
+        }
+
+        if (kind == Kind::Record)
+        {
+            g.setColour (lit ? red.brighter (0.3f) : red);
+            g.fillEllipse (glyph.reduced (glyph.getWidth() * (lit ? 0.08f : 0.18f)));
             return;
         }
 

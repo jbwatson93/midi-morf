@@ -38,6 +38,16 @@ public:
 };
 
 //==============================================================================
+// Hears the notes played live (the posted ones: controllers, pads), on the
+// audio thread as each reaches its track — the clip recorder.
+class LiveEventObserver
+{
+public:
+    virtual ~LiveEventObserver() = default;
+    virtual void liveEvent (int track, bool on, int channel, int note, int velocity127) = 0;
+};
+
+//==============================================================================
 // Whatever processes the summed tracks before the limiter — the punch-in FX.
 // Audio thread, in place.
 class MasterProcessor
@@ -91,6 +101,7 @@ public:
 
     // Set once, before audio starts.
     void setMasterProcessor (MasterProcessor* m) { master = m; }
+    void setLiveEventObserver (LiveEventObserver* o) { observer = o; }
 
     // Track volume, 0..MaxVolume linear (1 = unity). Any thread; the audio
     // thread ramps to it over 20 ms so a fader move never clicks.
@@ -227,6 +238,8 @@ private:
                     else if (e.type == Event::Off) s->noteOffAudio (e.channel, e.note);
                     else                           s->allNotesOff();
                 }
+                if (observer != nullptr && e.type != Event::AllOff)
+                    observer->liveEvent (e.track, e.type == Event::On, e.channel, e.note, e.velocity);
             }
         };
         handle (scope.startIndex1, scope.blockSize1);
@@ -305,6 +318,7 @@ private:
     std::array<std::atomic<SoundSource*>, NumTracks> sources {};
     std::vector<SoundSource*> pool;   // message thread
     MasterProcessor* master = nullptr;
+    LiveEventObserver* observer = nullptr;
     std::array<std::atomic<float>, NumTracks> volumes { 1.0f, 1.0f, 1.0f, 1.0f };
     std::array<std::atomic<float>, NumTracks> pans {};
     std::array<std::atomic<bool>, NumTracks> muted {};

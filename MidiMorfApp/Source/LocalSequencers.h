@@ -2,7 +2,7 @@
 
 #include <JuceHeader.h>
 #include "TrackRack.h"
-#include "BreakPlayer.h"
+#include "Sampler.h"
 #include "StepSequencerEngine.h"
 #include "SliceSequencerEngine.h"
 #include "MidiMorfProtocol.h"
@@ -29,10 +29,8 @@ public:
     // Tracks are 0-based here; the UI calls them T1-T4.
     static constexpr int DefaultStepTrack = 1, DefaultSliceTrack = 2;
 
-    LocalSequencers (TrackRack& r, BreakSource& b)
+    explicit LocalSequencers (TrackRack& r)
         : rack (r),
-          breakSource (b),
-          breaks (b.player()),
           stepSink (*this, Step),
           sliceSink (*this, Slice),
           stepSeq (stepSink, 8),
@@ -79,7 +77,8 @@ public:
                 drainEvents();
 
                 if (std::exchange (panicBreaks, false))
-                    breaks.releaseAll();
+                    if (auto* s = sliceSampler())
+                        s->player().releaseAll();
             }
 
             rack.render (*buf, pos, n);
@@ -117,8 +116,8 @@ public:
             return;
 
         sequencer (w).allNotesOff();
-        if (rack.getSource (tracks[w]) == &breakSource)
-            panicBreaks = true;
+        if (auto* s = dynamic_cast<SamplerSource*> (rack.getSource (tracks[w])))
+            s->allNotesOff();   // one-shots ignore the note-offs
         tracks[w] = track;
     }
 
@@ -143,13 +142,24 @@ public:
     // A new break also sets the tempo to the loop's own.
     void setBuiltInBreak (int index)
     {
-        if (auto* b = breakSource.setBuiltInBreak (index))
+        auto* s = sliceSampler();
+        if (s == nullptr)
+            return;
+        s->setMode (SamplerSource::Slice);   // a break picked for the slicer is to be sliced
+        if (auto* b = s->setBuiltInBreak (index))
             setBpm (b->bpm());
     }
 
     bool importBreak (const juce::File& file, juce::String& error)
     {
-        auto* b = breakSource.importBreak (file, error);
+        auto* s = sliceSampler();
+        if (s == nullptr)
+        {
+            error = "The slicer's track isn't playing a sampler.";
+            return false;
+        }
+        s->setMode (SamplerSource::Slice);
+        auto* b = s->importBreak (file, error);
         if (b == nullptr)
             return false;
 
@@ -157,30 +167,26 @@ public:
         return true;
     }
 
-    const Break* getBreak() const        { return breakSource.getBreak(); }
-    int  getBuiltInBreakIndex() const    { return breakSource.getBuiltInBreakIndex(); }
-    juce::File getImportedBreak() const  { return breakSource.getImportedBreak(); }
+    // The slicer's sample: whatever the sampler on its track holds. Nothing
+    // if that track plays something else.
+    const Break* getBreak() const        { auto* s = sliceSampler(); return s != nullptr ? s->getBreak() : nullptr; }
+    int  getBuiltInBreakIndex() const    { auto* s = sliceSampler(); return s != nullptr ? s->getBuiltInBreakIndex() : -1; }
+    juce::File getImportedBreak() const  { auto* s = sliceSampler(); return s != nullptr ? s->getImportedBreak() : juce::File(); }
 
-    // Tempo and break survive relaunches; patterns don't yet (the pages
-    // don't persist them in WiFi mode either).
+    SamplerSource* sliceSampler() const
+    {
+        return dynamic_cast<SamplerSource*> (rack.getSource (tracks[Slice]));
+    }
+
+    // Tempo survives relaunches (the samplers keep their own samples);
+    // patterns don't yet.
     void saveState (juce::PropertySet& p) const
     {
         p.setValue ("seq_bpm", getBpm());
-        const int breakIndex = getBuiltInBreakIndex();
-        p.setValue ("seq_break", breakIndex >= 0 ? BreakLibrary::builtInNames()[breakIndex] : juce::String());
-        p.setValue ("seq_breakFile", getImportedBreak().getFullPathName());
     }
 
     void restoreState (juce::PropertySet& p)
     {
-        const auto path = p.getValue ("seq_breakFile");
-        juce::String error;
-        const bool imported = path.isNotEmpty() && juce::File (path).existsAsFile()
-                              && importBreak (juce::File (path), error);
-
-        if (! imported)
-            setBuiltInBreak (juce::jmax (0, BreakLibrary::indexForName (p.getValue ("seq_break"))));
-
         if (p.containsKey ("seq_bpm"))
             setBpm (p.getDoubleValue ("seq_bpm"));
     }
@@ -272,11 +278,13 @@ public:
         switch (ribbonTargets[ribbonIndex])
         {
             case MidiMorf::RibbonTarget::PitchBend:
-                breaks.setPitchSemitones ((float) (value14bit - 8192) / 8192.0f * 12.0f);
+                if (auto* s = sliceSampler())
+                    s->player().setPitchSemitones ((float) (value14bit - 8192) / 8192.0f * 12.0f);
                 break;
 
             case MidiMorf::RibbonTarget::CC:
-                breaks.setTone ((float) value14bit / 16383.0f);
+                if (auto* s = sliceSampler())
+                    s->player().setTone ((float) value14bit / 16383.0f);
                 break;
 
             case MidiMorf::RibbonTarget::StepRepeat:
@@ -303,9 +311,9 @@ public:
             sliceSeq.setStepRepeat (1);
         }
         if (old == MidiMorf::RibbonTarget::PitchBend && target != old)
-            breaks.setPitchSemitones (0.0f);
+            if (auto* s = sliceSampler()) s->player().setPitchSemitones (0.0f);
         if (old == MidiMorf::RibbonTarget::CC && target != old)
-            breaks.setTone (1.0f);
+            if (auto* s = sliceSampler()) s->player().setTone (1.0f);
     }
 
 private:
@@ -346,7 +354,8 @@ private:
     void drainEvents()
     {
         if (numEvents > 0)
-            breakSource.setSliceMapping ((int) sliceSeq.getRootNote(), stepBeats());
+            if (auto* s = sliceSampler())
+                s->setSliceMapping ((int) sliceSeq.getRootNote(), stepBeats());
 
         for (int i = 0; i < numEvents; ++i)
         {
@@ -387,7 +396,8 @@ private:
                 running[w].store (false);
 
                 if (w == Slice)
-                    breaks.releaseAll();   // one-shots ignore the note-off
+                    if (auto* s = sliceSampler())
+                        s->player().releaseAll();   // one-shots ignore the note-off
             }
         }
 
@@ -425,8 +435,6 @@ private:
     }
 
     TrackRack& rack;
-    BreakSource& breakSource;
-    BreakPlayer& breaks;   // the ribbons and STOP play it directly
 
     // Declared before the engines: their destructors still send note-offs.
     mutable juce::SpinLock lock;

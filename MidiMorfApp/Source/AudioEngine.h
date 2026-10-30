@@ -11,13 +11,15 @@
 // plays LocalSequencers, which renders the rack and runs the sequencers'
 // Local-mode clock in between. Stereo out, no input.
 //
-// Each track has its own synth, used when the track's sound is Synth; the
-// one break player can sit on any one track. Defaults: T1 Synth, T2 Synth
-// with a bass patch, T3 Breaks, T4 empty.
+// Each track has its own synth and its own sampler, and plays one of them
+// (or nothing). Defaults: T1 Synth, T2 Synth with the Acid Bass preset, T3
+// Sampler slicing the Amen, T4 empty.
 class AudioEngine
 {
 public:
-    enum class Sound { Empty = 0, Synth = 1, Breaks = 2 };
+    // Values are saved in projects. Sampler was "Breaks" before it played
+    // keys and one-shots too.
+    enum class Sound { Empty = 0, Synth = 1, Sampler = 2 };
 
     AudioEngine()
     {
@@ -25,8 +27,10 @@ public:
         {
             synths[(size_t) t] = std::make_unique<WavetableEngine> (t == 0 ? 24 : 12);
             rack.addToPool (synths[(size_t) t].get());
+            samplers[(size_t) t] = std::make_unique<SamplerSource>();
+            rack.addToPool (samplers[(size_t) t].get());
         }
-        rack.addToPool (&breaks);
+        samplers[2]->setBuiltInBreak (0);   // the Amen, for the slicer
 
         punch.setTempoSource ([this] { return sequencers.getBpm(); });
         rack.setMasterProcessor (&punch);
@@ -35,31 +39,26 @@ public:
             synths[1]->setState (acid->state);
         setTrackSound (0, Sound::Synth);
         setTrackSound (1, Sound::Synth);
-        setTrackSound (2, Sound::Breaks);
+        setTrackSound (2, Sound::Sampler);
         soundNames[1] = "Acid Bass";
     }
 
     //==========================================================================
     // Track sounds — message thread.
 
-    // Breaks can only be on one track: putting it here empties its old track.
     void setTrackSound (int track, Sound sound)
     {
         if (! juce::isPositiveAndBelow (track, TrackRack::NumTracks) || sounds[(size_t) track] == sound)
             return;
 
-        if (sound == Sound::Breaks)
-            for (int t = 0; t < TrackRack::NumTracks; ++t)
-                if (t != track && sounds[(size_t) t] == Sound::Breaks)
-                {
-                    sounds[(size_t) t] = Sound::Empty;
-                    rack.setSource (t, nullptr);
-                }
+        // A sampler picked for the first time starts with the Amen rather than silence.
+        if (sound == Sound::Sampler && samplers[(size_t) track]->getBreak() == nullptr)
+            samplers[(size_t) track]->setBuiltInBreak (0);
 
         sounds[(size_t) track] = sound;
-        rack.setSource (track, sound == Sound::Synth  ? (SoundSource*) synths[(size_t) track].get()
-                             : sound == Sound::Breaks ? (SoundSource*) &breaks
-                                                      : nullptr);
+        rack.setSource (track, sound == Sound::Synth   ? (SoundSource*) synths[(size_t) track].get()
+                             : sound == Sound::Sampler ? (SoundSource*) samplers[(size_t) track].get()
+                                                       : nullptr);
     }
 
     Sound getTrackSound (int track) const
@@ -127,6 +126,9 @@ public:
     // A track's own synth, whether or not the track is playing it.
     WavetableEngine& getTrackSynth (int track) noexcept { return *synths[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
 
+    // A track's own sampler, whether or not the track is playing it.
+    SamplerSource& getTrackSampler (int track) noexcept { return *samplers[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
+
     // Tilt is a global mod source: every synth hears it.
     void setTilt (float x, float y)
     {
@@ -154,7 +156,7 @@ public:
         switch (getTrackSound (track))
         {
             case Sound::Synth:  return soundNames[(size_t) track];
-            case Sound::Breaks: return "Breaks";
+            case Sound::Sampler: return samplers[(size_t) track]->getSampleName();
             default:            return "Empty";
         }
     }
@@ -187,10 +189,10 @@ private:
     std::array<Sound, TrackRack::NumTracks> sounds { Sound::Empty, Sound::Empty, Sound::Empty, Sound::Empty };
     // T1 keeps whatever patch an older install had, so it isn't called Init.
     std::array<juce::String, TrackRack::NumTracks> soundNames { "Synth", "Acid Bass", "Init", "Init" };
-    BreakSource breaks;
+    std::array<std::unique_ptr<SamplerSource>, TrackRack::NumTracks> samplers;
     PunchFx punch;
     TrackRack rack;
-    LocalSequencers sequencers { rack, breaks };
+    LocalSequencers sequencers { rack };
     juce::AudioDeviceManager deviceManager;
     juce::AudioSourcePlayer sourcePlayer;
     bool running = false;

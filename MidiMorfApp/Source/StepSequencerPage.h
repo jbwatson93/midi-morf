@@ -338,29 +338,16 @@ public:
     void setRange (int s, int e) { start = s; end = e; repaint(); }
     void setAccent (juce::Colour c) { accent = c; repaint(); }
 
+    // A slim yellow bracket; the bar stays tall so it's easy to grab.
     void paint (juce::Graphics& g) override
     {
-        auto r = getLocalBounds().toFloat();
+        const auto r = getLocalBounds().toFloat();
         const float x0 = xOf (start) + 2.0f, x1 = xOf (end + 1) - 2.0f, mid = r.getCentreY();
 
-        // The bracket: a bar with an upturned end at each side.
-        g.setColour (accent.withAlpha (0.9f));
-        g.fillRoundedRectangle (juce::Rectangle<float> (x0, mid - 1.5f, x1 - x0, 3.0f), 1.5f);
-        for (float x : { x0, x1 - 8.0f })
-            g.fillRoundedRectangle (juce::Rectangle<float> (x, r.getY() + 2.0f, 8.0f, r.getHeight() - 4.0f), 3.0f);
-
-        const juce::String text = start == end ? "step " + juce::String (start + 1)
-                                               : "steps " + juce::String (start + 1) + juce::String::fromUTF8 (" \xe2\x80\x93 ") + juce::String (end + 1);
-        g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
-        const float tw = juce::jmin (x1 - x0 - 16.0f, 90.0f);
-        if (tw > 30.0f)
-        {
-            const auto label = juce::Rectangle<float> (tw, r.getHeight()).withCentre ({ (x0 + x1) * 0.5f, mid });
-            g.setColour (juce::Colour (0xff15131F));
-            g.fillRoundedRectangle (label, 3.0f);
-            g.setColour (accent.brighter (0.4f));
-            g.drawText (text, label, juce::Justification::centred);
-        }
+        g.setColour (accent);
+        g.fillRect (juce::Rectangle<float> (x0, mid - 1.0f, x1 - x0, 2.0f));
+        for (float x : { x0, x1 - 2.0f })
+            g.fillRect (juce::Rectangle<float> (x, mid - 6.0f, 2.0f, 7.0f));   // the ends turn up toward the steps
     }
 
     void mouseDown (const juce::MouseEvent& e) override
@@ -405,7 +392,7 @@ private:
 
     int start = 0, end = Steps - 1, grabOffset = 0;
     Grab grab = Grab::End;
-    juce::Colour accent { 0xff7C6BD8 };
+    juce::Colour accent { 0xffFFD23F };
 };
 
 class StepSequencerContent : public juce::Component
@@ -428,7 +415,6 @@ public:
         addCombo (rateCombo,  { "1/4","1/8","1/8T","1/16","1/16T","1/32" },             4, "Rate");
 
         // ── Range bracket (replaces a Len dropdown) ──────────────────────────
-        rangeBar.setAccent (stepSeqAccent);
         rangeBar.onChange = [this] (int s, int e)
         {
             rangeStart = s;

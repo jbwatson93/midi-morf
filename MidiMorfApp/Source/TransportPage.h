@@ -203,8 +203,8 @@ public:
                 auto& seqs = networkClient.getSequencers();
                 if (networkClient.isLocalSync() && i == 0)
                 {
-                    seqs.setPlaying (LocalSequencers::Step, true);
-                    seqs.setPlaying (LocalSequencers::Slice, true);
+                    for (int t = 0; t < LocalSequencers::NumTracks; ++t)
+                        seqs.setPlaying (t, true);   // tracks without a sequencer ignore it
                 }
                 else if (networkClient.isLocalSync() && i == 1)
                     seqs.stopAll();
@@ -418,8 +418,7 @@ private:
         hintLabel.setText (local ? "Play / Stop run both sequencers" : "Following DAW clock",
                            juce::dontSendNotification);
 
-        content.setLocalRunning (local && (seqs.isPlaying (LocalSequencers::Step)
-                                           || seqs.isPlaying (LocalSequencers::Slice)));
+        content.setLocalRunning (local && seqs.isAnyPlaying());
     }
 
     void setSync (EventRouter::SyncSource src)

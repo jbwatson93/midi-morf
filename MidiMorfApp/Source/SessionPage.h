@@ -88,9 +88,12 @@ public:
     enum MixParam { Pan = 0, SendDelay, SendReverb, Filter, Drive, Crush, NumKnobs };
     enum MasterParam { MasterVolume = 0, DelayTime, DelayFeedback, ReverbSize };
 
+    // sequencerOf's answer for a track whose instrument takes no clips.
+    static constexpr int NoClips = -2;
+
     // The page indices the bottom buttons open, and the Drum Grid's (an
     // instrument that isn't a ControllerMode).
-    struct Pages { int transport, fx, settings, about, drumGrid; };
+    struct Pages { int transport, fx, settings, about, drumGrid, remix; };
 
     SessionPage (SessionModel& m, Callbacks cb, Pages p)
         : model (m), callbacks (std::move (cb)), pages (p), grid (*this)
@@ -469,6 +472,13 @@ private:
                 {
                     auto r = cellBounds (t, s).reduced (3, 2).toFloat();
 
+                    if (seq == NoClips)   // played live only (the Remix Lane)
+                    {
+                        g.setColour (juce::Colours::black.withAlpha (0.12f));
+                        g.fillRoundedRectangle (r, 6.0f);
+                        continue;
+                    }
+
                     const auto& c = m.clip (t, s);
                     if (! c.has_value())
                     {
@@ -582,7 +592,7 @@ private:
             {
                 if (cb.launchScene) cb.launchScene (s);
             }
-            else if (juce::isPositiveAndBelow (t, TrackRack::NumTracks))
+            else if (juce::isPositiveAndBelow (t, TrackRack::NumTracks) && ! (cb.sequencerOf && cb.sequencerOf (t) == NoClips))
             {
                 auto& m = owner.model;
                 if (cb.recordingScene && cb.recordingScene (t) == s)      { if (cb.stopRecording) cb.stopRecording(); }
@@ -647,7 +657,7 @@ private:
                  { (int) CM::Omnichord, "Strum-Chord" }, { (int) CM::MorfPad, "Morf-Pad" },
                  { (int) CM::DualMPad, "Dual M-Pad" },
                  { (int) CM::StepSequencer, "Step-Seq" }, { (int) CM::SliceSequencer, "Breaker" },
-                 { pages.drumGrid, "Drum Grid" } };
+                 { pages.drumGrid, "Drum Grid" }, { pages.remix, "Remix Lane" } };
     }
 
     // A track's column: T1, what plays it and its sound side by side, then

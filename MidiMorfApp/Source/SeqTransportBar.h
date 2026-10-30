@@ -19,11 +19,12 @@
 class SeqTransportBar : public juce::Component, private juce::Timer
 {
 public:
-    SeqTransportBar (EventRouter& r, LocalSequencers::Which w, bool withBreakPicker)
-        : router (r), seqs (r.getSequencers()), which (w), hasBreaks (withBreakPicker)
+    // trackOf: the track this bar's page plays (pages are per track).
+    SeqTransportBar (EventRouter& r, std::function<int()> trackOf, bool withBreakPicker)
+        : router (r), seqs (r.getSequencers()), track (std::move (trackOf)), hasBreaks (withBreakPicker)
     {
         playButton.setClickingTogglesState (true);
-        playButton.onClick = [this] { seqs.setPlaying (which, playButton.getToggleState()); refreshPlayText(); };
+        playButton.onClick = [this] { seqs.setPlaying (track(), playButton.getToggleState()); refreshPlayText(); };
         addAndMakeVisible (playButton);
 
         if (hasBreaks)
@@ -73,6 +74,9 @@ public:
 private:
     void timerCallback() override
     {
+        if (! isShowing())
+            return;   // one bar per track's page: only the one on screen polls
+
         const bool local = router.isLocalSync();
 
         if (local != isLocal || firstPoll)
@@ -96,7 +100,7 @@ private:
         if (! isLocal)
             return;
 
-        const int step = seqs.getPlayhead (which);
+        const int step = seqs.getPlayhead (track());
         if (step != lastPlayhead)
         {
             lastPlayhead = step;
@@ -104,9 +108,9 @@ private:
                 onLocalPlayhead (step);
         }
 
-        if (playButton.getToggleState() != seqs.isPlaying (which))
+        if (playButton.getToggleState() != seqs.isPlaying (track()))
         {
-            playButton.setToggleState (seqs.isPlaying (which), juce::dontSendNotification);
+            playButton.setToggleState (seqs.isPlaying (track()), juce::dontSendNotification);
             refreshPlayText();
         }
 
@@ -117,14 +121,18 @@ private:
                                  juce::dontSendNotification);
         }
 
-        if (hasBreaks && seqs.getBreak() == nullptr)
-            seqs.setBuiltInBreak (0);   // no saved settings to restore from
+        // Only while this track really is a Breaker on a sampler: a sampler
+        // used another way must keep its sample.
+        const auto kind = seqs.getKind (track());
+        const bool slicing = hasBreaks && (kind == LocalSequencers::Kind::Slice || kind == LocalSequencers::Kind::Remix);
+        if (slicing && seqs.sliceSampler (track()) != nullptr && seqs.getBreak (track()) == nullptr)
+            seqs.setBuiltInBreak (track(), 0);   // no saved settings to restore from
 
         // Also catches the break restored at launch, so the slice grid
         // matches its length without the user having to pick it again.
-        if (hasBreaks && seqs.getBreak() != shownBreak)
+        if (slicing && seqs.getBreak (track()) != shownBreak)
         {
-            shownBreak = seqs.getBreak();
+            shownBreak = seqs.getBreak (track());
             rebuildBreakCombo();
             if (onBreakChanged) onBreakChanged();
         }
@@ -149,11 +157,11 @@ private:
             breakCombo.addItem (names[i], i + 1);
 
         breakCombo.addSeparator();
-        if (seqs.getImportedBreak() != juce::File() && seqs.getBreak() != nullptr)
-            breakCombo.addItem (seqs.getBreak()->name, ImportedId);
+        if (seqs.getImportedBreak (track()) != juce::File() && seqs.getBreak (track()) != nullptr)
+            breakCombo.addItem (seqs.getBreak (track())->name, ImportedId);
         breakCombo.addItem ("Import .wav...", ImportId);
 
-        const int idx = seqs.getBuiltInBreakIndex();
+        const int idx = seqs.getBuiltInBreakIndex (track());
         breakCombo.setSelectedId (idx >= 0 ? idx + 1 : ImportedId, juce::dontSendNotification);
     }
 
@@ -168,16 +176,16 @@ private:
             return;
         }
 
-        if (id >= 1 && id - 1 != seqs.getBuiltInBreakIndex())
+        if (id >= 1 && id - 1 != seqs.getBuiltInBreakIndex (track()))
         {
-            seqs.setBuiltInBreak (id - 1);
+            seqs.setBuiltInBreak (track(), id - 1);
             breakChanged();
         }
     }
 
     void breakChanged()
     {
-        shownBreak = seqs.getBreak();
+        shownBreak = seqs.getBreak (track());
         rebuildBreakCombo();
         if (onBreakChanged) onBreakChanged();
         if (onStateChanged) onStateChanged();
@@ -186,12 +194,12 @@ private:
     void launchImport()
     {
         juce::Component::SafePointer<SeqTransportBar> safe (this);
-        BreakImport::launch (chooser, seqs, [safe] { if (safe != nullptr) safe->breakChanged(); });
+        BreakImport::launch (chooser, seqs, track(), [safe] { if (safe != nullptr) safe->breakChanged(); });
     }
 
     EventRouter& router;
     LocalSequencers& seqs;
-    const LocalSequencers::Which which;
+    const std::function<int()> track;
     const bool hasBreaks;
 
     juce::TextButton playButton { "PLAY" };

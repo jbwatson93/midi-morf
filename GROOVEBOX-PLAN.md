@@ -248,8 +248,22 @@ Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit
 - [x] **Walkthrough** on first launch (skippable, replayable from Settings): coach marks over the real screens, each step waiting for the player to do the thing — not a slideshow. Make a beat on the Drum Grid → press Play → a bassline on Step-Seq → record a chord take on Morf-Chord → launch it from Session → Save As. Ends with their own project, named.
   Done (`Walkthrough.h`), JB's flow (2026-10-30): on an empty project, pick Step-Seq + Synth for track 1, pick a synth preset, switch steps on and drag the note sliders, play; then Breaker + Sampler (the Amen) on track 2, and glitch it: move slices in the grid, the stutter ribbon, the pitch ribbon, the looper (with RND). 19 steps. An untitled project in progress is kept as "Before the tour"; Settings → Take the tour replays it.
 - [x] Slice-Seq is called **Breaker** in the app (the rail says "Break").
-- [ ] **Live remix lane** (JB, 2026-10-30), monome-mlr style: a sample laid across a row of 16 positions with the playhead walking along it; tap a position to jump playback there (quantized), hold two to loop between them, release to fall back in time. Builds on the Sampler's slice playback.
+- [x] **Live remix lane** (JB, 2026-10-30) — built as the **Remix Lane** instrument (`RemixPage.h`, `LocalSequencers` Remix slot): the track's sample in 16th slices locked to the clock, 16 positions; tap jumps on the next 16th and plays on, hold two loops, SYNC realigns, sample-exact. One lane per track (so up to four). No clips: it's played live, and a scene launch leaves it playing. Next: record its moves as a clip.
 - [ ] **More of JB's recreated breaks** bundled beside the Amen (`BreakLibrary::recorded()`). Never the "All The Breaks" pack.
+
+### Per-track instruments (2026-10-30)
+
+- [x] Every track can have its own **Step-Seq, Breaker or Drum Grid**: own engine, page, pattern, clips and playhead (`LocalSequencers` slots, one page per track). Two Step-Seqs in different keys play at once. Page messages go to the active track (the page shown or touched).
+- [x] The live controllers too: each track has its own router (`EventRouter::setFixedTrack`, following the main one's mode and sync) and its own Morf-Pad, Strum-Chord, Dual M-Pad, Morf-Chord and Rose-Chord page, with their settings saved per track. Two Morf-Chords in different keys can be held at once (iPad Perform) without stealing each other's notes. The routers also aim sequencer messages at their own track, replacing the "active track" guess.
+
+### Decision needed — the Mac server
+
+JB (2026-10-30): "rethink our server plugin, maybe this is a whole separate app". Recommendation:
+
+- **Retire the server for the groovebox.** Add an **External MIDI** sound source per track that sends the track's notes out on its own channel through CoreMIDI: network MIDI (built into macOS and iOS — Audio MIDI Setup → Network, no server), USB and Bluetooth MIDI. Send MIDI clock (and later Ableton Link) so the DAW follows the phone.
+- The phone is always the clock; the DAW-sync mode and the server-side copies of the sequencers go away. That also lifts the "extra Step-Seqs only play locally in WiFi mode" limit.
+- **Android** has no built-in network MIDI, so a tiny free **bridge** app (receive and pass MIDI to the DAW) may still be worth it there — but it would be a dumb pipe, not a second engine.
+- The current server keeps working for v2 users until then.
 
 ### Phase 8 — iOS release ($4.99)
 

@@ -30,7 +30,7 @@ public:
         setLookAndFeel (&laf);
 
         playButton.setClickingTogglesState (true);
-        playButton.onClick = [this] { seqs.setPlaying (LocalSequencers::Drums, playButton.getToggleState()); refreshPlay(); };
+        playButton.onClick = [this] { seqs.setPlaying (track, playButton.getToggleState()); refreshPlay(); };
         addAndMakeVisible (playButton);
 
         bpmDown.onClick = [this] { seqs.setBpm (std::round (seqs.getBpm()) - 1.0); changed(); };
@@ -44,7 +44,7 @@ public:
         swing.setTextBoxStyle (juce::Slider::TextBoxRight, false, 44, 20);
         swing.setRange (0.0, 100.0, 1.0);
         swing.textFromValueFunction = [] (double v) { return juce::String (juce::roundToInt (v)) + "%"; };
-        swing.onValueChange = [this] { seqs.setDrumSwing ((float) swing.getValue() / 100.0f); };
+        swing.onValueChange = [this] { seqs.setDrumSwing (track, (float) swing.getValue() / 100.0f); };
         swing.onDragEnd = [this] { changed(); };
         addAndMakeVisible (swing);
         swingLabel.setText ("SWING", juce::dontSendNotification);
@@ -145,27 +145,37 @@ public:
         for (auto& lane : pattern)
             for (auto v : lane)
                 hex << juce::String::toHexString ((int) v).paddedLeft ('0', 2);
-        p.setValue ("drum_pattern", hex);
-        p.setValue ("drum_swing", swing.getValue());
+        p.setValue (key ("drum_pattern"), hex);
+        p.setValue (key ("drum_swing"), swing.getValue());
 
         juce::String e;
         for (auto& lane : euclid)
             e << lane.hits << "," << lane.rotate << ";";
-        p.setValue ("drum_euclid", e);
+        p.setValue (key ("drum_euclid"), e);
+    }
+
+    // Keys are per track. A project from before (one Drum Grid, on T4) is
+    // read by T4's.
+    juce::String key (const char* base) const { return juce::String (base) + "_" + juce::String (track); }
+
+    juce::String stored (juce::PropertySet& p, const char* base) const
+    {
+        if (p.containsKey (key (base))) return p.getValue (key (base));
+        return track == 3 ? p.getValue (base) : juce::String();
     }
 
     void restoreState (juce::PropertySet& p)
     {
-        const auto hex = p.getValue ("drum_pattern");
+        const auto hex = stored (p, "drum_pattern");
         if (hex.length() == Lanes * Steps * 2)
             for (int l = 0; l < Lanes; ++l)
                 for (int st = 0; st < Steps; ++st)
                     setStep (l, st, hex.substring ((l * Steps + st) * 2, (l * Steps + st) * 2 + 2).getHexValue32());
 
-        if (p.containsKey ("drum_swing"))
-            swing.setValue (p.getDoubleValue ("drum_swing"), juce::sendNotificationSync);
+        if (const auto sw = stored (p, "drum_swing"); sw.isNotEmpty())
+            swing.setValue (sw.getDoubleValue(), juce::sendNotificationSync);
 
-        auto lanes = juce::StringArray::fromTokens (p.getValue ("drum_euclid"), ";", "");
+        auto lanes = juce::StringArray::fromTokens (stored (p, "drum_euclid"), ";", "");
         for (int l = 0; l < Lanes && l < lanes.size(); ++l)
         {
             auto v = juce::StringArray::fromTokens (lanes[l], ",", "");
@@ -338,7 +348,7 @@ private:
     void setStep (int lane, int step, int velocity)
     {
         pattern[(size_t) lane][(size_t) step] = (uint8_t) velocity;
-        seqs.setDrumStep (lane, step, velocity);
+        seqs.setDrumStep (track, lane, step, velocity);
     }
 
     // One of the built-in breaks' patterns, with its tempo and swing.
@@ -466,15 +476,17 @@ private:
     //==========================================================================
     void timerCallback() override
     {
-        const int step = seqs.getPlayhead (LocalSequencers::Drums);
+        if (! isShowing())
+            return;
+        const int step = seqs.getPlayhead (track);
         if (step != playhead)
         {
             playhead = step;
             repaint (cellsArea());
         }
-        if (playButton.getToggleState() != seqs.isPlaying (LocalSequencers::Drums))
+        if (playButton.getToggleState() != seqs.isPlaying (track))
         {
-            playButton.setToggleState (seqs.isPlaying (LocalSequencers::Drums), juce::dontSendNotification);
+            playButton.setToggleState (seqs.isPlaying (track), juce::dontSendNotification);
             refreshPlay();
         }
         if (juce::roundToInt (seqs.getBpm()) != shownBpm)

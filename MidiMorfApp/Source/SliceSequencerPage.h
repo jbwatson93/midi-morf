@@ -514,7 +514,7 @@ private:
     // remix — swapping breaks under a pattern is half the fun.
     void breakChanged()
     {
-        if (const auto* b = eventRouter.getSequencers().getBreak())
+        if (const auto* b = eventRouter.getSequencers().getBreak (track))
         {
             const int loopBars = juce::jlimit (1, 2, b->gridBars > 0 ? b->gridBars : b->bars());
             if (loopBars != bars)
@@ -833,7 +833,12 @@ private:
     LooperStrip looper;
     juce::OwnedArray<StepBox> stepBoxes;
     LaneStrip lanes;
-    SeqTransportBar transport { eventRouter, LocalSequencers::Slice, true };
+    SeqTransportBar transport { eventRouter, [this] { return track; }, true };
+
+public:
+    int track = 0;   // which track's Breaker this is (set by the page)
+
+private:
 
     std::array<SliceStep, MAX_STEPS> steps;
 
@@ -867,6 +872,8 @@ public:
 
     void setPlayhead (int step) { content.setPlayhead (step); }
     void pushFullState()        { content.pushFullState(); }
+    void setTrack (int t)       { content.track = t; }
+    int  getTrack() const       { return content.track; }
     SeqPattern getPattern() const               { return content.getPattern(); }
     SliceSequencerContent& getContent()         { return content; }
     void showPattern (const SeqPattern& p)      { content.showPattern (p); }

@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "WavetableEngine.h"
+#include "PresetBrowser.h"
 #include "SynthWidgets.h"
 #include "SynthLookAndFeel.h"
 #include "MidiMorfColors.h"
@@ -666,7 +667,8 @@ private:
 };
 
 //==============================================================================
-// Landscape content: title + tab bar + CLEAR, the active tab, audition ribbon.
+// Landscape content: header slot (the preset bar) + tab bar + INIT, the active
+// tab, audition ribbon.
 class WavetableSynthContent : public juce::Component
 {
 public:
@@ -675,13 +677,6 @@ public:
           oscTab (e, notify), envTab (e, notify), routingTab (e, notify), fxTab (e, notify)
     {
         setLookAndFeel (&laf);
-
-        title.setText ("SOUND", juce::dontSendNotification);
-        // Accent, not textLight: it sits straight on the panel, which is light
-        // in some themes and dark in others.
-        title.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-        title.setColour (juce::Label::textColourId, MidiMorfColors::accent);
-        addAndMakeVisible (title);
 
         const juce::StringArray names { "OSC", "ENV & LFO", "ROUTING", "FX" };
         for (int i = 0; i < names.size(); ++i)
@@ -693,9 +688,14 @@ public:
             addAndMakeVisible (b);
         }
 
-        clearButton.setButtonText ("CLEAR");
+        clearButton.setButtonText ("INIT");
         clearButton.onClick = [this]
         {
+            if (onInit)
+            {
+                onInit();
+                return;
+            }
             engine.resetToDefaults();
             refreshAll();
             if (onChange) onChange();
@@ -759,7 +759,9 @@ public:
         auto bar = area.removeFromTop (36);
         clearButton.setBounds (bar.removeFromRight (64).reduced (3));
         bar.removeFromRight (4);
-        title.setBounds (bar.removeFromLeft (juce::jmin (110, bar.getWidth() / 5)));
+        if (header != nullptr)
+            header->setBounds (bar.removeFromLeft (juce::jmin (330, bar.getWidth() * 45 / 100)));
+        bar.removeFromLeft (4);
         const int n = tabButtons.size();
         const int w = bar.getWidth() / n;
         for (int i = 0; i < n; ++i)
@@ -779,11 +781,18 @@ public:
             t->refresh();
     }
 
-    void setTitle (const juce::String& text, juce::Colour colour)
+    // What sits left of the tabs — the Sound page's preset bar. Not owned.
+    void setHeaderComponent (juce::Component* c)
     {
-        title.setText (text, juce::dontSendNotification);
-        title.setColour (juce::Label::textColourId, colour);
+        header = c;
+        if (c != nullptr)
+            addAndMakeVisible (c);
+        resized();
     }
+
+    // INIT loads the Init preset when the page provides one; otherwise it
+    // resets the engine.
+    std::function<void()> onInit;
 
 private:
     std::vector<WtTab*> tabs() { return { &oscTab, &envTab, &routingTab, &fxTab }; }
@@ -792,7 +801,7 @@ private:
     std::function<void()> onChange;
     SynthLookAndFeel laf;   // declared before the children so it outlives them
 
-    juce::Label title;
+    juce::Component* header = nullptr;
     juce::OwnedArray<juce::TextButton> tabButtons;
     juce::TextButton clearButton;
     WtOscTab     oscTab;
@@ -807,28 +816,46 @@ private:
 // edit() points it at another track's synth by rebuilding the editor, whose
 // controls all hold a reference to the engine they edit.
 //
+// Presets: the bar steps through them and opens the browser; SAVE writes a
+// user preset; INIT loads Init. A star marks a sound changed since its
+// preset was loaded.
+//
 // saveState / restoreState are for the engine it was built with (T1's synth),
-// under the settings key that synth has always used.
+// under the settings key that synth has always used — read only when moving
+// an older install's settings into the project.
 class WavetableSynthPage : public juce::Component
 {
 public:
     WavetableSynthPage (WavetableEngine& e) : engine (e)
     {
-        edit (e, "SOUND", MidiMorfColors::accent);
+        bar.onStep   = [this] (int dir) { step (dir); };
+        bar.onBrowse = [this] { browser.show (presetName, accent); };
+        bar.onSave   = [this] { promptSave(); };
+        browser.onPick = [this] (const WavetablePreset& p) { load (p); };
+        addChildComponent (browser);
+
+        edit (e, "Init", MidiMorfColors::accent);
     }
 
     std::function<void()> onPatchChanged;
+    std::function<void (const juce::String& name)> onPresetChanged;   // a preset was loaded or saved
 
-    void edit (WavetableEngine& e, const juce::String& title, juce::Colour titleColour)
+    void edit (WavetableEngine& e, const juce::String& currentPresetName, juce::Colour trackColour)
     {
         if (editing != &e || content == nullptr)
         {
             editing = &e;
-            content = std::make_unique<WavetableSynthContent> (e, [this] { if (onPatchChanged) onPatchChanged(); });
+            content = std::make_unique<WavetableSynthContent> (e, [this] { patchChanged(); });
+            content->onInit = [this] { load (WavetablePresets::init()); };
+            content->setHeaderComponent (&bar);
             addAndMakeVisible (*content);
+            browser.toFront (false);
             resized();
         }
-        content->setTitle (title, titleColour);
+        accent = trackColour;
+        presetName = currentPresetName;
+        baseline = e.getState();
+        bar.set (presetName, false, accent);
         content->refreshAll();
     }
 
@@ -838,6 +865,13 @@ public:
     {
         if (content != nullptr)
             content->setBounds (getLocalBounds());
+        browser.setBounds (getLocalBounds());
+    }
+
+    void visibilityChanged() override
+    {
+        if (! isVisible())
+            browser.setVisible (false);
     }
 
     // The patch lives in the engine as one ValueTree (WavetableEngine::
@@ -954,7 +988,83 @@ private:
             content->refreshAll();
     }
 
+    //==========================================================================
+    // Presets
+    void patchChanged()
+    {
+        bar.set (presetName, ! editing->getState().isEquivalentTo (baseline), accent);
+        if (onPatchChanged) onPatchChanged();
+    }
+
+    void load (const WavetablePreset& p)
+    {
+        editing->setState (p.state);
+        content->refreshAll();
+        presetName = p.name;
+        baseline = editing->getState();
+        bar.set (presetName, false, accent);
+        if (onPresetChanged) onPresetChanged (presetName);
+        if (onPatchChanged) onPatchChanged();
+    }
+
+    // Through every preset in browsing order, wrapping round.
+    void step (int direction)
+    {
+        const auto all = WavetablePresets::all();
+        int index = -1;
+        for (int i = 0; i < (int) all.size(); ++i)
+            if (all[(size_t) i].name == presetName) { index = i; break; }
+
+        const int n = (int) all.size();
+        load (all[(size_t) (((index < 0 ? 0 : index + direction) % n + n) % n)]);
+    }
+
+    void promptSave()
+    {
+        juce::String category = "Pad";
+        for (auto& p : WavetablePresets::all())
+            if (p.name == presetName && p.category.isNotEmpty())
+                category = p.category;
+
+        auto* w = new juce::AlertWindow ("Save preset", "Name your sound and pick where it goes.", juce::MessageBoxIconType::NoIcon);
+        w->addTextEditor ("name", presetName == "Init" ? juce::String ("My Sound") : presetName, "Name");
+        w->addComboBox ("category", WavetablePresets::categories(), "Category");
+        if (auto* cb = w->getComboBoxComponent ("category"))
+            cb->setText (category, juce::dontSendNotification);
+        w->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+        juce::Component::SafePointer<WavetableSynthPage> safe (this);
+        w->enterModalState (true, juce::ModalCallbackFunction::create ([safe, w] (int result)
+        {
+            if (safe == nullptr || result != 1)
+                return;
+
+            const auto name = w->getTextEditorContents ("name").trim();
+            const auto cat  = w->getComboBoxComponent ("category")->getText();
+            juce::String error;
+            if (! WavetablePresets::save (name, cat, safe->editing->getState(), error))
+            {
+                juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon)
+                                                                      .withTitle ("Couldn't save").withMessage (error).withButton ("OK"),
+                                              nullptr);
+                return;
+            }
+
+            safe->presetName = name;
+            safe->baseline = safe->editing->getState();
+            safe->bar.set (name, false, safe->accent);
+            if (safe->onPresetChanged) safe->onPresetChanged (name);
+        }), true);
+    }
+
     WavetableEngine& engine;
     WavetableEngine* editing = nullptr;
     std::unique_ptr<WavetableSynthContent> content;
+
+    PresetBar bar;
+    PresetBrowser browser;
+    juce::String presetName { "Init" };
+    juce::ValueTree baseline;
+    juce::Colour accent { MidiMorfColors::accent };
 };

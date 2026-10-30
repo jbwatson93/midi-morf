@@ -4,6 +4,7 @@
 #include "WavetableEngine.h"
 #include "LocalSequencers.h"
 #include "PunchFx.h"
+#include "WavetablePresets.h"
 
 //==============================================================================
 // Owns the iOS audio device, the track sources and the track rack. The device
@@ -30,11 +31,12 @@ public:
         punch.setTempoSource ([this] { return sequencers.getBpm(); });
         rack.setMasterProcessor (&punch);
 
-        synths[1]->setState (bassPatch());
+        if (auto* acid = WavetablePresets::findFactory ("Acid Bass"))
+            synths[1]->setState (acid->state);
         setTrackSound (0, Sound::Synth);
         setTrackSound (1, Sound::Synth);
         setTrackSound (2, Sound::Breaks);
-        soundNames[1] = "Bass";
+        soundNames[1] = "Acid Bass";
     }
 
     //==========================================================================
@@ -145,8 +147,8 @@ public:
     TrackRack& getRack() noexcept             { return rack; }
     PunchFx& getPunchFx() noexcept            { return punch; }
 
-    // What a track's sound is called in the UI. Presets will name the synths
-    // later; until then T2's starts as "Bass".
+    // What a track's sound is called in the UI: for a synth, the preset it
+    // was loaded from (or saved as).
     juce::String getSoundName (int track) const
     {
         switch (getTrackSound (track))
@@ -155,6 +157,18 @@ public:
             case Sound::Breaks: return "Breaks";
             default:            return "Empty";
         }
+    }
+
+    // The track synth's preset name, whatever the track is playing now.
+    juce::String getSynthName (int track) const
+    {
+        return juce::isPositiveAndBelow (track, TrackRack::NumTracks) ? soundNames[(size_t) track] : juce::String();
+    }
+
+    void setSoundName (int track, const juce::String& name)
+    {
+        if (juce::isPositiveAndBelow (track, TrackRack::NumTracks) && name.isNotEmpty())
+            soundNames[(size_t) track] = name;
     }
 
     // The track's synth if it's playing one, else nullptr.
@@ -167,54 +181,12 @@ public:
     double getCpuUsage() const { return deviceManager.getCpuUsage(); }
 
 private:
-    // A mono-ish acid bass: saw plus a square an octave down, a resonant
-    // ladder snapped shut by a fast filter envelope, velocity on cutoff so
-    // the step page's VEL lane accents. Dry — no delay or reverb muddying the
-    // low end.
-    static juce::ValueTree bassPatch()
-    {
-        juce::ValueTree t (WavetableEngine::stateType);
-        t.setProperty ("osc0_tableName", "Saw", nullptr);
-        t.setProperty ("osc0_level", 1.0f, nullptr);
-        t.setProperty ("osc0_semi", 0, nullptr);
-        t.setProperty ("osc0_fine", 0.0f, nullptr);
-        t.setProperty ("osc1_tableName", "Square", nullptr);
-        t.setProperty ("osc1_level", 0.45f, nullptr);
-        t.setProperty ("osc1_semi", -12, nullptr);
-        t.setProperty ("osc1_fine", 4.0f, nullptr);
-        t.setProperty ("unison", 1, nullptr);
-        t.setProperty ("sub", 0.35f, nullptr);
-        t.setProperty ("drive", 0.35f, nullptr);
-        t.setProperty ("gain", 0.36f, nullptr);
-        t.setProperty ("cutoff", 420.0f, nullptr);
-        t.setProperty ("reso", 2.4f, nullptr);
-        t.setProperty ("filtEnv", 3200.0f, nullptr);
-        t.setProperty ("envPos", 0.0f, nullptr);
-        t.setProperty ("amp",  "0.002,0.3,0.6,0.09", nullptr);
-        t.setProperty ("fenv", "0.001,0.16,0.0,0.1", nullptr);
-        t.setProperty ("lfoDepth", 0.0f, nullptr);
-        t.setProperty ("routeSrc_0", WavetableEngine::ModSrcVelocity, nullptr);
-        t.setProperty ("routeDest_0", WavetableEngine::ModDestCutoff, nullptr);
-        t.setProperty ("routeAmount_0", 0.35f, nullptr);
-        t.setProperty ("routeSrc_1", WavetableEngine::ModSrcModWheel, nullptr);
-        t.setProperty ("routeDest_1", WavetableEngine::ModDestResonance, nullptr);
-        t.setProperty ("routeAmount_1", 0.3f, nullptr);
-        for (int i = 2; i < WavetableEngine::NumRoutingSlots; ++i)
-        {
-            t.setProperty ("routeSrc_" + juce::String (i), WavetableEngine::ModSrcOff, nullptr);
-            t.setProperty ("routeDest_" + juce::String (i), WavetableEngine::ModDestOff, nullptr);
-        }
-        t.setProperty ("distOn", false, nullptr);
-        t.setProperty ("delayOn", false, nullptr);
-        t.setProperty ("revOn", false, nullptr);
-        return t;
-    }
-
     // Voice budgets: chords and strums with long releases on T1, 12 elsewhere.
     // Voices cost nothing until they sound.
     std::array<std::unique_ptr<WavetableEngine>, TrackRack::NumTracks> synths;
     std::array<Sound, TrackRack::NumTracks> sounds { Sound::Empty, Sound::Empty, Sound::Empty, Sound::Empty };
-    std::array<juce::String, TrackRack::NumTracks> soundNames { "Synth", "Synth", "Synth", "Synth" };
+    // T1 keeps whatever patch an older install had, so it isn't called Init.
+    std::array<juce::String, TrackRack::NumTracks> soundNames { "Synth", "Acid Bass", "Init", "Init" };
     BreakSource breaks;
     PunchFx punch;
     TrackRack rack;

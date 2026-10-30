@@ -459,6 +459,15 @@ public:
         refreshLanes();
     }
 
+    // The lanes and the step boxes (for the walkthrough to point at).
+    juce::Rectangle<int> stepsBounds() const
+    {
+        auto r = lanes.getBounds();
+        for (auto* b : stepBoxes)
+            r = r.getUnion (b->getBounds());
+        return r;
+    }
+
     // Shows it and sends it (WiFi mode: the server's sequencer).
     void loadPattern (const SeqPattern& p)
     {
@@ -843,6 +852,7 @@ public:
     void setPlayhead (int step) { content.setPlayhead (step); }
     void pushFullState()        { content.pushFullState(); }
     SeqPattern getPattern() const               { return content.getPattern(); }
+    juce::Rectangle<int> stepsBounds() const    { return content.stepsBounds(); }
     void showPattern (const SeqPattern& p)      { content.showPattern (p); }
     void loadPattern (const SeqPattern& p)      { content.loadPattern (p); }
     void setOnStateChanged (std::function<void()> f) { content.getTransport().onStateChanged = std::move (f); }

@@ -205,6 +205,10 @@ public:
 
     void visibilityChanged() override { if (isVisible()) refresh(); }
 
+    // For the walkthrough to point at.
+    juce::Rectangle<int> gridBounds() const          { return viewport.getBounds(); }
+    juce::Rectangle<int> projectButtonBounds() const { return projectButton.getBounds(); }
+
     void paint (juce::Graphics& g) override
     {
         Glassmorphism::paintPanel (g, getLocalBounds().toFloat(), sessionPagePalette);

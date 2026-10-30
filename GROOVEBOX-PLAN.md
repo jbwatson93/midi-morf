@@ -217,12 +217,14 @@ Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit
 
 ### Phase 5 — Session + projects
 
-- [ ] **One clip model for everything:** a clip is a list of notes (start, length, pitch, velocity) of 1–8 bars, whatever instrument made it. Step-Seq and Drum Grid patterns convert to and from it, so every pattern is saved and every clip can be opened in the editors in Phase 6.
-- [ ] **Session screen** as in *Screens*: tracks as rows, scenes left to right, the track column, the 1–4 / Play rail, launch quantize (1 bar / 1 beat / off).
+- [x] **Clips** (`SessionModel.h`). A clip on a sequencer track is that sequencer's own pattern (Step-Seq steps and length, Slice-Seq slices, Drum Grid lanes). Key, scale, rate and the slice grid stay with the track. *Changed from "a list of notes for everything":* a note list would lose the step settings. Phase 6 adds note clips for controller tracks, and the editors convert patterns to and from notes.
+- [x] **Launching on the bar:** `LocalSequencers` swaps a queued pattern in on the exact sample of the next bar line, and a queued stop lands on the bar too. On DAW sync the page sends it at once.
+- [x] **Session screen** (`SessionPage.h`, where Home was): tracks as rows, 8 scenes left to right (scrolls), ▶ per scene, the track column (instrument, sound, volume, ■). Tap a clip to launch, tap the playing one to edit it, hold for Edit / Duplicate / Delete, "+" copies the track's current pattern into a new clip.
+- [x] Every pattern is saved, as clips in the project. A project from before Session gets its current patterns as Pattern 1.
+- [x] **Projects** (`ProjectBrowser.h`): New (a starter project), Save As, Duplicate, Open, Delete. A named project autosaves to its own file as well as the working copy.
 - [ ] Compact mixer row (Sound ✎, fader, pan, send) and the drag handle. The full mixer arrives in Phase 7.
-- [ ] Clip editing opens the matching editor (Step-Seq, Drum Grid, slice grid, or the piano roll / drum editor).
-- [ ] Save, load and duplicate projects.
-- [ ] Built-in **demo project**, made with JB, opened on first launch.
+- [ ] Launch quantize choice (1 bar / 1 beat / off). It's 1 bar for now.
+- [ ] Built-in **demo project**, made with JB, opened on first launch. "New" opens a plain starter for now.
 
 ### Phase 6 — Clip recording + editors
 

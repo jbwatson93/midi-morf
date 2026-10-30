@@ -118,6 +118,23 @@ public:
     void setTrack (int t) { track = t; repaint(); }
 
     //==========================================================================
+    // Session clips.
+    SeqPattern getPattern() const
+    {
+        SeqPattern p;
+        p.drums = pattern;
+        return p;
+    }
+
+    // A pattern the grid is already playing (a launched clip).
+    void showPattern (const SeqPattern& p)
+    {
+        pattern = p.drums;
+        euclid = {};
+        repaint();
+    }
+
+    //==========================================================================
     void saveState (juce::PropertySet& p) const
     {
         juce::String hex;

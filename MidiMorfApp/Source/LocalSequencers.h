@@ -7,6 +7,7 @@
 #include "SliceSequencerEngine.h"
 #include "MidiMorfProtocol.h"
 #include "DrumSynth.h"
+#include "SessionModel.h"
 
 //==============================================================================
 // The sequencers in Local mode: the same engines the server runs, driven by
@@ -172,6 +173,56 @@ public:
             return;
         const juce::SpinLock::ScopedLockType sl (lock);
         drumPattern[(size_t) lane][(size_t) step] = (uint8_t) juce::jlimit (0, 127, velocity);
+    }
+
+    //==========================================================================
+    // Session launching — message thread.
+    //
+    // A queued pattern takes over on the next bar line, exactly (the audio
+    // thread swaps it in before the bar's first step). A sequencer that isn't
+    // running takes it at once. queueStop stops it on the next bar.
+    void queuePattern (Which w, const SeqPattern& p)
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        pending[w] = p;
+        hasPending[w] = true;
+        pendingStop[w] = false;
+        if (! running[w].load())
+            applyPending (w);
+    }
+
+    void queueStop (Which w)
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        hasPending[w] = false;
+        if (running[w].load()) pendingStop[w] = true;
+        else                   wantPlaying[w].store (false);
+    }
+
+    bool isLaunchPending (Which w) const
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        return hasPending[w] || pendingStop[w];
+    }
+
+    // Goes up each time a queued pattern takes over, so a page can redraw.
+    int getLaunchCount (Which w) const { return launches[w].load(); }
+
+    // The pattern the sequencer is playing now.
+    SeqPattern getPattern (Which w) const
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        SeqPattern p;
+        if (w == Drums)
+        {
+            p.drums = drumPattern;
+            return p;
+        }
+        auto& seq = const_cast<LocalSequencers*> (this)->sequencer (w);
+        p.length = seq.getPatternLength();
+        for (int i = 0; i < SeqPattern::MaxSteps; ++i)
+            p.steps[(size_t) i] = seq.getStep (i);
+        return p;
     }
 
     // 0..1: how late the off-beat 16ths come, up to half a 16th.
@@ -437,6 +488,9 @@ private:
     {
         while ((drumStepTick (nextDrumSixteenth) - now) * samplesPerTick() < 0.5)
         {
+            if (nextDrumSixteenth % DrumSteps == 0 && atBarLine (Drums))
+                return;   // stopped on the bar
+
             // Last step's notes end as the next step starts (a sampler in
             // Keys mode needs its note-offs; the drum synth ignores them).
             releaseDrumNotes();
@@ -461,6 +515,60 @@ private:
                 push ({ tracks[Drums], false, DrumChannel, ::Drums::noteFor (lane), 0 });
     }
 
+    // Under lock. The queued pattern becomes the playing one.
+    void applyPending (int w)
+    {
+        if (! hasPending[w])
+            return;
+        hasPending[w] = false;
+
+        const auto& p = pending[w];
+        if (w == Drums)
+        {
+            drumPattern = p.drums;
+        }
+        else
+        {
+            auto& seq = sequencer (w);
+            for (int i = 0; i < SeqPattern::MaxSteps; ++i)
+                seq.setStep (i, p.steps[(size_t) i]);
+            if (w == Step)
+                seq.setPatternLength (p.length);   // the slicer's length is its grid's
+        }
+        launches[w].fetch_add (1);
+    }
+
+    // Audio thread, under lock, on a bar line: a queued stop or pattern.
+    // True if the sequencer stopped.
+    bool atBarLine (int w)
+    {
+        if (std::exchange (pendingStop[w], false))
+        {
+            wantPlaying[w].store (false);
+            stopSequencer (w);
+            return true;
+        }
+        applyPending (w);
+        return false;
+    }
+
+    void stopSequencer (int w)
+    {
+        if (w == Drums)
+        {
+            releaseDrumNotes();
+            drumStep.store (-1);
+        }
+        else
+        {
+            sequencer (w).clockStop();
+            if (w == Slice)
+                if (auto* s = sliceSampler())
+                    s->player().releaseAll();   // one-shots ignore the note-off
+        }
+        running[w].store (false);
+    }
+
     // Audio thread, under lock.
     void updateTransport()
     {
@@ -472,22 +580,7 @@ private:
             anyWanted |= want;
 
             if (! want && running[w].load())
-            {
-                if (w == Drums)
-                {
-                    releaseDrumNotes();
-                    drumStep.store (-1);
-                }
-                else
-                {
-                    sequencer (w).clockStop();
-                }
-                running[w].store (false);
-
-                if (w == Slice)
-                    if (auto* s = sliceSampler())
-                        s->player().releaseAll();   // one-shots ignore the note-off
-            }
+                stopSequencer (w);
         }
 
         if (anyWanted && ! clockRunning)
@@ -505,6 +598,12 @@ private:
     // Audio thread, under lock.
     void tick()
     {
+        // Bar lines for the tick-driven two; the drum grid has its own.
+        if (globalTick % (SeqPPQN * 4) == 0)
+            for (int w : { Step, Slice })
+                if (running[w].load())
+                    atBarLine (w);
+
         for (int w = 0; w < NumSequencers; ++w)
         {
             if (wantPlaying[w].load() && ! running[w].load() && globalTick % (SeqPPQN / 4) == 0)
@@ -553,6 +652,11 @@ private:
     std::array<bool, DrumLanes> drumSounding {};                            // under lock
     int nextDrumSixteenth = 0;                                              // under lock
     std::atomic<float> drumSwing { 0.0f };
+
+    // Session launching, under lock.
+    std::array<SeqPattern, NumSequencers> pending {};
+    bool hasPending[NumSequencers] {}, pendingStop[NumSequencers] {};
+    std::atomic<int> launches[NumSequencers] { { 0 }, { 0 }, { 0 } };
     std::atomic<int> drumStep { -1 };
     bool   clockRunning  = false;   // audio thread
     int    globalTick    = 0;

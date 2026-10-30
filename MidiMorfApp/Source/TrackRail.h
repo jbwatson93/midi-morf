@@ -83,13 +83,13 @@ private:
 };
 
 //==============================================================================
-// Home (house glyph) and Play/Stop on the rail.
+// Home (house glyph), Perform (2x2 grid, iPad) and Play/Stop on the rail.
 class RailIconButton : public juce::Button
 {
 public:
-    enum class Kind { Home, PlayStop };
+    enum class Kind { Home, PlayStop, Perform };
 
-    explicit RailIconButton (Kind k) : juce::Button (k == Kind::Home ? "Home" : "PlayStop"), kind (k) {}
+    explicit RailIconButton (Kind k) : juce::Button (k == Kind::Home ? "Home" : k == Kind::Perform ? "Perform" : "PlayStop"), kind (k) {}
 
     // Home: lit on the Home screen. Play/Stop: lit while playing (shows stop).
     void setLit (bool shouldBeLit)
@@ -101,11 +101,20 @@ protected:
     void paintButton (juce::Graphics& g, bool, bool isDown) override
     {
         auto bounds = getLocalBounds().toFloat().reduced (1.5f);
-        const auto edge = kind == Kind::Home ? MidiMorfColors::textLight : MidiMorfColors::statusGreen;
+        const auto edge = kind == Kind::PlayStop ? MidiMorfColors::statusGreen : MidiMorfColors::textLight;
         RailCard::paint (g, bounds, edge, lit, isDown);
 
         auto glyph = bounds.withSizeKeepingCentre (bounds.getHeight() * 0.5f, bounds.getHeight() * 0.5f);
         juce::Path p;
+
+        if (kind == Kind::Perform)
+        {
+            const float gap = glyph.getWidth() * 0.14f, cell = (glyph.getWidth() - gap) * 0.5f;
+            g.setColour (MidiMorfColors::textLight);
+            for (int i = 0; i < 4; ++i)
+                g.drawRoundedRectangle (glyph.getX() + (i % 2) * (cell + gap), glyph.getY() + (i / 2) * (cell + gap), cell, cell, 2.0f, 1.8f);
+            return;
+        }
 
         if (kind == Kind::Home)
         {

@@ -98,6 +98,10 @@ public:
     void  setVolume (int track, float v) { if (validTrack (track)) volumes[(size_t) track].store (juce::jlimit (0.0f, MaxVolume, v)); }
     float getVolume (int track) const    { return validTrack (track) ? volumes[(size_t) track].load() : 0.0f; }
 
+    // Mute keeps the volume setting and ramps like it.
+    void setMuted (int track, bool m)    { if (validTrack (track)) muted[(size_t) track].store (m); }
+    bool isMuted (int track) const       { return validTrack (track) && muted[(size_t) track].load(); }
+
     void prepare (double sampleRate, int maxBlockSize)
     {
         scratch.setSize (2, juce::jmax (maxBlockSize, 1024));
@@ -113,7 +117,7 @@ public:
         for (int t = 0; t < NumTracks; ++t)
         {
             gains[(size_t) t].reset (sampleRate, 0.02);
-            gains[(size_t) t].setCurrentAndTargetValue (volumes[(size_t) t].load());
+            gains[(size_t) t].setCurrentAndTargetValue (muted[(size_t) t].load() ? 0.0f : volumes[(size_t) t].load());
         }
     }
 
@@ -228,7 +232,7 @@ private:
     void mixTrack (int t, juce::AudioBuffer<float>& out, int start, int n)
     {
         auto& gain = gains[(size_t) t];
-        gain.setTargetValue (volumes[(size_t) t].load());
+        gain.setTargetValue (muted[(size_t) t].load() ? 0.0f : volumes[(size_t) t].load());
         const int numOut = out.getNumChannels(), numIn = scratch.getNumChannels();
 
         if (! gain.isSmoothing())
@@ -283,6 +287,7 @@ private:
     std::vector<SoundSource*> pool;   // message thread
     MasterProcessor* master = nullptr;
     std::array<std::atomic<float>, NumTracks> volumes { 1.0f, 1.0f, 1.0f, 1.0f };
+    std::array<std::atomic<bool>, NumTracks> muted {};
     std::array<juce::SmoothedValue<float>, NumTracks> gains;   // audio thread
     juce::AudioBuffer<float> scratch;
 

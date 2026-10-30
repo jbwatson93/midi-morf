@@ -75,7 +75,19 @@ public:
     }
 
     int getCurrentPage() const { return currentPage; }
+
+    // Takes back a page another view borrowed (the iPad Perform view shows
+    // several at once): hidden again, at full size, unless it's current.
+    void reclaim (juce::Component* page)
+    {
+        if (page == nullptr || ! pages.contains (page))
+            return;
+        addChildComponent (page);
+        page->setBounds (getLocalBounds());
+        page->setVisible (pages.indexOf (page) == currentPage);
+    }
     int getNumPages() const { return pages.size(); }
+    juce::Component* getPage (int index) const { return pages[index]; }
 
     void setPage (int index)
     {

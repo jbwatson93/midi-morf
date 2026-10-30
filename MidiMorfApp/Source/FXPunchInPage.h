@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "PopupStyle.h"
 #include "XYPad.h"
 #include "FXButton.h"
 #include "AxisSlider.h"
@@ -218,8 +219,7 @@ public:
             menu.addItem (e + 1, names[e], true, punch->getSlotEffect (slotIndex) == e);
 
         juce::Component::SafePointer<FXPunchInPage> safe (this);
-        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (fxButtons[slotIndex])
-                                                       .withStandardItemHeight (36),
+        menu.showMenuAsync (PopupStyle::attached (menu, *fxButtons[slotIndex], 36),
             [safe, slotIndex] (int result)
             {
                 if (safe == nullptr || result <= 0) return;

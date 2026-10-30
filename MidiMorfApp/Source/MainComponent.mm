@@ -138,6 +138,8 @@ MainComponent::MainComponent()
     : fxPage (eventRouter),
       transportPage (eventRouter)
 {
+    juce::LookAndFeel::setDefaultLookAndFeel (&appLookAndFeel);
+
     for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
         auto& router = *(trackRouters[(size_t) t] = std::make_unique<EventRouter> (networkClient, audioEngine.getRack(), audioEngine.getSequencers()));
@@ -460,6 +462,7 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
+    juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
     saveNow();
     stopTimer();
     accelerometer.stop();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "PopupStyle.h"
 #include "Glassmorphism.h"
 #include "SynthLookAndFeel.h"
 #include "TrackRail.h"
@@ -294,7 +295,7 @@ private:
         m.addItem (100, "Quantize to 1/16", true, callbacks.getRecQuantize && callbacks.getRecQuantize());
         m.addItem (101, "Metronome", true, callbacks.getMetronome && callbacks.getMetronome());
         juce::Component::SafePointer<SessionPage> safe (this);
-        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&recButton), [safe] (int r)
+        m.showMenuAsync (PopupStyle::attached (m, recButton), [safe] (int r)
         {
             if (safe == nullptr || r == 0) return;
             auto& cb = safe->callbacks;
@@ -624,7 +625,7 @@ private:
             menu.addItem (3, "Delete");
             juce::Component::SafePointer<Grid> safe (this);
             const int track = t, scene = s;
-            menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withTargetScreenArea (localAreaToGlobal (cellBounds (t, s))),
+            menu.showMenuAsync (PopupStyle::attached (menu, localAreaToGlobal (cellBounds (t, s))),
                 [safe, track, scene] (int result)
                 {
                     if (safe == nullptr) return;

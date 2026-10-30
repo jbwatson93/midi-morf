@@ -66,6 +66,7 @@ public:
     void timerCallback() override;
 
 private:
+    AppLookAndFeel appLookAndFeel;   // the default for everything without its own (PopupStyle)
     AudioEngine audioEngine;
     NetworkClient networkClient;
     EventRouter eventRouter { networkClient, audioEngine.getRack(), audioEngine.getSequencers() };

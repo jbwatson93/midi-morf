@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "PopupStyle.h"
 #include "EventRouter.h"
 #include "MidiMorfColors.h"
 #include "Glassmorphism.h"
@@ -672,9 +673,7 @@ private:
         menu.addItem (5, "CC 74 (Cutoff)", true, isCC && cc == 74);
         menu.addItem (6, "Step Repeat",    true, target == MidiMorf::RibbonTarget::StepRepeat);
 
-        menu.showMenuAsync (juce::PopupMenu::Options()
-                                .withTargetComponent (ribbons[ribbonIndex])
-                                .withStandardItemHeight (32),
+        menu.showMenuAsync (PopupStyle::around (*ribbons[ribbonIndex]).withStandardItemHeight (32),
             [this, ribbonIndex] (int result)
             {
                 if (result > 0)

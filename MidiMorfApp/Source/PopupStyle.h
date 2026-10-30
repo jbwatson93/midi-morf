@@ -3,43 +3,68 @@
 #include <JuceHeader.h>
 
 //==============================================================================
-// How every menu opens: all of it, at once. JUCE places a menu next to what
-// opened it, using only the room on that side, so on a phone held sideways a
-// dropdown near the top or bottom opened as a two-item strip you had to
-// scroll. Here every menu hangs from the top of the screen, lined up with
-// what opened it, with the whole height to use; a list longer than the
-// screen spreads into side-by-side columns.
+// How every menu opens: attached to what opened it, and all of it at once.
+//
+// JUCE puts a menu below (or above) its opener using only the room on that
+// side, and shrinks it into a scrolling strip when it doesn't fit — on a
+// phone held sideways that left a dropdown as a two-item strip. Here the
+// menu's full height is worked out first, then:
+//   • it opens straight down from the opener if it fits there,
+//   • else straight up if it fits there,
+//   • else it slides only as far as it must to fit on screen, still lined up
+//     with the opener — and a list taller than the screen spreads into
+//     side-by-side columns.
 //
 // The look-and-feels use forComboBox for their dropdowns; MainComponent
 // installs AppLookAndFeel as the default for everything that has no
-// look-and-feel of its own; menus opened directly use around().
+// look-and-feel of its own; menus opened directly use attached().
 namespace PopupStyle
 {
-    // `screenArea` is what opened the menu, in screen coordinates.
-    inline juce::PopupMenu::Options around (juce::Rectangle<int> screenArea)
+    static constexpr int ItemHeight = 28;
+
+    // The menu's height as JUCE will lay it out in one column: rows, half
+    // rows for separators, and the border.
+    inline int heightOf (const juce::PopupMenu& menu, int itemHeight)
     {
-        juce::Rectangle<int> screen = screenArea;
-        if (const auto* d = juce::Desktop::getInstance().getDisplays().getDisplayForRect (screenArea))
-            screen = d->userArea;
-
-        // A thin strip along the top edge, over the opener: the menu drops
-        // from there with the full height below it.
-        const juce::Rectangle<int> anchor (screenArea.getX(), screen.getY(), juce::jmax (1, screenArea.getWidth()), 1);
-
-        return juce::PopupMenu::Options().withTargetScreenArea (anchor)
-                                         .withMaximumNumColumns (6)
-                                         .withStandardItemHeight (28);
+        int h = 2 * 2;
+        for (juce::PopupMenu::MenuItemIterator it (menu); it.next();)
+            h += it.getItem().isSeparator ? itemHeight / 2 : itemHeight;
+        return h;
     }
 
-    inline juce::PopupMenu::Options around (juce::Component& opener)
+    // `opener` is what opened the menu, in screen coordinates.
+    inline juce::PopupMenu::Options attached (const juce::PopupMenu& menu, juce::Rectangle<int> opener, int itemHeight = ItemHeight)
     {
-        return around (opener.getScreenBounds());
+        auto options = juce::PopupMenu::Options().withMaximumNumColumns (6).withStandardItemHeight (itemHeight);
+
+        juce::Rectangle<int> screen = opener;
+        if (const auto* d = juce::Desktop::getInstance().getDisplays().getDisplayForRect (opener))
+            screen = d->userArea;
+
+        const int h = heightOf (menu, itemHeight);
+        constexpr int slack = 32;   // JUCE wants a little room past the menu
+
+        if (h < screen.getBottom() - opener.getBottom() - slack)
+            return options.withTargetScreenArea (opener);   // straight down
+
+        if (h < opener.getY() - screen.getY() - slack)
+            return options.withTargetScreenArea (opener).withPreferredPopupDirection (juce::PopupMenu::Options::PopupDirection::upwards);
+
+        // Neither side has room: start as near the opener as fits (the top
+        // of the screen for a list that needs columns).
+        const int top = juce::jmax (screen.getY() - 1, juce::jmin (opener.getY(), screen.getBottom() - h - slack));
+        return options.withTargetScreenArea ({ opener.getX(), top, opener.getWidth(), 1 });
+    }
+
+    inline juce::PopupMenu::Options attached (const juce::PopupMenu& menu, juce::Component& opener, int itemHeight = ItemHeight)
+    {
+        return attached (menu, opener.getScreenBounds(), itemHeight);
     }
 
     inline juce::PopupMenu::Options forComboBox (juce::ComboBox& box, juce::Label&)
     {
-        return around (box).withInitiallySelectedItem (box.getSelectedId())
-                           .withMinimumWidth (box.getWidth());
+        return attached (*box.getRootMenu(), box).withInitiallySelectedItem (box.getSelectedId())
+                                                 .withMinimumWidth (box.getWidth());
     }
 }
 

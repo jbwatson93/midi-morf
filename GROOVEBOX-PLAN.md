@@ -254,7 +254,7 @@ Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit
 ### Per-track instruments (2026-10-30)
 
 - [x] Every track can have its own **Step-Seq, Breaker or Drum Grid**: own engine, page, pattern, clips and playhead (`LocalSequencers` slots, one page per track). Two Step-Seqs in different keys play at once. Page messages go to the active track (the page shown or touched).
-- [ ] The live controllers (Morf-Chord, Morf-Pad, ...) are still one page each: giving one to a second track moves it. Per-track copies of those next.
+- [x] The live controllers too: each track has its own router (`EventRouter::setFixedTrack`, following the main one's mode and sync) and its own Morf-Pad, Strum-Chord, Dual M-Pad, Morf-Chord and Rose-Chord page, with their settings saved per track. Two Morf-Chords in different keys can be held at once (iPad Perform) without stealing each other's notes. The routers also aim sequencer messages at their own track, replacing the "active track" guess.
 
 ### Decision needed — the Mac server
 

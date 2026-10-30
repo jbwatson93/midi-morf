@@ -98,7 +98,6 @@ private:
     int instrumentOf[TrackRack::NumTracks] { -1, -1, -1, -1 };
     int soundTrack = 0;     // whose synth the Sound page is editing
     bool dawPlaying = false;
-    int  focusedMode = -1;   // the page shared sequencer messages go to, in Perform
     void populatePerform();
     void migrateBreak (int track, juce::PropertySet& pages);
     void audition (int track, int note, bool down);
@@ -154,12 +153,17 @@ private:
     //==========================================================================
     PageContainer pageContainer;
     FXPunchInPage fxPage;
-    MorfPadPage morfPadPage;
-    OmnichordPage omnichordPage;
+    // Every track has its own router and its own copy of each instrument page;
+    // the one-of-each controller slots stay as placeholders so the page
+    // numbers don't move.
+    std::array<std::unique_ptr<EventRouter>, TrackRack::NumTracks> trackRouters;
+    std::array<std::unique_ptr<MorfPadPage>, TrackRack::NumTracks> morfPadPages;
+    std::array<std::unique_ptr<OmnichordPage>, TrackRack::NumTracks> omnichordPages;
+    std::array<std::unique_ptr<DualMPadPage>, TrackRack::NumTracks> dualMPadPages;
+    std::array<std::unique_ptr<MorfChordPage>, TrackRack::NumTracks> morfChordPages;
+    std::array<std::unique_ptr<RoseChordPage>, TrackRack::NumTracks> roseChordPages;
+    juce::Component morfPadPlaceholder, omnichordPlaceholder, dualMPadPlaceholder, morfChordPlaceholder, roseChordPlaceholder;
     TransportPage transportPage;
-    DualMPadPage dualMPadPage;
-    MorfChordPage morfChordPage;
-    RoseChordPage roseChordPage;
     // Every track has its own sequencer pages; the one-of-each slots they
     // replaced stay as placeholders so the page numbers don't move.
     std::array<std::unique_ptr<StepSequencerPage>, TrackRack::NumTracks> stepPages;

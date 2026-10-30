@@ -59,11 +59,22 @@ static constexpr int performPageIdx   = MidiMorf::NUM_CONTROLLERS + 5;
 static constexpr int drumGridPageIdx  = MidiMorf::NUM_CONTROLLERS + 6;   // an instrument, but the phone's own
 static constexpr int drumKitPageIdx   = MidiMorf::NUM_CONTROLLERS + 7;
 static constexpr int noteEditorPageIdx = MidiMorf::NUM_CONTROLLERS + 8;
-static constexpr int seqPageBase      = MidiMorf::NUM_CONTROLLERS + 9;   // then 4 Step-Seq, 4 Breaker, 4 Drum Grid pages, one per track
-static constexpr int numPages         = seqPageBase + 3 * TrackRack::NumTracks;
+// Then every track's own instrument pages: 4 of each kind, kind-major.
+// Kinds 0-2 are the sequencers (as LocalSequencers::Kind), 3-7 the live
+// controllers.
+static constexpr int NumKinds         = 8;
+static constexpr int seqPageBase      = MidiMorf::NUM_CONTROLLERS + 9;
+static constexpr int numPages         = seqPageBase + NumKinds * TrackRack::NumTracks;
 
 static int seqPageIdx (int kind, int track) { return seqPageBase + kind * TrackRack::NumTracks + track; }
-static bool isSeqPage (int page)            { return page >= seqPageBase && page < numPages; }
+static bool isSeqPage (int page)            { return page >= seqPageBase && page < numPages; }   // any track's instrument page
+static int pageKind (int page)              { return (page - seqPageBase) / TrackRack::NumTracks; }
+static int pageTrack (int page)             { return (page - seqPageBase) % TrackRack::NumTracks; }
+
+// The live controllers' kinds and their ControllerModes, in kind order.
+static const MidiMorf::ControllerMode controllerKinds[5] = {
+    MidiMorf::ControllerMode::MorfPad, MidiMorf::ControllerMode::Omnichord, MidiMorf::ControllerMode::DualMPad,
+    MidiMorf::ControllerMode::MorfChord, MidiMorf::ControllerMode::RoseChord };
 
 // The four-at-once Perform view is for iPad; an iPhone screen is too small.
 static bool isIPad()
@@ -93,6 +104,17 @@ static int whichSequencer (int mode)
 static constexpr int KindStep = (int) LocalSequencers::Kind::Step, KindSlice = (int) LocalSequencers::Kind::Slice,
                      KindDrums = (int) LocalSequencers::Kind::Drums;
 
+// An instrument id (a ControllerMode, or the Drum Grid's page) as a page kind.
+static int kindOf (int mode)
+{
+    if (isSequencer (mode))
+        return whichSequencer (mode);
+    for (int k = 0; k < 5; ++k)
+        if (mode == (int) controllerKinds[k])
+            return 3 + k;
+    return -1;
+}
+
 // An instrument's name on the rail.
 static juce::String instrumentShortName (int mode)
 {
@@ -103,18 +125,22 @@ static juce::String instrumentShortName (int mode)
 
 MainComponent::MainComponent()
     : fxPage (eventRouter),
-      morfPadPage (eventRouter),
-      omnichordPage (eventRouter),
-      transportPage (eventRouter),
-      dualMPadPage (eventRouter),
-      morfChordPage (eventRouter),
-      roseChordPage (eventRouter)
+      transportPage (eventRouter)
 {
     for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
-        stepPages[(size_t) t] = std::make_unique<StepSequencerPage> (eventRouter);
+        auto& router = *(trackRouters[(size_t) t] = std::make_unique<EventRouter> (networkClient, audioEngine.getRack(), audioEngine.getSequencers()));
+        router.setFixedTrack (t);
+        router.followSettingsOf (eventRouter);
+        morfPadPages[(size_t) t]   = std::make_unique<MorfPadPage> (router);
+        omnichordPages[(size_t) t] = std::make_unique<OmnichordPage> (router);
+        dualMPadPages[(size_t) t]  = std::make_unique<DualMPadPage> (router);
+        morfChordPages[(size_t) t] = std::make_unique<MorfChordPage> (router);
+        roseChordPages[(size_t) t] = std::make_unique<RoseChordPage> (router);
+
+        stepPages[(size_t) t] = std::make_unique<StepSequencerPage> (router);
         stepPages[(size_t) t]->setTrack (t);
-        slicePages[(size_t) t] = std::make_unique<SliceSequencerPage> (eventRouter);
+        slicePages[(size_t) t] = std::make_unique<SliceSequencerPage> (router);
         slicePages[(size_t) t]->setTrack (t);
         drumPages[(size_t) t] = std::make_unique<DrumGridPage> (audioEngine.getSequencers());
         drumPages[(size_t) t]->setTrack (t);
@@ -247,12 +273,12 @@ MainComponent::MainComponent()
     // Page container — controllers, then Sound, About, Settings, Home, Breaks.
     // The order is the page indices above.
     pageContainer.addPage (&fxPage);
-    pageContainer.addPage (&morfPadPage);
-    pageContainer.addPage (&omnichordPage);
+    pageContainer.addPage (&morfPadPlaceholder);
+    pageContainer.addPage (&omnichordPlaceholder);
     pageContainer.addPage (&transportPage);
-    pageContainer.addPage (&dualMPadPage);
-    pageContainer.addPage (&morfChordPage);
-    pageContainer.addPage (&roseChordPage);
+    pageContainer.addPage (&dualMPadPlaceholder);
+    pageContainer.addPage (&morfChordPlaceholder);
+    pageContainer.addPage (&roseChordPlaceholder);
     pageContainer.addPage (&stepPlaceholder);
     pageContainer.addPage (&slicePlaceholder);
     pageContainer.addPage (&synthPage);
@@ -267,6 +293,11 @@ MainComponent::MainComponent()
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (stepPages[(size_t) t].get());
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (slicePages[(size_t) t].get());
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (drumPages[(size_t) t].get());
+    for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (morfPadPages[(size_t) t].get());
+    for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (omnichordPages[(size_t) t].get());
+    for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (dualMPadPages[(size_t) t].get());
+    for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (morfChordPages[(size_t) t].get());
+    for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (roseChordPages[(size_t) t].get());
 
     // Perform borrows the tracks' instrument pages and hands them back.
     performView.onShow       = [this] { populatePerform(); };
@@ -280,15 +311,13 @@ MainComponent::MainComponent()
     // Step-Seq and Slice-Seq share some messages (steps, transport, ratchet)
     // that go to the page last shown. With several on screen, the one being
     // touched is the one they mean.
+    // Each quarter's page has its own track's router, so touches need no
+    // routing; the server is told which page is in use (WiFi).
     performView.onTouched    = [this] (int t)
     {
-        audioEngine.getSequencers().setActiveTrack (t);
         const int mode = instrumentOf[t];
-        if (juce::isPositiveAndBelow (mode, MidiMorf::NUM_CONTROLLERS) && mode != focusedMode)
-        {
-            focusedMode = mode;
-            eventRouter.sendScreenMode (static_cast<MidiMorf::ControllerMode> (mode));
-        }
+        if (juce::isPositiveAndBelow (mode, MidiMorf::NUM_CONTROLLERS))
+            trackRouters[(size_t) t]->sendScreenMode (static_cast<MidiMorf::ControllerMode> (mode));
     };
     pageContainer.setListener (this);
     addAndMakeVisible (pageContainer);
@@ -536,8 +565,9 @@ juce::String MainComponent::getPageDisplayName (int pageIndex) const
     if (pageIndex == drumGridPageIdx)  return "Drum Grid";
     if (isSeqPage (pageIndex))
     {
+        const int kind = pageKind (pageIndex);
         static const char* names[3] = { "Step-Seq", "Breaker", "Drum Grid" };
-        return names[(pageIndex - seqPageBase) / TrackRack::NumTracks];
+        return kind < 3 ? juce::String (names[kind]) : controllerNames[(int) controllerKinds[kind - 3]];
     }
     if (pageIndex == drumKitPageIdx)   return "Drums";
     if (pageIndex == noteEditorPageIdx) return "Editor";
@@ -562,13 +592,7 @@ void MainComponent::setInstrument (int track, int mode)
     if (! isInstrument)
         mode = -1;
 
-    // Sequencers: every track has its own. A live controller is still one
-    // page, so it moves.
-    if (! isSequencer (mode))
-        for (int t = 0; t < TrackRack::NumTracks; ++t)
-            if (t != track && mode >= 0 && instrumentOf[t] == mode)
-                instrumentOf[t] = -1;
-
+    // Every track has its own copy of every instrument, so nothing moves.
     instrumentOf[track] = mode;
 
     auto& seqs = audioEngine.getSequencers();
@@ -592,8 +616,6 @@ void MainComponent::setInstrument (int track, int mode)
     else
     {
         seqs.setKind (track, LocalSequencers::Kind::None);
-        if (mode >= 0)
-            eventRouter.setTrackFor (static_cast<MidiMorf::ControllerMode> (mode), track);
     }
 }
 
@@ -625,20 +647,17 @@ int MainComponent::trackOfPage (int pageIndex) const
 
     if (isSeqPage (pageIndex))
     {
-        const int t = (pageIndex - seqPageBase) % TrackRack::NumTracks;
+        const int t = pageTrack (pageIndex);
         return pageOf (t) == pageIndex ? t : -1;
     }
-
-    for (int t = 0; t < TrackRack::NumTracks; ++t)
-        if (instrumentOf[t] == pageIndex)
-            return t;
     return -1;
 }
 
 int MainComponent::pageOf (int track) const
 {
     const int inst = juce::isPositiveAndBelow (track, TrackRack::NumTracks) ? instrumentOf[track] : -1;
-    return isSequencer (inst) ? seqPageIdx (whichSequencer (inst), track) : inst;
+    const int kind = kindOf (inst);
+    return kind >= 0 ? seqPageIdx (kind, track) : -1;
 }
 
 bool MainComponent::pageIsSound (int pageIndex) const
@@ -1361,7 +1380,6 @@ void MainComponent::migrateBreak (int track, juce::PropertySet& pages)
 // in the same words as the top strip.
 void MainComponent::populatePerform()
 {
-    focusedMode = -1;
     for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
         const int inst = pageOf (t);
@@ -1489,18 +1507,22 @@ void MainComponent::pageChanged (int newPageIndex)
     // the server (which keeps no per-page memory) gets its whole state.
     if (isSeqPage (newPageIndex))
     {
-        const int t = (newPageIndex - seqPageBase) % TrackRack::NumTracks;
-        const int kind = (newPageIndex - seqPageBase) / TrackRack::NumTracks;
+        const int t = pageTrack (newPageIndex), kind = pageKind (newPageIndex);
+        auto& router = *trackRouters[(size_t) t];
         audioEngine.getSequencers().setActiveTrack (t);
         if (kind == KindStep)
         {
-            eventRouter.sendScreenMode (MidiMorf::ControllerMode::StepSequencer);
+            router.sendScreenMode (MidiMorf::ControllerMode::StepSequencer);
             stepPage (t).pushFullState();
         }
         else if (kind == KindSlice)
         {
-            eventRouter.sendScreenMode (MidiMorf::ControllerMode::SliceSequencer);
+            router.sendScreenMode (MidiMorf::ControllerMode::SliceSequencer);
             slicePage (t).pushFullState();
+        }
+        else if (kind >= 3)
+        {
+            router.sendScreenMode (controllerKinds[kind - 3]);
         }
     }
 
@@ -1555,10 +1577,18 @@ void MainComponent::saveNow()
     // The project. Page settings go through a PropertySet, as they always
     // have, and ride along as one child.
     juce::PropertySet pageState;
-    morfPadPage.saveState (pageState);
-    dualMPadPage.saveState (pageState);
-    morfChordPage.saveState (pageState);
-    roseChordPage.saveState (pageState);
+    // Each track's controller pages keep their own settings (scales, keys,
+    // voicings), one set per track.
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+    {
+        juce::PropertySet ps;
+        morfPadPages[(size_t) t]->saveState (ps);
+        dualMPadPages[(size_t) t]->saveState (ps);
+        morfChordPages[(size_t) t]->saveState (ps);
+        roseChordPages[(size_t) t]->saveState (ps);
+        if (auto xml = ps.createXml ("TrackPages"))
+            pageState.setValue ("track_pages_" + juce::String (t), xml.get());
+    }
     fxPage.saveState (pageState);
     audioEngine.getSequencers().saveState (pageState);
     for (int t = 0; t < TrackRack::NumTracks; ++t)
@@ -1673,10 +1703,20 @@ void MainComponent::restoreState()
             projectPages.restoreFromXml (*xml);
     juce::PropertySet& pages = project.isValid() ? projectPages : static_cast<juce::PropertySet&> (*settings);
 
-    morfPadPage.restoreState (pages);
-    dualMPadPage.restoreState (pages);
-    morfChordPage.restoreState (pages);
-    roseChordPage.restoreState (pages);
+    // A project from before per-track pages had one set: every track's copy
+    // starts from it.
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+    {
+        juce::PropertySet own;
+        const auto xml = pages.getXmlValue ("track_pages_" + juce::String (t));
+        if (xml != nullptr)
+            own.restoreFromXml (*xml);
+        juce::PropertySet& ps = xml != nullptr ? own : pages;
+        morfPadPages[(size_t) t]->restoreState (ps);
+        dualMPadPages[(size_t) t]->restoreState (ps);
+        morfChordPages[(size_t) t]->restoreState (ps);
+        roseChordPages[(size_t) t]->restoreState (ps);
+    }
     fxPage.restoreState (pages);
     audioEngine.getSequencers().restoreState (pages);
     for (int t = 0; t < TrackRack::NumTracks; ++t)

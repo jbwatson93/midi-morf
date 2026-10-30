@@ -693,7 +693,9 @@ bool MainComponent::pageIsSound (int pageIndex) const
 
 // First tap: the track's instrument. Tapping the lit track again flips
 // between its instrument and its sound. A track with no instrument goes
-// straight to its sound; an empty track opens Home to set it up.
+// straight to its sound; an empty track opens Session to set it up. In
+// Perform (iPad), where the instruments are all showing, a tap opens the
+// track's sound.
 void MainComponent::trackTapped (int track)
 {
     const int page = pageContainer.getCurrentPage();
@@ -701,7 +703,14 @@ void MainComponent::trackTapped (int track)
     const bool hasInstrument = instrumentOf[track] >= 0;
     const bool hasSound      = audioEngine.getTrackSound (track) != AudioEngine::Sound::Empty;
 
-    if (onThisTrack && ! pageIsSound (page) && hasSound)
+    // In Perform every track's instrument is already on screen, so a track
+    // tap opens its sound.
+    if (page == performPageIdx)
+    {
+        if (hasSound) showSound (track);
+        else          pageContainer.setPage (homePageIdx);
+    }
+    else if (onThisTrack && ! pageIsSound (page) && hasSound)
         showSound (track);
     else if (hasInstrument)
         showInstrument (track);

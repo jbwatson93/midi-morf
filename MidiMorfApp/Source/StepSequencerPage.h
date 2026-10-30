@@ -112,6 +112,7 @@ public:
 
     // Steps beyond the pattern length are dimmed — they exist but never play.
     void setPatternLength (int len)  { patternLength = juce::jlimit (1, MAX_STEPS, len); repaint(); }
+    void setRangeStart (int s)       { rangeStart = juce::jlimit (0, MAX_STEPS - 1, s); repaint(); }
     void setPlayhead (int step)      { if (step != playhead) { playhead = step; repaint(); } }
     void setRests (const std::array<bool, MAX_STEPS>& r) { rests = r; repaint(); }
 
@@ -128,7 +129,7 @@ public:
             auto lane = juce::Rectangle<float> (b.getX() + laneW * i, b.getY(),
                                                 laneW, b.getHeight()).reduced (laneW * 0.16f, 0.0f);
 
-            const bool active   = (i < patternLength);
+            const bool active   = (i >= rangeStart && i < rangeStart + patternLength);
             const bool rested   = rests[(size_t) i];
             const bool isPlaying = (i == playhead);
 
@@ -233,6 +234,7 @@ private:
     std::array<bool, MAX_STEPS> rests { };
     int numSteps = 16;
     int patternLength = MAX_STEPS;
+    int rangeStart = 0;
     int playhead = -1;
     int quantiseSteps = 0;
     RenderMode renderMode = RenderMode::Bar;
@@ -323,6 +325,89 @@ private:
 };
 
 //==============================================================================
+//==============================================================================
+// The range bracket under the step boxes: which steps play. Drag either end,
+// or the middle to slide the whole range; it snaps to steps.
+class RangeBar : public juce::Component
+{
+public:
+    static constexpr int Steps = 16;
+
+    std::function<void (int start, int end)> onChange;   // end inclusive
+
+    void setRange (int s, int e) { start = s; end = e; repaint(); }
+    void setAccent (juce::Colour c) { accent = c; repaint(); }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat();
+        const float x0 = xOf (start) + 2.0f, x1 = xOf (end + 1) - 2.0f, mid = r.getCentreY();
+
+        // The bracket: a bar with an upturned end at each side.
+        g.setColour (accent.withAlpha (0.9f));
+        g.fillRoundedRectangle (juce::Rectangle<float> (x0, mid - 1.5f, x1 - x0, 3.0f), 1.5f);
+        for (float x : { x0, x1 - 8.0f })
+            g.fillRoundedRectangle (juce::Rectangle<float> (x, r.getY() + 2.0f, 8.0f, r.getHeight() - 4.0f), 3.0f);
+
+        const juce::String text = start == end ? "step " + juce::String (start + 1)
+                                               : "steps " + juce::String (start + 1) + juce::String::fromUTF8 (" \xe2\x80\x93 ") + juce::String (end + 1);
+        g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+        const float tw = juce::jmin (x1 - x0 - 16.0f, 90.0f);
+        if (tw > 30.0f)
+        {
+            const auto label = juce::Rectangle<float> (tw, r.getHeight()).withCentre ({ (x0 + x1) * 0.5f, mid });
+            g.setColour (juce::Colour (0xff15131F));
+            g.fillRoundedRectangle (label, 3.0f);
+            g.setColour (accent.brighter (0.4f));
+            g.drawText (text, label, juce::Justification::centred);
+        }
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        const int step = stepAt (e.x);
+        grabOffset = step - start;
+        if      (std::abs (step - start) <= 1 && step <= (start + end) / 2) grab = Grab::Start;
+        else if (std::abs (step - end) <= 1)                              grab = Grab::End;
+        else if (step > start && step < end)                              grab = Grab::Move;
+        else                                                              grab = step < start ? Grab::Start : Grab::End;
+        mouseDrag (e);
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        const int step = stepAt (e.x);
+        int s = start, en = end;
+        switch (grab)
+        {
+            case Grab::Start: s = juce::jmin (step, end); break;
+            case Grab::End:   en = juce::jmax (step, start); break;
+            case Grab::Move:
+            {
+                const int len = end - start;
+                s = juce::jlimit (0, Steps - 1 - len, step - grabOffset);
+                en = s + len;
+                break;
+            }
+        }
+        if (s != start || en != end)
+        {
+            setRange (s, en);
+            if (onChange) onChange (start, end);
+        }
+    }
+
+private:
+    enum class Grab { Start, End, Move };
+
+    float xOf (int step) const { return (float) getWidth() * (float) step / (float) Steps; }
+    int stepAt (int x) const   { return juce::jlimit (0, Steps - 1, x * Steps / juce::jmax (1, getWidth())); }
+
+    int start = 0, end = Steps - 1, grabOffset = 0;
+    Grab grab = Grab::End;
+    juce::Colour accent { 0xff7C6BD8 };
+};
+
 class StepSequencerContent : public juce::Component
 {
 public:
@@ -339,13 +424,18 @@ public:
         addCombo (scaleCombo, { "Major","Minor","Penta","Blues","Chrom" },              1, "Scale");
         addCombo (baseCombo,  { "C0","C1","C2","C3","C4","C5","C6","C7","C8" },         3, "Base");
         addCombo (rangeCombo, { "1 oct","2 oct","3 oct","4 oct","5 oct" },              3, "Range");
-        addCombo (lenCombo,   { }, 16, "Len");
         addCombo (swingCombo, { "0%","10%","20%","30%","40%","50%","60%" },             1, "Swing");
         addCombo (rateCombo,  { "1/4","1/8","1/8T","1/16","1/16T","1/32" },             4, "Rate");
 
-        for (int i = 1; i <= NUM_STEPS; ++i)
-            lenCombo.addItem (juce::String (i), i);
-        lenCombo.setSelectedId (NUM_STEPS, juce::dontSendNotification);
+        // ── Range bracket (replaces a Len dropdown) ──────────────────────────
+        rangeBar.setAccent (stepSeqAccent);
+        rangeBar.onChange = [this] (int s, int e)
+        {
+            rangeStart = s;
+            rangeEnd = e;
+            pushFullState();   // the engine plays the steps in the range, from 0
+        };
+        addAndMakeVisible (rangeBar);
 
         // ── Ratchet roller — momentary, whole-sequence note repeat ───────────
         static const char* rollerLabels[4] = { "1/4", "1/8", "1/16", "1/32" };
@@ -433,7 +523,8 @@ public:
     SeqPattern getPattern() const
     {
         SeqPattern p;
-        p.length = lenCombo.getSelectedId();
+        p.length = rangeLength();
+        p.start = rangeStart;
         for (int i = 0; i < NUM_STEPS; ++i)
         {
             const auto& s = steps[(size_t) i];
@@ -452,10 +543,9 @@ public:
                                   (int) s.velocity, (int) s.mod, (int) s.gate, s.rest };
             refreshStepBox (i);
         }
-        lenCombo.setSelectedId (juce::jlimit (1, NUM_STEPS, p.length), juce::dontSendNotification);
-        lanes.setPatternLength (lenCombo.getSelectedId());
-        for (int i = 0; i < NUM_STEPS; ++i)
-            stepBoxes[i]->setActive (i < lenCombo.getSelectedId());
+        rangeStart = juce::jlimit (0, NUM_STEPS - 1, p.start);
+        rangeEnd = juce::jlimit (rangeStart, NUM_STEPS - 1, rangeStart + p.length - 1);
+        refreshRange();
         refreshLanes();
     }
 
@@ -522,14 +612,14 @@ public:
 
         const int comboGap = 5;
         juce::ComboBox* combos[] = { &keyCombo, &scaleCombo, &baseCombo, &rangeCombo,
-                                     &lenCombo, &swingCombo, &rateCombo };
+                                     &swingCombo, &rateCombo };
 
         // The roller takes a fixed slice; the dropdowns share what is left.
         const int rollerW = juce::jlimit (120, 200, top.getWidth() / 4);
         auto rollerArea = top.removeFromRight (rollerW);
         top.removeFromRight (10);
 
-        const int comboW = (top.getWidth() - comboGap * 6) / 7;
+        const int comboW = (top.getWidth() - comboGap * 5) / 6;
 
         for (auto* c : combos)
         {
@@ -542,9 +632,11 @@ public:
         for (auto* b : rollerButtons)
             b->setBounds (rollerArea.removeFromLeft (rollerBtnW).reduced (1, 0));
 
-        // Bottom: step boxes, then the transport strip.
+        // Bottom: step boxes, the range bracket, then the transport strip.
         transport.setBounds (area.removeFromBottom (30));
-        area.removeFromBottom (6);
+        area.removeFromBottom (4);
+        rangeBar.setBounds (area.removeFromBottom (24));
+        area.removeFromBottom (3);
         auto boxRow = area.removeFromBottom (juce::jlimit (34, 52, area.getHeight() / 5));
         area.removeFromBottom (6);
 
@@ -582,8 +674,10 @@ private:
         addAndMakeVisible (c);
     }
 
-    void showPlayhead (int step)
+    // The engine counts from the range's start; the boxes from step 1.
+    void showPlayhead (int engineStep)
     {
+        const int step = engineStep >= 0 ? engineStep + rangeStart : -1;
         if (step == playhead)
             return;
 
@@ -604,7 +698,7 @@ private:
 
     void pushConfig()
     {
-        eventRouter.sendSeqConfig ((uint8_t) lenCombo.getSelectedId(),
+        eventRouter.sendSeqConfig ((uint8_t) rangeLength(),
                                    (uint8_t) (rateCombo.getSelectedId() - 1),
                                    direction,
                                    (uint8_t) ((swingCombo.getSelectedId() - 1) * 10),
@@ -613,16 +707,28 @@ private:
                                    (uint8_t) (baseCombo.getSelectedId() - 1),
                                    (uint8_t) rangeCombo.getSelectedId());
 
-        lanes.setPatternLength (lenCombo.getSelectedId());
-
-        for (int i = 0; i < NUM_STEPS; ++i)
-            stepBoxes[i]->setActive (i < lenCombo.getSelectedId());
+        refreshRange();
     }
 
+    int rangeLength() const { return rangeEnd - rangeStart + 1; }
+
+    // Steps outside the range are dimmed; the bracket shows it.
+    void refreshRange()
+    {
+        lanes.setPatternLength (rangeLength());
+        lanes.setRangeStart (rangeStart);
+        for (int i = 0; i < NUM_STEPS; ++i)
+            stepBoxes[i]->setActive (i >= rangeStart && i <= rangeEnd);
+        rangeBar.setRange (rangeStart, rangeEnd);
+    }
+
+    // The engine has only the steps in the range, numbered from 0.
     void pushStep (int i)
     {
+        if (i < rangeStart || i > rangeEnd)
+            return;
         const auto& s = steps[(size_t) i];
-        eventRouter.sendSeqStepSet ((uint8_t) i, (uint8_t) s.degree, (uint8_t) s.velocity,
+        eventRouter.sendSeqStepSet ((uint8_t) (i - rangeStart), (uint8_t) s.degree, (uint8_t) s.velocity,
                                     (uint8_t) s.gate, (uint8_t) s.mod, s.rest);
     }
 
@@ -822,7 +928,9 @@ private:
 
     GlassButtonLookAndFeel glassLaf { stepSeqPagePalette, stepSeqAccent };
 
-    juce::ComboBox keyCombo, scaleCombo, baseCombo, rangeCombo, lenCombo, swingCombo, rateCombo;
+    juce::ComboBox keyCombo, scaleCombo, baseCombo, rangeCombo, swingCombo, rateCombo;
+    RangeBar rangeBar;
+    int rangeStart = 0, rangeEnd = NUM_STEPS - 1;
     juce::OwnedArray<RollerButton> rollerButtons;
     juce::OwnedArray<juce::TextButton> dirButtons, modeButtons;
     juce::OwnedArray<StepBox> stepBoxes;

@@ -228,8 +228,10 @@ void MainComponent::resized()
 
     // The rail lives OUTSIDE the safe area, in the rounded-corner gutter on
     // the right edge — dead space reclaimed. Home on top, Play/Stop at the
-    // bottom, the four tracks sharing what's between.
-    auto rail = getLocalBounds().reduced (0, 10);
+    // bottom, the four tracks sharing what's between. 30 pt from the top and
+    // bottom so the screen's rounded corners (~60 pt radius on recent
+    // iPhones) don't clip Home and Play.
+    auto rail = getLocalBounds().reduced (0, 30);
     rail = rail.withX (rail.getRight() - btnW - floatingPadR).withWidth (btnW);
     const int gap = 6;
     homeButton.setBounds (rail.removeFromTop (44));

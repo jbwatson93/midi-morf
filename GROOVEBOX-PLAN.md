@@ -19,26 +19,13 @@ A **Session** screen holds the clips: tracks are rows, and scenes flow left to r
 
 ## Business model
 
-**The app is a free download. A one-time ~$4.99 "Groovebox" in-app purchase unlocks arranging.** Free is for playing, paid is for arranging.
+**Decided 2026-10-30: the whole app is a paid download, about $4.99, on the App Store and Google Play. No in-app purchase, no unlock, nothing locked.** Everything in this plan, including Session, the editors, recording and the mixer, is in the app for everyone who buys it.
 
-| Free (everyone) | Groovebox unlock |
-|---|---|
-| All 7 controllers | **Session:** scenes 2 and up, multiple patterns per track |
-| **Session with one scene**: launch, edit, and pick each track's input and source | Recording controller playing into clips |
-| All 4 tracks playing at once | **Mixer:** level, pan, mute/solo, sends, per-track FX |
-| Every source + its editor + all presets | Saving multiple projects |
-| Sequencers on the phone's clock, one pattern each | |
-| Global transport (sync, BPM, tap) | |
-| **Morf FX punch-in effects** on the master bus | |
-| Volume on each source page | |
-| iPad Perform view: all 4 tracks playable on one screen (see open question 8) | |
-| WiFi/DAW mode + the free Mac server | |
-
-- **Rule:** nothing that has shipped free ever becomes paid.
-- **The sequencers are now free.** `ClockedSequencer::enabled` and the `PackEntitlement` message were only there for the pack, so take them out.
-- **One free scene instead of a locked preview** (JB's idea). Free users get real use out of Session. Scenes 2 and up and the mixer show a lock, and the **Unlock** button lives in a fixed rectangle at the bottom right of Session, not in a pop-up. A demo project can still ship as the first thing people open.
-- **No server and no receipt checks.** The app stores the unlock locally, so it works offline. Settings gets a **Restore Purchases** button. Family Sharing is on.
-- **Join Apple's Small Business Program** (15% commission instead of 30%).
+- **Why:** an unlock means lock badges, a purchase flow, Restore Purchases and two versions of every screen. All of that is friction. The goal is an app people see JB play and want, and one price says that plainly.
+- **Earlier plans are replaced:** the free app with a ~$4.99 Groovebox unlock (2026-10-29), and before that the Creative Sequencer Pack. `ClockedSequencer::enabled` and the `PackEntitlement` message only existed for the pack, so take them out.
+- **People who already have the free app** keep it and get the update; the App Store doesn't charge existing users when the price changes.
+- **Join Apple's Small Business Program** (15% commission instead of 30%). Google Play's service fee is also 15% on the first $1M a year.
+- **A demo project** still ships as the first thing people open, so the app sounds good in the first ten seconds.
 
 ## Architecture
 
@@ -106,14 +93,14 @@ These screens build on the real app: the per-page dark palettes, and the wooden 
   - **Hidden.**
   - **Compact:** per track, a **Sound ✎** button showing the preset name, then fader, pan and send.
   - **Full:** Sound ✎, insert FX, pan plus 2 sends, fader, mute and solo, with master in the right column. The grid shrinks to a coloured map you can still tap.
-- **Unlock rectangle** at the bottom right, under the track column.
+- ~~Unlock rectangle at the bottom right~~ — dropped with the unlock (2026-10-30). The space is free for something else (tempo, or the master level).
 
 ### The wooden rail
 
 | Where | Top | Middle | Bottom |
 |---|---|---|---|
 | **Session** | Menu (same spot as on every page) | **1–4**: jump to that track's playing page | Global **Play/Stop** (long-press for BPM and tap) |
-| **Controller pages** | Menu | **T1–T4 badge** (which track this page plays; tap to switch track or go back to Session), **Sound** (replaces Synth; edits this track's source), Fave | **● Rec** for clip recording (paid) |
+| **Controller pages** | Menu | **T1–T4 badge** (which track this page plays; tap to switch track or go back to Session), **Sound** (replaces Synth; edits this track's source), Fave | **● Rec** for clip recording |
 
 **Sound ✎ (mixer strip) and Sound (rail) open the same thing:** the track's source editor. Leaving the editor returns you to wherever you came from.
 
@@ -141,7 +128,7 @@ These screens build on the real app: the per-page dark palettes, and the wooden 
 
 ## Phases
 
-Phases 1–4 are entirely free-side, so they can ship as free updates while the paid half is built. Each phase is its own branch and PR.
+Each phase is its own branch, merged to main when JB has played it. The "(free)" / "(paid)" on the earlier phase names are from the unlock plan and no longer mean anything: it's all one paid app now.
 
 ### Phase 0 — Land what exists
 
@@ -222,41 +209,54 @@ Phases 1–4 are entirely free-side, so they can ship as free updates while the 
 
 ### Phase 4 — Drum synth + Drum Grid (free)
 
-- [ ] **Drum Synth** source: 8 voices on fixed notes (kick, snare, clap, closed hat, open hat, tom, rim, perc), 2–4 knobs each. It reuses the synthesis already in `BreakLibrary`.
-- [ ] **Drum Grid** input: 8 lanes × 16 steps, with per-step velocity and Euclidean fill as a mode. This is the sequencer from the old plan's WS-1, now free.
-- [ ] Factory kits by genre (Boom Bap, Jungle, House, Trap, Lo-fi...).
+- [x] **Drum Synth** source: 8 voices on fixed notes (kick, snare, clap, closed hat, open hat, tom, rim, perc), 2–4 knobs each. It reuses the synthesis already in `BreakLibrary`.
+- [x] **Drum Grid** input: 8 lanes × 16 steps, with per-step velocity and Euclidean fill as a mode. This is the sequencer from the old plan's WS-1, now free.
+- [x] Factory kits by genre (Boom Bap, Jungle, House, Trap, Lo-fi...).
 
-### Phase 5 — Session + projects (paid)
+Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit Drive and Dust) into three one-shot takes and plays them back, GM notes, hats choke. The Drum Grid (`DrumGridPage.h`) runs on the local clock with sample-exact swing, loads the built-in break patterns as beats, and saves its pattern in the project. Kits: 808, Boom Bap, Jungle, House, Trap, Lo-fi, Disco, Techno. Not yet: saving your own kits; the Drum Grid in WiFi mode (it always plays the phone's sounds).
 
-- [ ] Clip model. A sequencer clip stores its whole pattern, so patterns are finally saved.
+### Phase 5 — Session + projects
+
+- [ ] **One clip model for everything:** a clip is a list of notes (start, length, pitch, velocity) of 1–8 bars, whatever instrument made it. Step-Seq and Drum Grid patterns convert to and from it, so every pattern is saved and every clip can be opened in the editors in Phase 6.
 - [ ] **Session screen** as in *Screens*: tracks as rows, scenes left to right, the track column, the 1–4 / Play rail, launch quantize (1 bar / 1 beat / off).
 - [ ] Compact mixer row (Sound ✎, fader, pan, send) and the drag handle. The full mixer arrives in Phase 7.
-- [ ] Clip editing opens the matching page (step grid, slice grid...).
-- [ ] Save, load and duplicate projects. Free users keep the single autosaved state.
+- [ ] Clip editing opens the matching editor (Step-Seq, Drum Grid, slice grid, or the piano roll / drum editor).
+- [ ] Save, load and duplicate projects.
 - [ ] Built-in **demo project**, made with JB, opened on first launch.
-- [ ] `isGrooveboxUnlocked()` decides **scene 1 only vs all scenes** and whether mixer controls are locked. Locked controls show a lock badge, and the bottom-right Unlock rectangle holds the purchase. During development it's always true.
 
-### Phase 6 — Clip recording (paid)
+### Phase 6 — Clip recording + editors
 
-- [ ] Arm a controller track and record what you play, snapped to the grid, into a looping clip (1/2/4/8 bars).
+- [ ] Arm a controller track and record what you play into a looping clip (1/2/4/8 bars), with quantize on or off.
 - [ ] Overdub, undo the last pass, and a count-in.
-- [ ] A simple piano-roll view to fix notes. This could slip to a later version.
+- [ ] **Piano roll** for melodic tracks: draw, move, resize and delete notes, a velocity lane, snap and zoom, and the instrument's scale highlighted. **Required** (it used to be "could slip").
+- [ ] **Drum editor** for drum tracks: one row per drum, named like the Drum Grid lanes, hits that can sit off the grid, per-hit velocity, quantize and nudge. Recorded finger drumming lands here; the Drum Grid stays the quick 16-step way in.
 
-### Phase 7 — Mixer (paid)
+### Phase 7 — Mixer
 
 - [ ] Per track: level, pan, mute, solo, and 2 sends (Delay, Reverb) on shared send buses.
 - [ ] Per-track insert FX, reusing `MasterFx`.
 - [ ] Master level, plus a limiter so 4 tracks can't clip.
 - [ ] The full snap point of the Session mixer (see *Screens*). There's no separate Mixer page.
 
-### Phase 8 — Unlock + release
+### Phase 8 — iOS release ($4.99)
 
-- [ ] `juce_product_unlocking`. Non-consumable product `groovebox_unlock` in App Store Connect with Family Sharing on.
-- [ ] Restore Purchases in Settings. Lock overlays with the price shown.
-- [ ] Testing: Xcode StoreKit configuration file plus sandbox testers. No real charges.
-- [ ] App Store listing: a screen recording of the groovebox, and copy that says "free to play, $4.99 to arrange".
+- [ ] Set the price in App Store Connect. No StoreKit, no unlock code.
+- [ ] App Store listing: a screen recording of JB playing the groovebox.
 - [ ] retro-relic.com update.
 - [ ] Mac server release if any protocol bytes changed (the External source).
+
+### Phase 9 — Android ($4.99 on Google Play)
+
+JUCE builds for Android (Projucer's Android exporter plus Android Studio, with Oboe for low-latency audio), and most of the app is plain C++ already. What needs doing:
+
+- [ ] **Android exporter** in the `.jucer`: landscape only, minimum SDK, microphone permission, and the same resources.
+- [ ] **The Objective-C++ files:** `Main.mm`, `MainComponent.mm` and `Haptics.mm` only compile on Apple. Move the iOS parts (UIKit, AVAudioSession mic permission, kiosk/status bar) behind small platform files and keep the shared code in `.cpp`.
+- [ ] **Tilt:** `AccelerometerManager.h` uses CoreMotion. Android needs its own sensor reader, or tilt is off at first.
+- [ ] **Haptics:** Android vibration, or none at first.
+- [ ] **Files:** Documents/Projects, Recordings and Presets map to app storage. Importing audio goes through Android's file picker.
+- [ ] **WiFi mode:** server discovery already uses JUCE's cross-platform `NetworkServiceDiscovery`, so it should just work. Check it on a real device.
+- [ ] **Audio latency on test phones:** Android varies a lot by device. Test on at least one cheap phone and one recent Pixel or Samsung.
+- [ ] Google Play Console: developer account (one-time $25), paid app at $4.99, store listing.
 
 ## Open questions
 
@@ -266,12 +266,13 @@ Phases 1–4 are entirely free-side, so they can ship as free updates while the 
 4. **Controller pages without a track:** they play the selected track? Or is a controller with no track silent?
 5. **Clip length limit** for recorded MIDI: 8 bars?
 6. **Oldest supported iPhone.** This sets the CPU budget and the voice caps.
-7. **Android:** same model through Play Billing. When?
-8. **Is the iPad Perform view free or paid?** By the rule, playing is free, so it's in the free column. It is also the best-looking feature on iPad, though, so decide on purpose.
+7. ~~Android: same model through Play Billing. When?~~ Paid app on Google Play, Phase 9 (2026-10-30).
+8. ~~Is the iPad Perform view free or paid?~~ Moot: the whole app is paid (2026-10-30).
 9. **Perform view on large iPhones:** a 2-track split (one on top of the other) might fit on Pro Max models. Try it after the iPad version.
 
 ## Risks
 
 - **CPU:** 4 sources plus FX on older phones. Mitigate with voice caps, shared tables and measuring early in Phase 1.
 - **Routing rewrite:** `EventRouter` and the handlers are used by every controller. Phase 1 should keep each controller's notes exactly the same and only change where they go.
-- **Scope:** this is several months of work. Phases 1–4 ship as free updates, which keeps growth going while the paid half is built.
+- **Scope:** this is several months of work.
+- **Paid upfront means fewer downloads** than a free app would get. The bet is that videos of JB playing it sell it.

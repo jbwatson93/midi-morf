@@ -6,6 +6,7 @@
 #include "PunchFx.h"
 #include "WavetablePresets.h"
 #include "SampleRecorder.h"
+#include "DrumSynth.h"
 
 //==============================================================================
 // Owns the iOS audio device, the track sources and the track rack. The device
@@ -13,15 +14,15 @@
 // Local-mode clock in between. Stereo out; the mic comes on only to record
 // a sample.
 //
-// Each track has its own synth and its own sampler, and plays one of them
+// Each track has its own synth, sampler and drum synth, and plays one of them
 // (or nothing). Defaults: T1 Synth, T2 Synth with the Acid Bass preset, T3
-// Sampler slicing the Amen, T4 empty.
+// Sampler slicing the Amen, T4 Drums.
 class AudioEngine
 {
 public:
     // Values are saved in projects. Sampler was "Breaks" before it played
     // keys and one-shots too.
-    enum class Sound { Empty = 0, Synth = 1, Sampler = 2 };
+    enum class Sound { Empty = 0, Synth = 1, Sampler = 2, Drums = 3 };
 
     AudioEngine()
     {
@@ -31,6 +32,8 @@ public:
             rack.addToPool (synths[(size_t) t].get());
             samplers[(size_t) t] = std::make_unique<SamplerSource>();
             rack.addToPool (samplers[(size_t) t].get());
+            drums[(size_t) t] = std::make_unique<DrumSource>();
+            rack.addToPool (drums[(size_t) t].get());
         }
         samplers[2]->setBuiltInBreak (0);   // the Amen, for the slicer
 
@@ -42,6 +45,7 @@ public:
         setTrackSound (0, Sound::Synth);
         setTrackSound (1, Sound::Synth);
         setTrackSound (2, Sound::Sampler);
+        setTrackSound (3, Sound::Drums);
         soundNames[1] = "Acid Bass";
     }
 
@@ -60,6 +64,7 @@ public:
         sounds[(size_t) track] = sound;
         rack.setSource (track, sound == Sound::Synth   ? (SoundSource*) synths[(size_t) track].get()
                              : sound == Sound::Sampler ? (SoundSource*) samplers[(size_t) track].get()
+                             : sound == Sound::Drums   ? (SoundSource*) drums[(size_t) track].get()
                                                        : nullptr);
     }
 
@@ -170,6 +175,9 @@ public:
     // A track's own sampler, whether or not the track is playing it.
     SamplerSource& getTrackSampler (int track) noexcept { return *samplers[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
 
+    // A track's own drum synth, whether or not the track is playing it.
+    DrumSource& getTrackDrums (int track) noexcept { return *drums[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
+
     // Tilt is a global mod source: every synth hears it.
     void setTilt (float x, float y)
     {
@@ -198,6 +206,7 @@ public:
         {
             case Sound::Synth:  return soundNames[(size_t) track];
             case Sound::Sampler: return samplers[(size_t) track]->getSampleName();
+            case Sound::Drums:   return drums[(size_t) track]->getKitName();
             default:            return "Empty";
         }
     }
@@ -231,6 +240,7 @@ private:
     // T1 keeps whatever patch an older install had, so it isn't called Init.
     std::array<juce::String, TrackRack::NumTracks> soundNames { "Synth", "Acid Bass", "Init", "Init" };
     std::array<std::unique_ptr<SamplerSource>, TrackRack::NumTracks> samplers;
+    std::array<std::unique_ptr<DrumSource>, TrackRack::NumTracks> drums;
     PunchFx punch;
     TrackRack rack;
     LocalSequencers sequencers { rack };

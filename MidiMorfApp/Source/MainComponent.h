@@ -16,6 +16,8 @@
 #include "SettingsPage.h"
 #include "HomePage.h"
 #include "SamplerPage.h"
+#include "DrumGridPage.h"
+#include "DrumKitPage.h"
 #include "PerformView.h"
 #include "NetworkClient.h"
 #include "AccelerometerManager.h"
@@ -96,6 +98,7 @@ private:
     int  focusedMode = -1;   // the page shared sequencer messages go to, in Perform
     void populatePerform();
     void migrateBreak (int track, juce::PropertySet& pages);
+    void audition (int track, int note, bool down);
 
     //==========================================================================
     PageContainer pageContainer;
@@ -114,6 +117,8 @@ private:
     std::unique_ptr<HomePage> homePage;
     SamplerPage samplerPage;
     PerformView performView;   // iPad only
+    DrumGridPage drumGridPage { audioEngine.getSequencers() };
+    DrumKitPage drumKitPage;
 
     TrackHeader header;
     RailIconButton homeButton { RailIconButton::Kind::Home };

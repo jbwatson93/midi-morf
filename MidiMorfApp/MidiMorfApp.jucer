@@ -83,6 +83,9 @@
       <FILE id="smpPg1" name="SamplerPage.h" compile="0" resource="0" file="Source/SamplerPage.h"/>
       <FILE id="smplr1" name="Sampler.h" compile="0" resource="0" file="Source/Sampler.h"/>
       <FILE id="pTemIk" name="SampleRecorder.h" compile="0" resource="0" file="Source/SampleRecorder.h"/>
+      <FILE id="drm000" name="DrumSynth.h" compile="0" resource="0" file="Source/DrumSynth.h"/>
+      <FILE id="drm001" name="DrumGridPage.h" compile="0" resource="0" file="Source/DrumGridPage.h"/>
+      <FILE id="drm002" name="DrumKitPage.h" compile="0" resource="0" file="Source/DrumKitPage.h"/>
       <FILE id="brkImp" name="BreakImport.h" compile="0" resource="0" file="Source/BreakImport.h"/>
       <FILE id="pnchFx" name="PunchFx.h" compile="0" resource="0" file="Source/PunchFx.h"/>
       <FILE id="wtPrst" name="WavetablePresets.h" compile="0" resource="0" file="Source/WavetablePresets.h"/>

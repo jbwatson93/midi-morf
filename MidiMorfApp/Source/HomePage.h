@@ -35,8 +35,9 @@ public:
         std::function<void()> changed;                            // persist
     };
 
-    // The page indices the right-hand buttons open.
-    struct Pages { int transport, fx, settings, about; };
+    // The page indices the right-hand buttons open, and the Drum Grid's (an
+    // instrument that isn't a ControllerMode).
+    struct Pages { int transport, fx, settings, about, drumGrid; };
 
     HomePage (Callbacks cb, Pages p) : callbacks (std::move (cb)), pages (p)
     {
@@ -123,20 +124,21 @@ private:
     // Instrument choices, as ControllerMode values. Combo ids are mode + 1;
     // "Nothing" is NoneId.
     static constexpr int NoneId = 100;
-    static std::vector<std::pair<int, const char*>> instruments()
+    std::vector<std::pair<int, const char*>> instruments() const
     {
         using CM = MidiMorf::ControllerMode;
         return { { (int) CM::MorfChord, "Morf-Chord" }, { (int) CM::RoseChord, "Rose-Chord" },
                  { (int) CM::Omnichord, "Strum-Chord" }, { (int) CM::MorfPad, "Morf-Pad" },
                  { (int) CM::DualMPad, "Dual M-Pad" },
-                 { (int) CM::StepSequencer, "Step-Seq" }, { (int) CM::SliceSequencer, "Slice-Seq" } };
+                 { (int) CM::StepSequencer, "Step-Seq" }, { (int) CM::SliceSequencer, "Slice-Seq" },
+                 { pages.drumGrid, "Drum Grid" } };
     }
 
     struct Row : public juce::Component
     {
         Row (HomePage& o, int t) : owner (o), track (t)
         {
-            for (auto& [mode, name] : instruments())
+            for (auto& [mode, name] : owner.instruments())
                 instrument.addItem (name, mode + 1);
             instrument.addSeparator();
             instrument.addItem ("Nothing", NoneId);
@@ -152,6 +154,7 @@ private:
 
             sound.addItem ("Synth", 1 + 1);
             sound.addItem ("Sampler", 2 + 1);
+            sound.addItem ("Drums", 3 + 1);
             sound.addItem ("Empty", 0 + 1);
             sound.onChange = [this]
             {

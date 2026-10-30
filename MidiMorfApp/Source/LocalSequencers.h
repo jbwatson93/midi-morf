@@ -6,12 +6,18 @@
 #include "StepSequencerEngine.h"
 #include "SliceSequencerEngine.h"
 #include "MidiMorfProtocol.h"
+#include "DrumSynth.h"
 
 //==============================================================================
 // The sequencers in Local mode: the same engines the server runs, driven by
 // the phone's own clock instead of DAW MIDI clock. Each sequencer plays a
 // track: by default the step sequencer plays T2 (a synth), the slice
-// sequencer T3 (the break player).
+// sequencer T3 (the break player), the drum grid T4 (the drum synth).
+//
+// The drum grid is the phone's own: eight lanes of 16 steps with a velocity
+// each. It fires its steps at the exact sample (swing included) rather than
+// on the 24 PPQN ticks the other two share, so a swung hat lands where it
+// should, not a whole tick early or late.
 //
 // This is the AudioSource the device plays. Each block is cut at clock-tick
 // boundaries, so notes land on the right sample rather than on whatever block
@@ -24,10 +30,13 @@
 class LocalSequencers : public juce::AudioSource
 {
 public:
-    enum Which { Step = 0, Slice = 1 };
+    enum Which { Step = 0, Slice = 1, Drums = 2 };
+    static constexpr int NumSequencers = 3;
 
     // Tracks are 0-based here; the UI calls them T1-T4.
-    static constexpr int DefaultStepTrack = 1, DefaultSliceTrack = 2;
+    static constexpr int DefaultStepTrack = 1, DefaultSliceTrack = 2, DefaultDrumTrack = 3;
+
+    static constexpr int DrumLanes = ::Drums::NumDrums, DrumSteps = 16;
 
     explicit LocalSequencers (TrackRack& r)
         : rack (r),
@@ -72,6 +81,15 @@ public:
                         samplesToTick += samplesPerTick();
                     }
                     n = juce::jmin (remaining, juce::jmax (1, (int) std::ceil (samplesToTick)));
+
+                    if (running[Drums].load())
+                    {
+                        // Where we are between ticks, in ticks.
+                        const double now = (double) globalTick - samplesToTick / samplesPerTick();
+                        fireDueDrumSteps (now);
+                        const int until = (int) std::lround ((drumStepTick (nextDrumSixteenth) - now) * samplesPerTick());
+                        n = juce::jmin (n, juce::jmax (1, until));
+                    }
                 }
 
                 drainEvents();
@@ -100,8 +118,15 @@ public:
 
     void stopAll()
     {
-        wantPlaying[Step].store (false);
-        wantPlaying[Slice].store (false);
+        for (auto& w : wantPlaying)
+            w.store (false);
+    }
+
+    bool isAnyPlaying() const
+    {
+        for (auto& w : wantPlaying)
+            if (w.load()) return true;
+        return false;
     }
 
     // Message thread. The old track gets the sequencer's note-offs (and, if
@@ -115,7 +140,8 @@ public:
         if (tracks[w] == track)
             return;
 
-        sequencer (w).allNotesOff();
+        if (w == Drums) releaseDrumNotes();
+        else            sequencer (w).allNotesOff();
         if (auto* s = dynamic_cast<SamplerSource*> (rack.getSource (tracks[w])))
             s->allNotesOff();   // one-shots ignore the note-offs
         tracks[w] = track;
@@ -134,8 +160,23 @@ public:
     {
         if (! running[w].load())
             return -1;
+        if (w == Drums) return drumStep.load();
         return w == Step ? stepSeq.getCurrentStep() : sliceSeq.getCurrentStep();
     }
+
+    //==========================================================================
+    // The drum grid — message thread. Velocity 0 is an empty step.
+    void setDrumStep (int lane, int step, int velocity)
+    {
+        if (! juce::isPositiveAndBelow (lane, DrumLanes) || ! juce::isPositiveAndBelow (step, DrumSteps))
+            return;
+        const juce::SpinLock::ScopedLockType sl (lock);
+        drumPattern[(size_t) lane][(size_t) step] = (uint8_t) juce::jlimit (0, 127, velocity);
+    }
+
+    // 0..1: how late the off-beat 16ths come, up to half a 16th.
+    void  setDrumSwing (float amount) { drumSwing.store (juce::jlimit (0.0f, 1.0f, amount)); }
+    float getDrumSwing() const        { return drumSwing.load(); }
 
     //==========================================================================
     // Breaks — message thread.
@@ -380,19 +421,67 @@ private:
 
     ClockedSequencer& activeSequencer() { return sliceIsActive ? (ClockedSequencer&) sliceSeq : stepSeq; }
 
+    //==========================================================================
+    // The drum grid's clock — audio thread, under lock.
+
+    // The tick a 16th falls on, swing included. Sixteenths count from the
+    // clock's start, so the grid stays in phase with the other sequencers.
+    double drumStepTick (int sixteenth) const
+    {
+        constexpr int tps = SeqPPQN / 4;
+        return sixteenth * tps + ((sixteenth % 2) == 1 ? drumSwing.load() * tps * 0.5 : 0.0);
+    }
+
+    // Steps fire on the nearest sample.
+    void fireDueDrumSteps (double now)
+    {
+        while ((drumStepTick (nextDrumSixteenth) - now) * samplesPerTick() < 0.5)
+        {
+            // Last step's notes end as the next step starts (a sampler in
+            // Keys mode needs its note-offs; the drum synth ignores them).
+            releaseDrumNotes();
+
+            const int step = nextDrumSixteenth % DrumSteps;
+            for (int lane = 0; lane < DrumLanes; ++lane)
+                if (const int vel = drumPattern[(size_t) lane][(size_t) step]; vel > 0)
+                {
+                    push ({ tracks[Drums], true, DrumChannel, ::Drums::noteFor (lane), vel });
+                    drumSounding[(size_t) lane] = true;
+                }
+
+            drumStep.store (step);
+            ++nextDrumSixteenth;
+        }
+    }
+
+    void releaseDrumNotes()
+    {
+        for (int lane = 0; lane < DrumLanes; ++lane)
+            if (std::exchange (drumSounding[(size_t) lane], false))
+                push ({ tracks[Drums], false, DrumChannel, ::Drums::noteFor (lane), 0 });
+    }
+
     // Audio thread, under lock.
     void updateTransport()
     {
         bool anyWanted = false;
 
-        for (int w = 0; w < 2; ++w)
+        for (int w = 0; w < NumSequencers; ++w)
         {
             const bool want = wantPlaying[w].load();
             anyWanted |= want;
 
             if (! want && running[w].load())
             {
-                sequencer (w).clockStop();
+                if (w == Drums)
+                {
+                    releaseDrumNotes();
+                    drumStep.store (-1);
+                }
+                else
+                {
+                    sequencer (w).clockStop();
+                }
                 running[w].store (false);
 
                 if (w == Slice)
@@ -416,10 +505,17 @@ private:
     // Audio thread, under lock.
     void tick()
     {
-        for (int w = 0; w < 2; ++w)
+        for (int w = 0; w < NumSequencers; ++w)
         {
             if (wantPlaying[w].load() && ! running[w].load() && globalTick % (SeqPPQN / 4) == 0)
             {
+                if (w == Drums)
+                {
+                    nextDrumSixteenth = globalTick / (SeqPPQN / 4);   // fires right after this tick
+                    running[w].store (true);
+                    continue;
+                }
+
                 if (globalTick == 0)
                     sequencer (w).clockStart();
                 else
@@ -427,7 +523,7 @@ private:
                 running[w].store (true);
             }
 
-            if (running[w].load())
+            if (running[w].load() && w != Drums)
                 sequencer (w).clockTick();
         }
 
@@ -438,7 +534,7 @@ private:
 
     // Declared before the engines: their destructors still send note-offs.
     mutable juce::SpinLock lock;
-    int tracks[2] = { DefaultStepTrack, DefaultSliceTrack };   // under lock
+    int tracks[NumSequencers] = { DefaultStepTrack, DefaultSliceTrack, DefaultDrumTrack };   // under lock
     std::array<Event, MaxEvents> events;
     int numEvents = 0;
 
@@ -448,8 +544,16 @@ private:
 
     double sampleRate = 48000.0;
     std::atomic<double> bpm { 120.0 };
-    std::atomic<bool> wantPlaying[2] { { false }, { false } };
-    std::atomic<bool> running[2]     { { false }, { false } };
+    std::atomic<bool> wantPlaying[NumSequencers] { { false }, { false }, { false } };
+    std::atomic<bool> running[NumSequencers]     { { false }, { false }, { false } };
+
+    // The drum grid.
+    static constexpr int DrumChannel = 10;
+    std::array<std::array<uint8_t, DrumSteps>, DrumLanes> drumPattern {};   // under lock
+    std::array<bool, DrumLanes> drumSounding {};                            // under lock
+    int nextDrumSixteenth = 0;                                              // under lock
+    std::atomic<float> drumSwing { 0.0f };
+    std::atomic<int> drumStep { -1 };
     bool   clockRunning  = false;   // audio thread
     int    globalTick    = 0;
     double samplesToTick = 0.0;

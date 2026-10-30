@@ -820,7 +820,7 @@ void MainComponent::launchClip (int track, int scene)
     if (w == KindDrums || eventRouter.isLocalSync())
     {
         const bool wasRunning = seqs.getPlayhead (track) >= 0;
-        seqs.queuePattern (track, pattern);
+        seqs.queuePattern (track, pattern.toEngine());   // a Step-Seq clip's range, from 0
         if (wasRunning)
         {
             session.setQueued (track, scene);   // takes over on the bar; pollLaunches moves it to playing
@@ -949,9 +949,16 @@ void MainComponent::pollLaunches()
         if (count == shownLaunches[t])
             continue;
         shownLaunches[t] = count;
-        showOnPage (t, seqs.getPattern (t));
-        if (session.getQueued (t) >= 0)
-            session.setPlaying (t, session.getQueued (t));
+
+        // The page shows the clip that took over as it was saved (with its
+        // range), not the engine's copy.
+        const int q = session.getQueued (t);
+        if (session.hasClip (t, q))
+            showOnPage (t, session.clip (t, q)->pattern);
+        else
+            showOnPage (t, seqs.getPattern (t));
+        if (q >= 0)
+            session.setPlaying (t, q);
     }
 
     // Note clips: a queued one has taken over once nothing is pending.
@@ -1132,7 +1139,7 @@ void MainComponent::applySessionToSequencers()
         if (w < 0 || ! session.hasClip (t, s) || session.clip (t, s)->sequencer != w)
             continue;
         const auto& p = session.clip (t, s)->pattern;
-        seqs.queuePattern (t, p);   // stopped: applies at once
+        seqs.queuePattern (t, p.toEngine());   // stopped: applies at once
         seqs.setActiveTrack (t);    // the page's loadPattern sends to its own track
         switch (w)
         {

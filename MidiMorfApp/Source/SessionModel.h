@@ -19,12 +19,13 @@ struct SeqPattern
     static constexpr int MaxSteps = ClockedSequencer::MAX_STEPS, DrumLanes = 8, DrumSteps = 16;
 
     int length = 16;
+    int start = 0;   // Step-Seq: the first step played (the range bracket); the engine gets toEngine()
     std::array<ClockedSequencer::Step, MaxSteps> steps {};
     std::array<std::array<uint8_t, DrumSteps>, DrumLanes> drums {};
 
     bool operator== (const SeqPattern& o) const
     {
-        if (length != o.length || drums != o.drums) return false;
+        if (length != o.length || start != o.start || drums != o.drums) return false;
         for (int i = 0; i < MaxSteps; ++i)
         {
             const auto& a = steps[(size_t) i];
@@ -47,6 +48,7 @@ struct SeqPattern
         }
         for (auto& lane : drums)
             mb.append (lane.data(), lane.size());
+        mb.append (&start, sizeof (int));
         return mb.toBase64Encoding();
     }
 
@@ -54,8 +56,9 @@ struct SeqPattern
     {
         juce::MemoryBlock mb;
         SeqPattern p;
-        const size_t expected = sizeof (int) + (size_t) MaxSteps * 5 + (size_t) DrumLanes * DrumSteps;
-        if (! mb.fromBase64Encoding (text) || mb.getSize() != expected)
+        // Patterns saved before the range bracket have no start.
+        const size_t withoutStart = sizeof (int) + (size_t) MaxSteps * 5 + (size_t) DrumLanes * DrumSteps;
+        if (! mb.fromBase64Encoding (text) || (mb.getSize() != withoutStart && mb.getSize() != withoutStart + sizeof (int)))
             return std::nullopt;
 
         auto* d = static_cast<const uint8_t*> (mb.getData());
@@ -72,7 +75,22 @@ struct SeqPattern
             std::memcpy (lane.data(), d, lane.size());
             d += lane.size();
         }
+        if (mb.getSize() > withoutStart)
+            std::memcpy (&p.start, d, sizeof (int));
+        p.start = juce::jlimit (0, MaxSteps - 1, p.start);
         return p;
+    }
+
+    // As the engine plays it: the steps in the range, from 0.
+    SeqPattern toEngine() const
+    {
+        if (start == 0)
+            return *this;
+        SeqPattern e = *this;
+        e.start = 0;
+        for (int i = 0; i < MaxSteps; ++i)
+            e.steps[(size_t) i] = steps[(size_t) juce::jmin (MaxSteps - 1, start + i)];
+        return e;
     }
 };
 

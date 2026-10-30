@@ -224,7 +224,7 @@ Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit
 - [x] **Projects** (`ProjectBrowser.h`): New (a starter project), Save As, Duplicate, Open, Delete. A named project autosaves to its own file as well as the working copy.
 - [x] **Compact mixer:** a CLIPS / MIXER switch on Session (instead of a drag handle, which doesn't fit an iPhone in landscape). Per track: its sound (tap to edit), pan (balance law, centre exactly unity) and mute; volume stays in the track column. Sends wait for the send buses in Phase 7.
 - [x] Launch quantize: bar / beat / now, saved with the project.
-- [ ] Built-in **demo project**, made with JB, opened on first launch. "New" opens a plain starter for now.
+- [ ] ~~Built-in demo project~~ — replaced (2026-10-30) by a **first-run walkthrough** that has the player make their own beat: see Phase 7.5.
 
 ### Phase 6 — Clip recording + editors
 
@@ -237,10 +237,16 @@ Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit
 
 ### Phase 7 — Mixer
 
-- [ ] Per track: level, pan, mute, solo, and 2 sends (Delay, Reverb) on shared send buses.
-- [ ] Per-track insert FX, reusing `MasterFx`.
-- [ ] Master level, plus a limiter so 4 tracks can't clip.
-- [ ] The full snap point of the Session mixer (see *Screens*). There's no separate Mixer page.
+- [x] Per track: level, pan, mute, **solo**, and 2 sends (Delay, Reverb) on shared send buses (`MixerFx.h`: a tempo-synced ping-pong delay — 1/4, dotted 1/8, 1/8, 1/16 — and a reverb). Sends are post-fader.
+- [x] **Per-track insert:** Filter (one knob, low-pass left / high-pass right), Drive and Crush. *Changed from "reusing MasterFx":* that chain is the synth's own distortion → delay → reverb, which fits the send buses better than an insert; delay and reverb live on the buses instead.
+- [x] Master level before the limiter (already there), and the bus settings: delay time and feedback, reverb size.
+- [x] The full mixer is Session's MIXER view (no separate page): sound, six knobs, M and S per track, the master section across the top.
+- Untouched, the mix is bit-exact; inserts and buses cost nothing until used (all of it busy is under 1% of a Mac core).
+
+### Phase 7.5 — First-run walkthrough + more breaks
+
+- [ ] **Walkthrough** on first launch (skippable, replayable from Settings): coach marks over the real screens, each step waiting for the player to do the thing — not a slideshow. Make a beat on the Drum Grid → press Play → a bassline on Step-Seq → record a chord take on Morf-Chord → launch it from Session → Save As. Ends with their own project, named.
+- [ ] **More of JB's recreated breaks** bundled beside the Amen (`BreakLibrary::recorded()`). Never the "All The Breaks" pack.
 
 ### Phase 8 — iOS release ($4.99)
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "MixerFx.h"
 #include <array>
 #include <vector>
 #include <algorithm>
@@ -118,6 +119,25 @@ public:
     void setMuted (int track, bool m)    { if (validTrack (track)) muted[(size_t) track].store (m); }
     bool isMuted (int track) const       { return validTrack (track) && muted[(size_t) track].load(); }
 
+    // Solo: while any track is soloed, the others are silent (sends too).
+    void setSolo (int track, bool s)     { if (validTrack (track)) solo[(size_t) track].store (s); }
+    bool isSolo (int track) const        { return validTrack (track) && solo[(size_t) track].load(); }
+
+    // Sends, 0..1, post-fader: 0 the delay bus, 1 the reverb bus.
+    enum Bus { DelayBus = 0, ReverbBus = 1 };
+    void  setSend (int track, int bus, float v) { if (validTrack (track) && (bus == 0 || bus == 1)) sends[(size_t) track][(size_t) bus].store (juce::jlimit (0.0f, 1.0f, v)); }
+    float getSend (int track, int bus) const    { return validTrack (track) && (bus == 0 || bus == 1) ? sends[(size_t) track][(size_t) bus].load() : 0.0f; }
+
+    TrackInsert& getInsert (int track) { return inserts[(size_t) juce::jlimit (0, NumTracks - 1, track)]; }
+    SendBuses& getBuses() noexcept     { return buses; }
+
+    // Master level, 0..MaxVolume, before the limiter. Ramps like the tracks.
+    void  setMasterVolume (float v) { masterVolume.store (juce::jlimit (0.0f, MaxVolume, v)); }
+    float getMasterVolume() const   { return masterVolume.load(); }
+
+    // The delay bus follows this tempo (set once, before audio starts).
+    void setTempoSource (std::function<double()> f) { tempoSource = std::move (f); }
+
     void prepare (double sampleRate, int maxBlockSize)
     {
         scratch.setSize (2, juce::jmax (maxBlockSize, 1024));
@@ -129,6 +149,12 @@ public:
 
         limiterRelease = (float) std::exp (-1.0 / (0.08 * sampleRate));   // 80 ms
         limiterEnv = 0.0f;
+
+        for (auto& ins : inserts) ins.prepare (sampleRate);
+        buses.prepare (sampleRate, scratch.getNumSamples());
+        masterGain.reset (sampleRate, 0.02);
+        masterGain.setCurrentAndTargetValue (masterVolume.load());
+        for (auto& t : lastSend) t.fill (0.0f);
 
         for (int t = 0; t < NumTracks; ++t)
             for (int side = 0; side < 2; ++side)
@@ -185,6 +211,9 @@ public:
         {
             const int n = juce::jmin (num - done, scratch.getNumSamples());
 
+            buses.clearInputs (n);
+            anySolo = std::any_of (solo.begin(), solo.end(), [] (const auto& s) { return s.load(); });
+
             for (int t = 0; t < NumTracks; ++t)
             {
                 auto* s = sources[(size_t) t].load();
@@ -192,8 +221,15 @@ public:
                     continue;
 
                 s->render (scratch, 0, n);
+                if (! inserts[(size_t) t].isNeutral())
+                    inserts[(size_t) t].process (scratch.getWritePointer (0), scratch.getNumChannels() > 1 ? scratch.getWritePointer (1) : nullptr, n);
                 mixTrack (t, out, start + done, n);
+                feedSends (t, n);
             }
+
+            if (! buses.isIdle())
+                buses.process (out.getWritePointer (0, start + done), out.getNumChannels() > 1 ? out.getWritePointer (1, start + done) : nullptr,
+                               n, tempoSource ? tempoSource() : 120.0);
 
             done += n;
         }
@@ -201,6 +237,7 @@ public:
         if (master != nullptr)
             master->process (out, start, num);
 
+        applyMasterVolume (out, start, num);
         limit (out, start, num);
     }
 
@@ -249,7 +286,7 @@ private:
     // Volume x balance for one side (0 left, 1 right).
     float targetGain (int t, int side) const
     {
-        if (muted[(size_t) t].load())
+        if (muted[(size_t) t].load() || (anySolo && ! solo[(size_t) t].load()))
             return 0.0f;
         const float pan = pans[(size_t) t].load();
         const float balance = side == 0 ? juce::jmin (1.0f, 1.0f - pan) : juce::jmin (1.0f, 1.0f + pan);
@@ -287,6 +324,54 @@ private:
         }
     }
 
+    // Post-fader sends: the track as it was just mixed (gain and pan), times
+    // its send, ramped across the block when the send moves.
+    void feedSends (int t, int n)
+    {
+        const float gl = gains[(size_t) t][0].getCurrentValue(), gr = gains[(size_t) t][1].getCurrentValue();
+        const int numIn = scratch.getNumChannels();
+        const float* src[2] = { scratch.getReadPointer (0), scratch.getReadPointer (juce::jmin (1, numIn - 1)) };
+
+        for (int bus = 0; bus < 2; ++bus)
+        {
+            const float target = sends[(size_t) t][(size_t) bus].load();
+            float& last = lastSend[(size_t) t][(size_t) bus];
+            if (target <= 0.0f && last <= 0.0f)
+                continue;
+
+            buses.touched();
+            float* dst[2] = { bus == DelayBus ? buses.delayIn (0) : buses.reverbIn (0),
+                              bus == DelayBus ? buses.delayIn (1) : buses.reverbIn (1) };
+            const float step = (target - last) / (float) n;
+            for (int i = 0; i < n; ++i)
+            {
+                const float amount = last + step * (float) i;
+                dst[0][i] += src[0][i] * gl * amount;
+                dst[1][i] += src[1][i] * gr * amount;
+            }
+            last = target;
+        }
+    }
+
+    void applyMasterVolume (juce::AudioBuffer<float>& out, int start, int num)
+    {
+        masterGain.setTargetValue (masterVolume.load());
+        if (! masterGain.isSmoothing())
+        {
+            const float g = masterGain.getCurrentValue();
+            if (g != 1.0f)
+                for (int ch = 0; ch < out.getNumChannels(); ++ch)
+                    out.applyGain (ch, start, num, g);
+            return;
+        }
+        for (int i = 0; i < num; ++i)
+        {
+            const float g = masterGain.getNextValue();
+            for (int ch = 0; ch < out.getNumChannels(); ++ch)
+                out.getWritePointer (ch, start)[i] *= g;
+        }
+    }
+
     // Peak limiter at -0.5 dBFS: instant attack, so no sample ever passes
     // the threshold; 80 ms release. Below the threshold the gain is exactly
     // 1, so it costs nothing to normal levels. One gain for both channels
@@ -321,7 +406,15 @@ private:
     LiveEventObserver* observer = nullptr;
     std::array<std::atomic<float>, NumTracks> volumes { 1.0f, 1.0f, 1.0f, 1.0f };
     std::array<std::atomic<float>, NumTracks> pans {};
-    std::array<std::atomic<bool>, NumTracks> muted {};
+    std::array<std::atomic<bool>, NumTracks> muted {}, solo {};
+    std::array<std::array<std::atomic<float>, 2>, NumTracks> sends {};
+    std::array<std::array<float, 2>, NumTracks> lastSend {};   // audio thread
+    std::array<TrackInsert, NumTracks> inserts;
+    SendBuses buses;
+    std::atomic<float> masterVolume { 1.0f };
+    juce::SmoothedValue<float> masterGain;   // audio thread
+    std::function<double()> tempoSource;
+    bool anySolo = false;                    // audio thread
     std::array<std::array<juce::SmoothedValue<float>, 2>, NumTracks> gains;   // audio thread, per side
     juce::AudioBuffer<float> scratch;
 

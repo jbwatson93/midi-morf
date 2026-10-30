@@ -159,8 +159,64 @@ MainComponent::MainComponent()
     cb.setLaunchQuantize = [this] (int q) { audioEngine.getSequencers().setLaunchQuantize (q); };
     cb.soundName     = [this] (int t) { return audioEngine.getSoundName (t); };
     cb.openSound     = [this] (int t) { showSound (t); };
-    cb.getPan        = [this] (int t) { return audioEngine.getRack().getPan (t); };
-    cb.setPan        = [this] (int t, float p) { audioEngine.getRack().setPan (t, p); };
+    cb.getMix = [this] (int t, int param) -> float
+    {
+        auto& rack = audioEngine.getRack();
+        auto& ins = rack.getInsert (t);
+        switch (param)
+        {
+            case SessionPage::Pan:        return rack.getPan (t);
+            case SessionPage::SendDelay:  return rack.getSend (t, TrackRack::DelayBus);
+            case SessionPage::SendReverb: return rack.getSend (t, TrackRack::ReverbBus);
+            case SessionPage::Filter:     return ins.filter.load();
+            case SessionPage::Drive:      return ins.drive.load();
+            case SessionPage::Crush:      return ins.crush.load();
+            default:                      return 0.0f;
+        }
+    };
+    cb.setMix = [this] (int t, int param, float v)
+    {
+        auto& rack = audioEngine.getRack();
+        auto& ins = rack.getInsert (t);
+        switch (param)
+        {
+            case SessionPage::Pan:        rack.setPan (t, v); break;
+            case SessionPage::SendDelay:  rack.setSend (t, TrackRack::DelayBus, v); break;
+            case SessionPage::SendReverb: rack.setSend (t, TrackRack::ReverbBus, v); break;
+            case SessionPage::Filter:     ins.filter = juce::jlimit (-1.0f, 1.0f, v); break;
+            case SessionPage::Drive:      ins.drive = juce::jlimit (0.0f, 1.0f, v); break;
+            case SessionPage::Crush:      ins.crush = juce::jlimit (0.0f, 1.0f, v); break;
+            default: break;
+        }
+    };
+    cb.getSolo   = [this] (int t) { return audioEngine.getRack().isSolo (t); };
+    cb.setSolo   = [this] (int t, bool on) { audioEngine.getRack().setSolo (t, on); };
+    cb.getMaster = [this] (int param) -> float
+    {
+        auto& rack = audioEngine.getRack();
+        auto& buses = rack.getBuses();
+        switch (param)
+        {
+            case SessionPage::MasterVolume:  return rack.getMasterVolume();
+            case SessionPage::DelayTime:     return (float) buses.delayTime.load();
+            case SessionPage::DelayFeedback: return buses.delayFeedback.load();
+            case SessionPage::ReverbSize:    return buses.reverbSize.load();
+            default:                         return 0.0f;
+        }
+    };
+    cb.setMaster = [this] (int param, float v)
+    {
+        auto& rack = audioEngine.getRack();
+        auto& buses = rack.getBuses();
+        switch (param)
+        {
+            case SessionPage::MasterVolume:  rack.setMasterVolume (v); break;
+            case SessionPage::DelayTime:     buses.delayTime = juce::jlimit (0, 3, juce::roundToInt (v)); break;
+            case SessionPage::DelayFeedback: buses.delayFeedback = juce::jlimit (0.0f, 0.9f, v); break;
+            case SessionPage::ReverbSize:    buses.reverbSize = juce::jlimit (0.0f, 1.0f, v); break;
+            default: break;
+        }
+    };
     cb.getMuted      = [this] (int t) { return audioEngine.getRack().isMuted (t); };
     cb.setMuted      = [this] (int t, bool m) { audioEngine.getRack().setMuted (t, m); };
     cb.openPage      = [this] (int page) { pageContainer.setPage (page); };
@@ -1309,6 +1365,14 @@ void MainComponent::saveNow()
     juce::ValueTree project ("MidiMorfProject");
     project.setProperty ("version", 1, nullptr);
     project.setProperty ("name", projectName, nullptr);
+    {
+        auto& rack = audioEngine.getRack();
+        auto& buses = rack.getBuses();
+        project.setProperty ("masterVolume", rack.getMasterVolume(), nullptr);
+        project.setProperty ("delayTime", buses.delayTime.load(), nullptr);
+        project.setProperty ("delayFeedback", buses.delayFeedback.load(), nullptr);
+        project.setProperty ("reverbSize", buses.reverbSize.load(), nullptr);
+    }
     for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
         juce::ValueTree track ("Track");
@@ -1319,6 +1383,16 @@ void MainComponent::saveNow()
         track.setProperty ("soundName", audioEngine.getSynthName (t), nullptr);
         track.setProperty ("muted", audioEngine.getRack().isMuted (t), nullptr);
         track.setProperty ("pan", audioEngine.getRack().getPan (t), nullptr);
+        {
+            auto& rack = audioEngine.getRack();
+            auto& ins = rack.getInsert (t);
+            track.setProperty ("solo", rack.isSolo (t), nullptr);
+            track.setProperty ("sendDelay", rack.getSend (t, TrackRack::DelayBus), nullptr);
+            track.setProperty ("sendReverb", rack.getSend (t, TrackRack::ReverbBus), nullptr);
+            track.setProperty ("filter", ins.filter.load(), nullptr);
+            track.setProperty ("drive", ins.drive.load(), nullptr);
+            track.setProperty ("crush", ins.crush.load(), nullptr);
+        }
         track.appendChild (audioEngine.getTrackSynth (t).getState(), nullptr);     // both kept, whichever
         track.appendChild (audioEngine.getTrackSampler (t).getState(), nullptr);   // the track plays
         track.appendChild (audioEngine.getTrackDrums (t).getState(), nullptr);
@@ -1437,6 +1511,16 @@ void MainComponent::restoreState()
             audioEngine.setSoundName (t, track["soundName"].toString());
             audioEngine.getRack().setMuted (t, track.getProperty ("muted", false));
             audioEngine.getRack().setPan (t, (float) (double) track.getProperty ("pan", 0.0));
+            {
+                auto& rack = audioEngine.getRack();
+                auto& ins = rack.getInsert (t);
+                rack.setSolo (t, track.getProperty ("solo", false));
+                rack.setSend (t, TrackRack::DelayBus, (float) (double) track.getProperty ("sendDelay", 0.0));
+                rack.setSend (t, TrackRack::ReverbBus, (float) (double) track.getProperty ("sendReverb", 0.0));
+                ins.filter = (float) (double) track.getProperty ("filter", 0.0);
+                ins.drive  = (float) (double) track.getProperty ("drive", 0.0);
+                ins.crush  = (float) (double) track.getProperty ("crush", 0.0);
+            }
         }
     }
     else
@@ -1472,6 +1556,14 @@ void MainComponent::restoreState()
     // The Session: its clips, or a first clip per sequencer track from what
     // the pages hold (a project from before Session).
     projectName = project.isValid() ? project.getProperty ("name", "Untitled").toString() : juce::String ("Untitled");
+    {
+        auto& rack = audioEngine.getRack();
+        auto& buses = rack.getBuses();
+        rack.setMasterVolume ((float) (double) project.getProperty ("masterVolume", 1.0));
+        buses.delayTime     = juce::jlimit (0, 3, (int) project.getProperty ("delayTime", 1));
+        buses.delayFeedback = (float) (double) project.getProperty ("delayFeedback", 0.45);
+        buses.reverbSize    = (float) (double) project.getProperty ("reverbSize", 0.6);
+    }
     session.fromValueTree (project.getChildWithName ("Session"));
     seedClips();
     applySessionToSequencers();

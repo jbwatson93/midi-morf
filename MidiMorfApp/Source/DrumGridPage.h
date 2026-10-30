@@ -86,17 +86,7 @@ public:
         };
         addAndMakeVisible (beatCombo);
 
-        clearButton.onClick = [this]
-        {
-            for (int l = 0; l < Lanes; ++l)
-            {
-                euclid[(size_t) l] = {};
-                for (int st = 0; st < Steps; ++st)
-                    setStep (l, st, 0);
-            }
-            changed();
-            repaint();
-        };
+        clearButton.onClick = [this] { clearPattern(); changed(); };
         addAndMakeVisible (clearButton);
 
         // A beat to start from, until the saved one is restored.
@@ -125,6 +115,20 @@ public:
         p.drums = pattern;
         return p;
     }
+
+    void clearPattern()
+    {
+        for (int l = 0; l < Lanes; ++l)
+        {
+            euclid[(size_t) l] = {};
+            for (int st = 0; st < Steps; ++st)
+                setStep (l, st, 0);
+        }
+        repaint();
+    }
+
+    // A lane's row, name and steps (for the walkthrough to point at).
+    juce::Rectangle<int> laneBounds (int lane) const { return rowArea (juce::jlimit (0, Lanes - 1, lane)); }
 
     // A pattern the grid is already playing (a launched clip).
     void showPattern (const SeqPattern& p)

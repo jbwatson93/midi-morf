@@ -1063,6 +1063,12 @@ private:
     std::unique_ptr<WavetableSynthContent> content;
 
     PresetBar bar;
+
+public:
+    // For the walkthrough to point at.
+    juce::Rectangle<int> presetBarBounds() const { return getLocalArea (&bar, bar.getLocalBounds()); }
+
+private:
     PresetBrowser browser;
     juce::String presetName { "Init" };
     juce::ValueTree baseline;

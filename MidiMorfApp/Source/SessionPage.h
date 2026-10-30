@@ -205,6 +205,12 @@ public:
 
     void visibilityChanged() override { if (isVisible()) refresh(); }
 
+    // For the walkthrough to point at.
+    juce::Rectangle<int> gridBounds() const          { return viewport.getBounds(); }
+    juce::Rectangle<int> projectButtonBounds() const { return projectButton.getBounds(); }
+    juce::Rectangle<int> instrumentBounds (int t) const { return rows[t]->instrument.getBounds() + rows[t]->getPosition(); }
+    juce::Rectangle<int> soundBounds (int t) const      { return rows[t]->sound.getBounds() + rows[t]->getPosition(); }
+
     void paint (juce::Graphics& g) override
     {
         Glassmorphism::paintPanel (g, getLocalBounds().toFloat(), sessionPagePalette);
@@ -640,7 +646,7 @@ private:
         return { { (int) CM::MorfChord, "Morf-Chord" }, { (int) CM::RoseChord, "Rose-Chord" },
                  { (int) CM::Omnichord, "Strum-Chord" }, { (int) CM::MorfPad, "Morf-Pad" },
                  { (int) CM::DualMPad, "Dual M-Pad" },
-                 { (int) CM::StepSequencer, "Step-Seq" }, { (int) CM::SliceSequencer, "Slice-Seq" },
+                 { (int) CM::StepSequencer, "Step-Seq" }, { (int) CM::SliceSequencer, "Breaker" },
                  { pages.drumGrid, "Drum Grid" } };
     }
 

@@ -17,6 +17,7 @@
 #include "SessionPage.h"
 #include "ProjectBrowser.h"
 #include "NoteEditorPage.h"
+#include "Walkthrough.h"
 #include "SamplerPage.h"
 #include "DrumGridPage.h"
 #include "DrumKitPage.h"
@@ -139,6 +140,9 @@ private:
     void showProjects();
     void openProject (const juce::File& file);   // a named project file, or {} for a new one
     void saveProjectAs (const juce::String& name);
+    void loadProjectTree (const juce::ValueTree& project);
+    void startWalkthrough();
+    Walkthrough walkthrough;
     void applySessionToSequencers();
     juce::String projectName { "Untitled" };
     std::unique_ptr<ProjectBrowser> projectBrowser;

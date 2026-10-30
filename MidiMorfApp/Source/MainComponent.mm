@@ -1,4 +1,5 @@
 #include "MainComponent.h"
+#include <set>
 
 #if JUCE_IOS
  #import <UIKit/UIKit.h>
@@ -32,12 +33,12 @@ static const juce::String controllerNames[] = {
     "Morf-Chord",
     "Rose-Chord",
     "Step-Seq",
-    "Slice-Seq"
+    "Breaker"   // the slice sequencer
 };
 
 // Short names for the rail, same order.
 static const juce::String controllerShortNames[] = {
-    "FX", "Pad", "Strum", "Transport", "Dual", "Chord", "Rose", "Step", "Slice"
+    "FX", "Pad", "Strum", "Transport", "Dual", "Chord", "Rose", "Step", "Break"
 };
 
 // Guards the invariant that broke once already: NUM_CONTROLLERS is the index
@@ -122,7 +123,7 @@ MainComponent::MainComponent()
 
     SessionPage::Callbacks cb;
     cb.getInstrument = [this] (int t) { return instrumentOf[t]; };
-    cb.setInstrument = [this] (int t, int mode) { setInstrument (t, mode); updateRail(); };
+    cb.setInstrument = [this] (int t, int mode) { setInstrument (t, mode); seedClips(); updateRail(); };
     cb.getSound      = [this] (int t) { return (int) audioEngine.getTrackSound (t); };
     cb.setSound      = [this] (int t, int s) { setSound (t, s); updateRail(); };
     cb.getVolume     = [this] (int t) { return audioEngine.getRack().getVolume (t); };
@@ -275,6 +276,17 @@ MainComponent::MainComponent()
 
     settingsPage.onModeChanged = [this] { fxPage.refreshFromRouter(); saveState(); };
     settingsPage.getAudioLoad  = [this] { return audioEngine.getCpuUsage(); };
+    settingsPage.onTour        = [this] { startWalkthrough(); };
+
+    addChildComponent (walkthrough);
+    walkthrough.onFinished = [this]
+    {
+        if (auto* props = appProperties.getUserSettings())
+        {
+            props->setValue ("tour_done", true);
+            props->saveIfNeeded();
+        }
+    };
 
     // The rail: Home, the four tracks, Play/Stop. It sits in the right gutter,
     // outside the safe area, on top of the wood.
@@ -360,8 +372,19 @@ MainComponent::MainComponent()
     accelerometer.setListener (this);
     accelerometer.start();
 
+    // A brand-new install (no project, no settings) gets the walkthrough.
+    auto* settings = appProperties.getUserSettings();
+    const bool firstLaunch = ! projectFile().existsAsFile()
+                             && (settings == nullptr || ! settings->containsKey ("lastPage"));
+
     // Restore saved state (track setup, last page, scale settings, etc.)
     restoreState();
+
+    if (firstLaunch && (settings == nullptr || ! settings->getBoolValue ("tour_done", false)))
+        juce::Timer::callAfterDelay (900, [safe = juce::Component::SafePointer<MainComponent> (this)]
+        {
+            if (safe != nullptr) safe->startWalkthrough();
+        });
 
     // Keeps Play/Stop's light in step with the sequencers.
     startTimerHz (10);
@@ -406,6 +429,7 @@ void MainComponent::paint (juce::Graphics& g)
 void MainComponent::resized()
 {
     auto area = getLocalBounds();
+    walkthrough.setBounds (area);
 
     // Rail geometry needs to be in scope for both the page trim (so we never
     // let page content land under the rail) and the rail layout below.
@@ -1042,7 +1066,10 @@ void MainComponent::saveProjectAs (const juce::String& name)
 // The project New starts from: T1 Morf-Chord on a synth, T2 Step-Seq on Acid
 // Bass, T3 Slice-Seq on the Amen, T4 Drum Grid on the 808 kit, each
 // sequencer with one clip.
-static juce::ValueTree starterProject (int drumGridMode)
+//
+// The walkthrough's (tour) starts with every track empty, for the player to
+// set up: the synths on Init, track 2's sampler already holding the Amen.
+static juce::ValueTree starterProject (int drumGridMode, bool tour = false)
 {
     using CM = MidiMorf::ControllerMode;
     const int inst[TrackRack::NumTracks]  = { (int) CM::MorfChord, (int) CM::StepSequencer, (int) CM::SliceSequencer, drumGridMode };
@@ -1056,14 +1083,15 @@ static juce::ValueTree starterProject (int drumGridMode)
     {
         juce::ValueTree track ("Track");
         track.setProperty ("index", t, nullptr);
-        track.setProperty ("instrument", inst[t], nullptr);
-        track.setProperty ("sound", sound[t], nullptr);
+        track.setProperty ("instrument", tour ? -1 : inst[t], nullptr);
+        track.setProperty ("sound", tour ? 0 : sound[t], nullptr);
         track.setProperty ("volume", 1.0, nullptr);
-        const auto* preset = t == 1 ? WavetablePresets::findFactory ("Acid Bass") : nullptr;
-        track.setProperty ("soundName", preset != nullptr ? "Acid Bass" : "Init", nullptr);
+        const juce::String presetName = t == 1 && ! tour ? "Acid Bass" : "";
+        const auto* preset = presetName.isNotEmpty() ? WavetablePresets::findFactory (presetName) : nullptr;
+        track.setProperty ("soundName", preset != nullptr ? presetName : juce::String ("Init"), nullptr);
         track.appendChild ((preset != nullptr ? preset->state : WavetablePresets::init().state).createCopy(), nullptr);
         juce::ValueTree sampler (SamplerSource::stateType);
-        if (t == 2)
+        if (t == (tour ? 1 : 2))
             sampler.setProperty ("break", BreakLibrary::builtInNames()[0], nullptr);
         track.appendChild (sampler, nullptr);
         juce::ValueTree drums (DrumSource::stateType);
@@ -1086,11 +1114,14 @@ static juce::ValueTree starterProject (int drumGridMode)
     for (int l = 0; l < 3; ++l)
         for (int i = 0; i < 16 && i < (int) std::strlen (lanes[l]); ++i)
             beat.drums[(size_t) laneOf[l]][(size_t) i] = (uint8_t) juce::roundToInt (BreakLibrary::detail::velocityFor (lanes[l][i]) * 127.0f);
-    s.setClip (1, 0, { "Pattern 1", step, LocalSequencers::Step });
-    s.setClip (2, 0, { "Pattern 1", slice, LocalSequencers::Slice });
-    s.setClip (3, 0, { "Pattern 1", beat, LocalSequencers::Drums });
-    for (int t = 1; t < 4; ++t)
-        s.setPlaying (t, 0);
+    if (! tour)   // the tour's tracks get their clips as the player sets them up
+    {
+        s.setClip (1, 0, { "Pattern 1", step, LocalSequencers::Step });
+        s.setClip (2, 0, { "Pattern 1", slice, LocalSequencers::Slice });
+        s.setClip (3, 0, { "Pattern 1", beat, LocalSequencers::Drums });
+        for (int t = 1; t < 4; ++t)
+            s.setPlaying (t, 0);
+    }
     project.appendChild (s.toValueTree(), nullptr);
     return project;
 }
@@ -1104,23 +1135,135 @@ void MainComponent::openProject (const juce::File& file)
     saveNow();
     audioEngine.allNotesOff();
 
-    const auto current = projectFile();
-    bool ok = false;
     if (file.existsAsFile())
     {
-        ok = file.copyFileTo (current);
-    }
-    else if (auto xml = starterProject (drumGridPageIdx).createXml())
-    {
-        ok = xml->writeTo (current);
-    }
-    if (! ok)
+        if (file.copyFileTo (projectFile()))
+            loadProjectTree ({});
         return;
+    }
+    loadProjectTree (starterProject (drumGridPageIdx));
+}
+
+// Makes `project` the working copy (or, if invalid, reloads the working copy
+// as it is) and reloads everything from it.
+void MainComponent::loadProjectTree (const juce::ValueTree& project)
+{
+    audioEngine.allNotesOff();
+    if (project.isValid())
+    {
+        auto xml = project.createXml();
+        if (xml == nullptr || ! xml->writeTo (projectFile()))
+            return;
+    }
 
     restoreState();
     pageContainer.setPage (homePageIdx);
     homePage->refresh();
     updateRail();
+}
+
+//==============================================================================
+// The walkthrough: the player makes their own beat on a fresh project, one
+// step at a time. Each step points at the real control and moves on when
+// they've done it. An untitled project they were working on is kept as
+// "Before the tour".
+void MainComponent::startWalkthrough()
+{
+    stopRecordingClip();
+    saveNow();
+    if (projectName == "Untitled" && session.hasClip (1, 0))
+        projectFile().copyFileTo (ProjectBrowser::folder().getChildFile ("Before the tour.midimorf"));
+    loadProjectTree (starterProject (drumGridPageIdx, true));
+
+    auto& seqs = audioEngine.getSequencers();
+    seqs.setBpm (140.0);   // the Amen's own tempo
+
+    // The step page starts empty (all rests, all on the root) and the
+    // slicer in order, so the first glitch is obvious.
+    SeqPattern rests, inOrder;
+    for (auto& st : rests.steps) st = { 0, 100, 50, 64, true };
+    for (int i = 0; i < SeqPattern::MaxSteps; ++i) inOrder.steps[(size_t) i] = { (uint8_t) i, 100, 95, 64, false };
+    stepSequencerPage.loadPattern (rests);
+    sliceSequencerPage.loadPattern (inOrder);
+
+    auto& breaker = sliceSequencerPage.getContent();
+    auto onPage    = [this] (int page) { return pageContainer.getCurrentPage() == page; };
+    auto railTrack = [this] (int t) { return trackButtons[t]->getBounds(); };
+    auto inPage    = [this] (juce::Component& c, juce::Rectangle<int> r) { return getLocalArea (&c, r); };
+    auto onSession = [this] (juce::Rectangle<int> r) { return getLocalArea (homePage.get(), r); };
+    auto stepsOn   = [this]
+    {
+        const auto p = stepSequencerPage.getPattern();
+        int on = 0;
+        for (int i = 0; i < p.length; ++i) on += p.steps[(size_t) i].rest ? 0 : 1;
+        return on;
+    };
+    auto notesUsed = [this]
+    {
+        const auto p = stepSequencerPage.getPattern();
+        std::set<int> degrees;
+        for (int i = 0; i < p.length; ++i)
+            if (! p.steps[(size_t) i].rest) degrees.insert (p.steps[(size_t) i].index);
+        return (int) degrees.size();
+    };
+    auto slicesMoved = [this, &breaker]
+    {
+        const auto p = sliceSequencerPage.getPattern();
+        int moved = 0;
+        for (int i = 0; i < breaker.numStepsShown(); ++i) moved += p.steps[(size_t) i].index != i || p.steps[(size_t) i].rest;
+        return moved;
+    };
+    auto baseline = std::make_shared<std::array<int, 3>>();   // ribbon and looper counts when their step starts
+    const int stepPage  = (int) MidiMorf::ControllerMode::StepSequencer;
+    const int slicePage = (int) MidiMorf::ControllerMode::SliceSequencer;
+
+    std::vector<Walkthrough::Step> steps = {
+        { "Let's make something: a bassline you write yourself, then the Amen break, chopped up live. About two minutes.",
+          nullptr, nullptr, "Let's go" },
+        { "Every track has something that plays it. Pick Step-Seq for track 1.",
+          [=] { return onSession (homePage->instrumentBounds (0)); }, [this] { return instrumentOf[0] == (int) MidiMorf::ControllerMode::StepSequencer; } },
+        { "And a sound for it to play: pick Synth.",
+          [=] { return onSession (homePage->soundBounds (0)); }, [this] { return audioEngine.getTrackSound (0) == AudioEngine::Sound::Synth; } },
+        { "Tap 1 to open its Step-Seq.",
+          [=] { return railTrack (0); }, [=] { return onPage (stepPage); } },
+        { "Tap 1 again to get to its sound.",
+          [=] { return railTrack (0); }, [=] { return onPage (synthPageIdx); } },
+        { "Tap the name to browse the synth sounds and pick one. Try the Bass ones.",
+          [this] { return getLocalArea (&synthPage, synthPage.presetBarBounds()); },
+          [this] { return audioEngine.getSoundName (0) != "Init"; } },
+        { "Tap 1 to go back to the steps.",
+          [=] { return railTrack (0); }, [=] { return onPage (stepPage); } },
+        { "Every step is off. Tap a few to switch them on.",
+          [=] { return inPage (stepSequencerPage, stepSequencerPage.stepsBounds()); }, [=] { return stepsOn() >= 4; } },
+        { "Now drag the sliders up and down to change each step's note.",
+          [=] { return inPage (stepSequencerPage, stepSequencerPage.stepsBounds()); }, [=] { return notesUsed() >= 3; } },
+        { "Press play.",
+          [this] { return playButton.getBounds(); }, [&seqs] { return seqs.isAnyPlaying(); } },
+        { "That's your bassline. Now the drums. Tap the house.",
+          [this] { return homeButton.getBounds(); }, [=] { return onPage (homePageIdx); } },
+        { "For track 2, pick Breaker: it plays a drum break in slices.",
+          [=] { return onSession (homePage->instrumentBounds (1)); }, [this] { return instrumentOf[1] == (int) MidiMorf::ControllerMode::SliceSequencer; } },
+        { "And for its sound, pick Sampler. It already holds the Amen break.",
+          [=] { return onSession (homePage->soundBounds (1)); }, [this] { return audioEngine.getTrackSound (1) == AudioEngine::Sound::Sampler; } },
+        { "Tap 2 to open Breaker.",
+          [=] { return railTrack (1); }, [=] { return onPage (slicePage); },
+          {}, [&seqs] { seqs.setPlaying (LocalSequencers::Slice, true); } },
+        { "It's playing the Amen in order, one slice per step. Tap and drag in the grid to change which slice plays where.",
+          [=, &breaker] { return inPage (breaker, breaker.gridBounds()); }, [=] { return slicesMoved() >= 3; } },
+        { "Now drag along the right-hand strip on top: it stutters each step, faster as you go.",
+          [=, &breaker] { return inPage (breaker, breaker.ribbonBounds (1)); }, [=, &breaker] { return breaker.ribbonMoves[1] > (*baseline)[1]; },
+          {}, [=, &breaker] { (*baseline)[1] = breaker.ribbonMoves[1]; } },
+        { "The left strip bends the pitch. Try it.",
+          [=, &breaker] { return inPage (breaker, breaker.ribbonBounds (0)); }, [=, &breaker] { return breaker.ribbonMoves[0] > (*baseline)[0]; },
+          {}, [=, &breaker] { (*baseline)[0] = breaker.ribbonMoves[0]; } },
+        { "Hold a square on the looper for a roll. Turn on RND first and every roll lands somewhere different.",
+          [=, &breaker] { return inPage (breaker, breaker.looperBounds()); }, [=, &breaker] { return breaker.looperHolds > (*baseline)[2]; },
+          {}, [=, &breaker] { (*baseline)[2] = breaker.looperHolds; } },
+        { "Now go crazy. When you've got something, save it from Session: Project, then Save As. You can replay this tour from Settings.",
+          nullptr, nullptr, "Done" },
+    };
+    walkthrough.setBounds (getLocalBounds());
+    walkthrough.start (std::move (steps));
 }
 
 // A pad or lane name held: straight to the track's sound, outside any
@@ -1327,7 +1470,7 @@ void MainComponent::timerCallback()
 // Documents/Projects/Current.midimorf. The settings file keeps only app
 // preferences: WiFi/Local, sync source, last page, the edited sound.
 
-static const juce::StringArray appSettingKeys { "lastPage", "mode", "seq_sync", "sound_track" };
+static const juce::StringArray appSettingKeys { "lastPage", "mode", "seq_sync", "sound_track", "tour_done" };
 
 static juce::File projectFile()
 {

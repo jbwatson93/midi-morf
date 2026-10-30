@@ -58,12 +58,18 @@ public:
         addAndMakeVisible (localBtn);
 
         refreshFromRouter();
+
+        tourBtn.setLookAndFeel (&glassLnf);
+        tourBtn.setColour (juce::TextButton::textColourOffId, MidiMorfColors::textLight);
+        tourBtn.onClick = [this] { if (onTour) onTour(); };
+        addAndMakeVisible (tourBtn);
     }
 
     ~SettingsPage() override
     {
         wifiBtn.setLookAndFeel  (nullptr);
         localBtn.setLookAndFeel (nullptr);
+        tourBtn.setLookAndFeel  (nullptr);
     }
 
     // Called by MainComponent on connect / disconnect / searching changes.
@@ -83,6 +89,8 @@ public:
         wifiBtn .setToggleState (! isLocal, juce::dontSendNotification);
         repaint();
     }
+
+    std::function<void()> onTour;   // replay the walkthrough
 
     // MainComponent sets this so it can saveState() when the user toggles
     // mode from the settings page.
@@ -177,6 +185,7 @@ public:
     void resized() override
     {
         auto area = getLocalBounds().reduced (24);
+        tourBtn.setBounds (area.withHeight (40).removeFromRight (200));
         area.removeFromTop (44 + 12);            // title + gap
         area.removeFromTop (44 + 28);            // status row + gap
         area.removeFromTop (22 + 4);             // section label + gap
@@ -210,7 +219,7 @@ private:
     double load = 0.0, peakLoad = 0.0;
     GlassButtonLookAndFeel glassLnf { settingsPagePalette, MidiMorfColors::accent, 8.0f };
 
-    juce::TextButton wifiBtn, localBtn;
+    juce::TextButton wifiBtn, localBtn, tourBtn { "Take the tour" };
     bool connected = false;
     juce::String connectedHost;
 };

@@ -83,6 +83,7 @@
       <FILE id="ses001" name="SessionModel.h" compile="0" resource="0" file="Source/SessionModel.h"/>
       <FILE id="nte000" name="NoteClip.h" compile="0" resource="0" file="Source/NoteClip.h"/>
       <FILE id="mfx000" name="MixerFx.h" compile="0" resource="0" file="Source/MixerFx.h"/>
+      <FILE id="wlk000" name="Walkthrough.h" compile="0" resource="0" file="Source/Walkthrough.h"/>
       <FILE id="nte001" name="NoteEditorPage.h" compile="0" resource="0" file="Source/NoteEditorPage.h"/>
       <FILE id="ses002" name="ProjectBrowser.h" compile="0" resource="0" file="Source/ProjectBrowser.h"/>
       <FILE id="smpPg1" name="SamplerPage.h" compile="0" resource="0" file="Source/SamplerPage.h"/>

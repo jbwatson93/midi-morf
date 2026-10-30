@@ -327,7 +327,7 @@ public:
         else if (sampler->getMode() == SamplerSource::Slice)
         {
             g.setColour (MidiMorfColors::textLight.withAlpha (0.5f));
-            g.drawFittedText ("Slice-Seq plays it in slices. Its steps follow the lines.", sideArea, juce::Justification::centred, 3);
+            g.drawFittedText ("Breaker plays it in slices. Its steps follow the lines.", sideArea, juce::Justification::centred, 3);
         }
     }
 

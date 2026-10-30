@@ -82,6 +82,7 @@
       <FILE id="homePg" name="HomePage.h" compile="0" resource="0" file="Source/HomePage.h"/>
       <FILE id="brkPg1" name="BreaksPage.h" compile="0" resource="0" file="Source/BreaksPage.h"/>
       <FILE id="brkImp" name="BreakImport.h" compile="0" resource="0" file="Source/BreakImport.h"/>
+      <FILE id="pnchFx" name="PunchFx.h" compile="0" resource="0" file="Source/PunchFx.h"/>
       <FILE id="slPg01" name="SliceSequencerPage.h" compile="0" resource="0" file="Source/SliceSequencerPage.h"/>
     </GROUP>
   </MAINGROUP>

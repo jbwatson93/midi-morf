@@ -38,9 +38,21 @@ public:
 };
 
 //==============================================================================
+// Whatever processes the summed tracks before the limiter — the punch-in FX.
+// Audio thread, in place.
+class MasterProcessor
+{
+public:
+    virtual ~MasterProcessor() = default;
+    virtual void prepare (double sampleRate, int maxBlockSize) = 0;
+    virtual void process (juce::AudioBuffer<float>& buffer, int start, int num) = 0;
+};
+
+//==============================================================================
 // The four tracks. Each renders its source into a scratch buffer, which is
 // summed into the output — so the output region is written, not added to —
-// then a safety limiter keeps the sum out of the converter's hard clip.
+// then through the master processor (punch-in FX), then a safety limiter
+// keeps the sum out of the converter's hard clip.
 //
 // Notes reach a track two ways:
 //   • post*()  — message thread (controller pages). A lock-free FIFO, drained
@@ -77,6 +89,9 @@ public:
 
     SoundSource* getSource (int track) const { return validTrack (track) ? sources[(size_t) track].load() : nullptr; }
 
+    // Set once, before audio starts.
+    void setMasterProcessor (MasterProcessor* m) { master = m; }
+
     // Track volume, 0..MaxVolume linear (1 = unity). Any thread; the audio
     // thread ramps to it over 20 ms so a fader move never clicks.
     static constexpr float MaxVolume = 1.5f;
@@ -88,6 +103,9 @@ public:
         scratch.setSize (2, juce::jmax (maxBlockSize, 1024));
         for (auto* s : pool)
             s->prepare (sampleRate, scratch.getNumSamples());
+
+        if (master != nullptr)
+            master->prepare (sampleRate, scratch.getNumSamples());
 
         limiterRelease = (float) std::exp (-1.0 / (0.08 * sampleRate));   // 80 ms
         limiterEnv = 0.0f;
@@ -157,6 +175,9 @@ public:
 
             done += n;
         }
+
+        if (master != nullptr)
+            master->process (out, start, num);
 
         limit (out, start, num);
     }
@@ -260,6 +281,7 @@ private:
 
     std::array<std::atomic<SoundSource*>, NumTracks> sources {};
     std::vector<SoundSource*> pool;   // message thread
+    MasterProcessor* master = nullptr;
     std::array<std::atomic<float>, NumTracks> volumes { 1.0f, 1.0f, 1.0f, 1.0f };
     std::array<juce::SmoothedValue<float>, NumTracks> gains;   // audio thread
     juce::AudioBuffer<float> scratch;

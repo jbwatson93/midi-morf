@@ -266,6 +266,14 @@ void MainComponent::setInstrument (int track, int mode)
     if (! juce::isPositiveAndBelow (track, TrackRack::NumTracks))
         return;
 
+    // Only pages that play notes are instruments; anything else (e.g. a
+    // damaged settings file) means no instrument.
+    using CM = MidiMorf::ControllerMode;
+    const bool isInstrument = mode == (int) CM::MorfPad || mode == (int) CM::Omnichord || mode == (int) CM::DualMPad
+                           || mode == (int) CM::MorfChord || mode == (int) CM::RoseChord || isSequencer (mode);
+    if (! isInstrument)
+        mode = -1;
+
     for (int t = 0; t < TrackRack::NumTracks; ++t)
         if (t != track && mode >= 0 && instrumentOf[t] == mode)
             instrumentOf[t] = -1;

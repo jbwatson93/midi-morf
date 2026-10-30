@@ -23,6 +23,7 @@ struct Break
     juce::AudioBuffer<float> audio;   // always stereo
     double sampleRate = 44100.0;
     double beats      = 4.0;          // loop length in quarter notes
+    int    gridBars   = 0;            // slice grid to open on; 0 = the whole loop
 
     double lengthSeconds() const { return audio.getNumSamples() / sampleRate; }
     double bpm() const           { return beats * 60.0 / juce::jmax (0.001, lengthSeconds()); }
@@ -101,12 +102,12 @@ namespace BreakLibrary
 
     // Recorded loops in BinaryData. Listed only once Projucer has bundled the
     // file, so a build from a stale project just doesn't offer them.
-    struct Recorded { const char* name; const char* resource; double beats; };
+    struct Recorded { const char* name; const char* resource; double beats; int gridBars; };
 
     inline std::vector<Recorded> recorded()
     {
         static const Recorded all[] = {
-            { "Amen Break", "AmenBreak140_wav", 8.0 },   // 2 bars, 140 BPM
+            { "Amen Break", "AmenBreak140_wav", 8.0, 1 },   // 2 bars, 140 BPM; opens on 16 steps of bar 1
         };
 
         std::vector<Recorded> present;
@@ -258,9 +259,12 @@ namespace BreakLibrary
             int size = 0;
             const char* data = BinaryData::getNamedResource (r.resource, size);
             juce::String error;
-            return fromReader (std::unique_ptr<juce::AudioFormatReader> (juce::WavAudioFormat().createReaderFor (
-                                   new juce::MemoryInputStream (data, (size_t) size, false), true)),
-                               r.name, r.beats, error);
+            auto b = fromReader (std::unique_ptr<juce::AudioFormatReader> (juce::WavAudioFormat().createReaderFor (
+                                     new juce::MemoryInputStream (data, (size_t) size, false), true)),
+                                 r.name, r.beats, error);
+            if (b != nullptr)
+                b->gridBars = r.gridBars;
+            return b;
         }
         index -= (int) rec.size();
 

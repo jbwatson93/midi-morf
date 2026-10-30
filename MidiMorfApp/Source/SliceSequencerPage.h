@@ -472,13 +472,14 @@ private:
     }
 
     // A loop of a different length re-grids to match it, so the untouched
-    // pattern plays the whole loop. Same length keeps the current remix —
-    // swapping breaks under a pattern is half the fun.
+    // pattern plays the whole loop — or the bars the break asks to open on
+    // (the Amen: 16 steps of its first bar). Same length keeps the current
+    // remix — swapping breaks under a pattern is half the fun.
     void breakChanged()
     {
         if (const auto* b = eventRouter.getSequencers().getBreak())
         {
-            const int loopBars = juce::jlimit (1, 2, b->bars());
+            const int loopBars = juce::jlimit (1, 2, b->gridBars > 0 ? b->gridBars : b->bars());
             if (loopBars != bars)
             {
                 bars = loopBars;

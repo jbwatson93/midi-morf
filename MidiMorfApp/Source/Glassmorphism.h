@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "PopupStyle.h"
 
 //==============================================================================
 // Per-page glassmorphism colour set. Each instrument page declares one of
@@ -123,6 +124,12 @@ namespace Glassmorphism
 class GlassButtonLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
+    // Dropdowns open fully (PopupStyle).
+    juce::PopupMenu::Options getOptionsForComboBoxPopupMenu (juce::ComboBox& box, juce::Label& label) override
+    {
+        return PopupStyle::forComboBox (box, label);
+    }
+
     GlassButtonLookAndFeel (const PagePalette& p, juce::Colour accentColour,
                             float cornerRadius = 6.0f)
         : palette (p), accent (accentColour), radius (cornerRadius) {}
@@ -153,6 +160,12 @@ private:
 class MultiColorGlassButtonLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
+    // Dropdowns open fully (PopupStyle).
+    juce::PopupMenu::Options getOptionsForComboBoxPopupMenu (juce::ComboBox& box, juce::Label& label) override
+    {
+        return PopupStyle::forComboBox (box, label);
+    }
+
     MultiColorGlassButtonLookAndFeel (juce::Colour accentColour,
                                       float cornerRadius = 6.0f)
         : accent (accentColour), radius (cornerRadius) {}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "PopupStyle.h"
 #include "MidiMorfColors.h"
 
 //==============================================================================
@@ -9,6 +10,12 @@
 class SynthLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
+    // Dropdowns open fully (PopupStyle).
+    juce::PopupMenu::Options getOptionsForComboBoxPopupMenu (juce::ComboBox& box, juce::Label& label) override
+    {
+        return PopupStyle::forComboBox (box, label);
+    }
+
     SynthLookAndFeel()
     {
         // ComboBox palette (used as the base; drawComboBox paints over)

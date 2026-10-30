@@ -239,7 +239,7 @@ public:
         }
     }
 
-    void saveState (juce::PropertiesFile& props)
+    void saveState (juce::PropertySet& props)
     {
         auto prefix = "dualMPad_" + juce::String (padIndex) + "_";
         props.setValue (prefix + "scaleIndex", (int) scaleIndex);
@@ -248,7 +248,7 @@ public:
         props.setValue (prefix + "baseOctave", (int) baseOctave);
     }
 
-    void restoreState (const juce::PropertiesFile& props)
+    void restoreState (const juce::PropertySet& props)
     {
         auto prefix = "dualMPad_" + juce::String (padIndex) + "_";
         scaleIndex = (uint8_t) props.getIntValue (prefix + "scaleIndex", 0);
@@ -345,8 +345,8 @@ public:
         rightPad.setBounds (area.getX() + halfW + gap / 2, area.getY(), halfW - gap / 2, area.getHeight());
     }
 
-    void saveState (juce::PropertiesFile& props) { leftPad.saveState (props); rightPad.saveState (props); }
-    void restoreState (const juce::PropertiesFile& props) { leftPad.restoreState (props); rightPad.restoreState (props); }
+    void saveState (juce::PropertySet& props) { leftPad.saveState (props); rightPad.saveState (props); }
+    void restoreState (const juce::PropertySet& props) { leftPad.restoreState (props); rightPad.restoreState (props); }
 
 private:
     DualMPadPanel leftPad;
@@ -369,8 +369,8 @@ public:
         Glassmorphism::paintPanel (g, getLocalBounds().toFloat(), dualMPadPagePalette);
     }
 
-    void saveState (juce::PropertiesFile& props) { content.saveState (props); }
-    void restoreState (const juce::PropertiesFile& props) { content.restoreState (props); }
+    void saveState (juce::PropertySet& props) { content.saveState (props); }
+    void restoreState (const juce::PropertySet& props) { content.restoreState (props); }
 
     void resized() override
     {

@@ -336,7 +336,7 @@ public:
         }
     }
 
-    void saveState (juce::PropertiesFile& props)
+    void saveState (juce::PropertySet& props)
     {
         props.setValue ("morfPad_scaleIndex", (int) scaleIndex);
         props.setValue ("morfPad_rootNote",   (int) rootNote);
@@ -344,7 +344,7 @@ public:
         props.setValue ("morfPad_baseOctave",  (int) baseOctave);
     }
 
-    void restoreState (const juce::PropertiesFile& props)
+    void restoreState (const juce::PropertySet& props)
     {
         scaleIndex  = (uint8_t) props.getIntValue ("morfPad_scaleIndex", 0);
         rootNote    = (uint8_t) props.getIntValue ("morfPad_rootNote", 0);

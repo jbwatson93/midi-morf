@@ -150,7 +150,7 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
-    saveState();
+    saveNow();
     stopTimer();
     accelerometer.stop();
     networkClient.setListener (nullptr);
@@ -509,84 +509,168 @@ void MainComponent::timerCallback()
         auto& seqs = audioEngine.getSequencers();
         playButton.setLit (seqs.isPlaying (LocalSequencers::Step) || seqs.isPlaying (LocalSequencers::Slice));
     }
+
+    // Write the project once things have been still for half a second, so
+    // dragging a knob doesn't rewrite the file on every tick.
+    if (saveRequested && juce::Time::getMillisecondCounter() - saveRequestedAt > 500)
+        saveNow();
 }
 
 //==============================================================================
 // State persistence
+//
+// The project — the music: each track's instrument, sound, volume and synth
+// patch, the controller pages' settings, tempo and break — lives in one file,
+// Documents/Projects/Current.midimorf. The settings file keeps only app
+// preferences: WiFi/Local, sync source, last page, the edited sound.
+
+static const juce::StringArray appSettingKeys { "lastPage", "mode", "seq_sync", "sound_track" };
+
+static juce::File projectFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+               .getChildFile ("Projects").getChildFile ("Current.midimorf");
+}
+
 void MainComponent::saveState()
 {
+    saveRequested = true;
+    saveRequestedAt = juce::Time::getMillisecondCounter();
+}
+
+void MainComponent::saveNow()
+{
+    saveRequested = false;
+
+    // The project. Page settings go through a PropertySet, as they always
+    // have, and ride along as one child.
+    juce::PropertySet pageState;
+    morfPadPage.saveState (pageState);
+    dualMPadPage.saveState (pageState);
+    morfChordPage.saveState (pageState);
+    roseChordPage.saveState (pageState);
+    audioEngine.getSequencers().saveState (pageState);
+
+    juce::ValueTree project ("MidiMorfProject");
+    project.setProperty ("version", 1, nullptr);
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+    {
+        juce::ValueTree track ("Track");
+        track.setProperty ("index", t, nullptr);
+        track.setProperty ("instrument", instrumentOf[t], nullptr);
+        track.setProperty ("sound", (int) audioEngine.getTrackSound (t), nullptr);
+        track.setProperty ("volume", audioEngine.getRack().getVolume (t), nullptr);
+        track.appendChild (audioEngine.getTrackSynth (t).getState(), nullptr);   // kept even when not playing
+        project.appendChild (track, nullptr);
+    }
+    if (auto xml = pageState.createXml ("PageState"))
+        project.appendChild (juce::ValueTree::fromXml (*xml), nullptr);
+
+    // Written beside the old file and swapped in, so a crash mid-write
+    // can't leave half a project.
+    bool written = false;
+    if (auto xml = project.createXml())
+    {
+        const auto file = projectFile();
+        file.getParentDirectory().createDirectory();
+        juce::TemporaryFile temp (file);
+        written = xml->writeTo (temp.getFile()) && temp.overwriteTargetFileWithTemporary();
+    }
+
     if (auto* props = appProperties.getUserSettings())
     {
         props->setValue ("lastPage", pageContainer.getCurrentPage());
         props->setValue ("mode", eventRouter.getMode() == EventRouter::Mode::Local ? 1 : 0);
-        morfPadPage.saveState (*props);
-        dualMPadPage.saveState (*props);
-        morfChordPage.saveState (*props);
-        roseChordPage.saveState (*props);
-        synthPage.saveState (*props);   // T1's synth, under its original key
-        audioEngine.getSequencers().saveState (*props);
         props->setValue ("seq_sync", eventRouter.isLocalSync() ? 0 : 1);
-
-        // Track setup — until the project file (Phase 1 step 6) takes over.
-        for (int t = 0; t < TrackRack::NumTracks; ++t)
-        {
-            const juce::String n (t);
-            props->setValue ("trk_inst_" + n,  instrumentOf[t]);
-            props->setValue ("trk_sound_" + n, (int) audioEngine.getTrackSound (t));
-            props->setValue ("trk_vol_" + n,   audioEngine.getRack().getVolume (t));
-            if (t > 0)
-                if (auto xml = audioEngine.getTrackSynth (t).getState().createXml())
-                    props->setValue ("trk_synth_" + n, xml.get());
-        }
         props->setValue ("sound_track", soundTrack);
 
-        // Keys from the menu-and-badge layout this replaced.
-        for (auto* stale : { "favorite_0", "t2_state" })
-            props->removeValue (stale);
-        for (int m = 0; m < MidiMorf::NUM_CONTROLLERS; ++m)
-            props->removeValue ("track_page_" + juce::String (m));
-        for (int t = 0; t < TrackRack::NumTracks; ++t)
-            props->removeValue ("track_vol_" + juce::String (t));
-
+        // Once the project is safely on disk, everything else in the settings
+        // file is from before it existed.
+        if (written)
+        {
+            const auto keys = props->getAllProperties().getAllKeys();   // copy: removing while iterating
+            for (auto& key : keys)
+                if (! appSettingKeys.contains (key))
+                    props->removeValue (key);
+        }
         props->saveIfNeeded();
     }
 }
 
 void MainComponent::restoreState()
 {
-    if (auto* props = appProperties.getUserSettings())
+    auto* settings = appProperties.getUserSettings();
+    if (settings == nullptr)
+        return;
+
+    // The project, if there is one. Without it (first launch of this
+    // version) everything comes from the settings file, as it used to.
+    juce::ValueTree project;
+    if (auto xml = juce::XmlDocument::parse (projectFile()))
+        project = juce::ValueTree::fromXml (*xml);
+    if (! project.hasType ("MidiMorfProject"))
     {
-        morfPadPage.restoreState (*props);
-        dualMPadPage.restoreState (*props);
-        morfChordPage.restoreState (*props);
-        roseChordPage.restoreState (*props);
-        synthPage.restoreState (*props);
-        audioEngine.getSequencers().restoreState (*props);
-        eventRouter.setSyncSource (props->getIntValue ("seq_sync", 0) == 1 ? EventRouter::SyncSource::DAW
-                                                                           : EventRouter::SyncSource::Local);
+        project = {};
 
-        // First-launch default: Local mode. New users hear the built-in
-        // synth immediately when they tap a controller — no server setup
-        // needed for a satisfying first-play. Existing users' saved mode
-        // still wins because it's read from the same key.
-        int savedMode = props->getIntValue ("mode", 1);
-        eventRouter.setMode (savedMode == 1 ? EventRouter::Mode::Local : EventRouter::Mode::WiFi);
-        settingsPage.refreshFromRouter();
+        // A file that's there but unreadable is set aside, not overwritten
+        // by the defaults this launch will save.
+        if (projectFile().existsAsFile())
+            projectFile().moveFileTo (projectFile().withFileExtension ("corrupt"));
+    }
 
-        // Tracks. Defaults: T1 Morf-Chord on a synth, T2 Step-Seq on the bass
-        // synth, T3 Slice-Seq on the breaks, T4 empty.
-        using CM = MidiMorf::ControllerMode;
-        const int defaultInst[TrackRack::NumTracks]  = { (int) CM::MorfChord, (int) CM::StepSequencer, (int) CM::SliceSequencer, -1 };
-        const int defaultSound[TrackRack::NumTracks] = { 1, 1, 2, 0 };
+    juce::PropertySet projectPages;
+    if (project.isValid())
+        if (auto xml = project.getChildWithName ("PageState").createXml())
+            projectPages.restoreFromXml (*xml);
+    juce::PropertySet& pages = project.isValid() ? projectPages : static_cast<juce::PropertySet&> (*settings);
+
+    morfPadPage.restoreState (pages);
+    dualMPadPage.restoreState (pages);
+    morfChordPage.restoreState (pages);
+    roseChordPage.restoreState (pages);
+    audioEngine.getSequencers().restoreState (pages);
+    eventRouter.setSyncSource (settings->getIntValue ("seq_sync", 0) == 1 ? EventRouter::SyncSource::DAW
+                                                                          : EventRouter::SyncSource::Local);
+
+    // First-launch default: Local mode. New users hear the built-in
+    // synth immediately when they tap a controller — no server setup
+    // needed for a satisfying first-play. Existing users' saved mode
+    // still wins because it's read from the same key.
+    eventRouter.setMode (settings->getIntValue ("mode", 1) == 1 ? EventRouter::Mode::Local : EventRouter::Mode::WiFi);
+    settingsPage.refreshFromRouter();
+
+    // Tracks. Defaults: T1 Morf-Chord on a synth, T2 Step-Seq on the bass
+    // synth, T3 Slice-Seq on the breaks, T4 empty.
+    using CM = MidiMorf::ControllerMode;
+    const int defaultInst[TrackRack::NumTracks]  = { (int) CM::MorfChord, (int) CM::StepSequencer, (int) CM::SliceSequencer, -1 };
+    const int defaultSound[TrackRack::NumTracks] = { 1, 1, 2, 0 };
+
+    if (project.isValid())
+    {
+        for (int t = 0; t < TrackRack::NumTracks; ++t)
+        {
+            const auto track = project.getChildWithProperty ("index", t);
+            setSound (t, track.getProperty ("sound", defaultSound[t]));
+            if (auto synth = track.getChildWithName (WavetableEngine::stateType); synth.isValid())
+                audioEngine.getTrackSynth (t).setState (synth);
+            setInstrument (t, track.getProperty ("instrument", defaultInst[t]));
+            audioEngine.getRack().setVolume (t, (float) (double) track.getProperty ("volume", 1.0));
+        }
+    }
+    else
+    {
+        // From the settings file: T1's patch under its original key (or the
+        // older formats WavetableSynthPage still reads), the rest per track.
+        synthPage.restoreState (*settings);
 
         for (int t = 0; t < TrackRack::NumTracks; ++t)
-            setSound (t, props->getIntValue ("trk_sound_" + juce::String (t), defaultSound[t]));
+            setSound (t, settings->getIntValue ("trk_sound_" + juce::String (t), defaultSound[t]));
 
         for (int t = 1; t < TrackRack::NumTracks; ++t)
         {
-            auto xml = props->getXmlValue ("trk_synth_" + juce::String (t));
+            auto xml = settings->getXmlValue ("trk_synth_" + juce::String (t));
             if (xml == nullptr && t == 1)
-                xml = props->getXmlValue ("t2_state");   // the bass, as saved before tracks had their own keys
+                xml = settings->getXmlValue ("t2_state");   // the bass, as saved before tracks had their own keys
             if (xml != nullptr)
                 audioEngine.getTrackSynth (t).setState (juce::ValueTree::fromXml (*xml));
         }
@@ -594,29 +678,33 @@ void MainComponent::restoreState()
         for (int t = 0; t < TrackRack::NumTracks; ++t)
         {
             const juce::String n (t);
-            setInstrument (t, props->getIntValue ("trk_inst_" + n, defaultInst[t]));
-            audioEngine.getRack().setVolume (t, (float) props->getDoubleValue ("trk_vol_" + n, 1.0));
+            setInstrument (t, settings->getIntValue ("trk_inst_" + n, defaultInst[t]));
+            audioEngine.getRack().setVolume (t, (float) settings->getDoubleValue ("trk_vol_" + n, 1.0));
         }
-
-        soundTrack = juce::jlimit (0, TrackRack::NumTracks - 1, props->getIntValue ("sound_track", 0));
-        if (audioEngine.getWavetable (soundTrack) != nullptr)
-            synthPage.edit (audioEngine.getTrackSynth (soundTrack),
-                            "T" + juce::String (soundTrack + 1) + " " + audioEngine.getSoundName (soundTrack).toUpperCase(),
-                            TrackColours::get (soundTrack));
-
-        // Last page, if it still belongs somewhere; otherwise T1's
-        // instrument (Morf-Chord on first launch), or Home.
-        int lastPage = props->getIntValue ("lastPage", -1);
-        const bool reachable = lastPage >= 0 && lastPage < numPages
-                               && (lastPage >= MidiMorf::NUM_CONTROLLERS
-                                   || lastPage == (int) CM::Transport || lastPage == (int) CM::FXPunchIn
-                                   || trackOfPage (lastPage) >= 0);
-        if (! reachable)
-            lastPage = instrumentOf[0] >= 0 ? instrumentOf[0] : homePageIdx;
-
-        pageContainer.setPage (lastPage);
-        updateRail();   // setPage does nothing if lastPage is already showing
     }
+
+    soundTrack = juce::jlimit (0, TrackRack::NumTracks - 1, settings->getIntValue ("sound_track", 0));
+    if (audioEngine.getWavetable (soundTrack) != nullptr)
+        synthPage.edit (audioEngine.getTrackSynth (soundTrack),
+                        "T" + juce::String (soundTrack + 1) + " " + audioEngine.getSoundName (soundTrack).toUpperCase(),
+                        TrackColours::get (soundTrack));
+
+    // Last page, if it still belongs somewhere; otherwise T1's
+    // instrument (Morf-Chord on first launch), or Home.
+    int lastPage = settings->getIntValue ("lastPage", -1);
+    const bool reachable = lastPage >= 0 && lastPage < numPages
+                           && (lastPage >= MidiMorf::NUM_CONTROLLERS
+                               || lastPage == (int) CM::Transport || lastPage == (int) CM::FXPunchIn
+                               || trackOfPage (lastPage) >= 0);
+    if (! reachable)
+        lastPage = instrumentOf[0] >= 0 ? instrumentOf[0] : homePageIdx;
+
+    pageContainer.setPage (lastPage);
+    updateRail();   // setPage does nothing if lastPage is already showing
+
+    // Writes the project straight away, which also moves an older install's
+    // settings into it.
+    saveNow();
 }
 
 void MainComponent::seqPlayheadChanged (int step)

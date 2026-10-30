@@ -57,6 +57,7 @@ public:
     {
         if (auto* main = getMainComponent())
         {
+            main->saveNow();
             main->getAudioEngine().getSequencers().stopAll();
             main->getAudioEngine().allNotesOff();
             main->getAudioEngine().stop();

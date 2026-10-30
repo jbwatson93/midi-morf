@@ -70,6 +70,10 @@ public:
     // you get stuck-note / feedback artefacts).
     AudioEngine& getAudioEngine() noexcept { return audioEngine; }
 
+    // Writes the project and settings now rather than after the usual
+    // half-second pause — for suspend and shutdown.
+    void saveNow();
+
 private:
     //==========================================================================
     // Tracks
@@ -116,8 +120,10 @@ private:
 
     juce::ApplicationProperties appProperties;
 
-    void saveState();
+    void saveState();      // asks for a save; the timer writes it once things settle
     void restoreState();
+    bool saveRequested = false;
+    juce::uint32 saveRequestedAt = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

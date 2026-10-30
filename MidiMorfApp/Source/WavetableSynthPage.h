@@ -842,7 +842,7 @@ public:
 
     // The patch lives in the engine as one ValueTree (WavetableEngine::
     // getState), stored here under a single settings key.
-    void saveState (juce::PropertiesFile& props) const
+    void saveState (juce::PropertySet& props) const
     {
         if (auto xml = engine.getState().createXml())
             props.setValue ("wt_state", xml.get());
@@ -854,7 +854,7 @@ public:
                 props.removeValue (key);
     }
 
-    void restoreState (juce::PropertiesFile& props)
+    void restoreState (juce::PropertySet& props)
     {
         if (auto xml = props.getXmlValue ("wt_state"))
             engine.setState (juce::ValueTree::fromXml (*xml));
@@ -871,7 +871,7 @@ public:
 private:
     // A patch saved before the engine owned its state: the same names with a
     // "wt_" prefix, one settings key each.
-    static juce::ValueTree stateFromLegacyKeys (juce::PropertiesFile& props)
+    static juce::ValueTree stateFromLegacyKeys (juce::PropertySet& props)
     {
         juce::ValueTree t (WavetableEngine::stateType);
         const auto& all = props.getAllProperties();
@@ -887,7 +887,7 @@ private:
     // env-to-position amount is zero, so the voice is the same shape.
     // Fallbacks are that synth's factory defaults. The old keys are left in
     // place; once this synth saves, "wt_state" takes over.
-    void migrateClassicPatch (juce::PropertiesFile& props)
+    void migrateClassicPatch (juce::PropertySet& props)
     {
         auto f = [&props] (const char* key, double def) { return (float) props.getDoubleValue (key, def); };
 

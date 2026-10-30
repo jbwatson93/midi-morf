@@ -392,7 +392,7 @@ public:
         }
     }
 
-    void saveState (juce::PropertiesFile& props)
+    void saveState (juce::PropertySet& props)
     {
         // Voicing + octave persist. Type / modifier are momentary — at launch
         // no fingers are on the buttons, so they always start cleared.
@@ -400,7 +400,7 @@ public:
         props.setValue ("roseChord_octave",  (int) octaveOffset);
     }
 
-    void restoreState (juce::PropertiesFile& props)
+    void restoreState (juce::PropertySet& props)
     {
         voicingOffset = (int8_t) juce::jlimit (-7, 7,
             props.getIntValue ("roseChord_voicing", (int) voicingOffset));
@@ -468,8 +468,8 @@ public:
         Glassmorphism::paintPanel (g, getLocalBounds().toFloat(), roseChordPagePalette);
     }
 
-    void saveState (juce::PropertiesFile& props)    { content.saveState (props); }
-    void restoreState (juce::PropertiesFile& props) { content.restoreState (props); }
+    void saveState (juce::PropertySet& props)    { content.saveState (props); }
+    void restoreState (juce::PropertySet& props) { content.restoreState (props); }
 
     void resized() override
     {

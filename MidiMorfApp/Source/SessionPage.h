@@ -25,7 +25,10 @@ static const PagePalette sessionPagePalette {
 //     pattern. Clips belong to sequencer tracks (Step-Seq, Slice-Seq, Drum
 //     Grid); controller tracks get theirs when recording arrives.
 //   • the track column — what plays the track, its sound, its volume, ■.
-//   • the bottom strip — the project, and the pages that belong to no track.
+//   • MIXER (instead of the grid) — per track: its sound (tap to edit it),
+//     pan and mute. Volume is in the track column.
+//   • the bottom strip — the project, CLIPS / MIXER, launch quantize, and
+//     the pages that belong to no track.
 //
 // MainComponent owns the tracks and the clips and wires the callbacks.
 class SessionPage : public juce::Component,
@@ -48,6 +51,16 @@ public:
         std::function<void (int track, int scene)> launchClip, newClip, editClip, duplicateClip, deleteClip;
         std::function<void (int scene)> launchScene;
         std::function<void (int track)> stopTrack;
+        std::function<int()> getLaunchQuantize;                  // 0 bar, 1 beat, 2 off
+        std::function<void (int)> setLaunchQuantize;
+
+        // Mixer
+        std::function<juce::String (int track)> soundName;
+        std::function<void (int track)> openSound;
+        std::function<float (int track)> getPan;
+        std::function<void (int track, float pan)> setPan;
+        std::function<bool (int track)> getMuted;
+        std::function<void (int track, bool muted)> setMuted;
 
         std::function<void (int pageIndex)> openPage;
         std::function<void()> openProjects;
@@ -74,6 +87,29 @@ public:
 
         projectButton.onClick = [this] { if (callbacks.openProjects) callbacks.openProjects(); };
         addAndMakeVisible (projectButton);
+
+        for (int v = 0; v < 2; ++v)
+        {
+            auto* b = viewButtons.add (new juce::TextButton (v == 0 ? "CLIPS" : "MIXER"));
+            b->setClickingTogglesState (true);
+            b->setRadioGroupId (8181);
+            b->onClick = [this, v] { showMixer (v == 1); };
+            addAndMakeVisible (b);
+        }
+        viewButtons[0]->setToggleState (true, juce::dontSendNotification);
+
+        quantize.addItem ("Launch: bar", 1);
+        quantize.addItem ("Launch: beat", 2);
+        quantize.addItem ("Launch: now", 3);
+        quantize.onChange = [this]
+        {
+            if (callbacks.setLaunchQuantize) callbacks.setLaunchQuantize (quantize.getSelectedId() - 1);
+            if (callbacks.changed) callbacks.changed();
+        };
+        addAndMakeVisible (quantize);
+
+        for (int t = 0; t < TrackRack::NumTracks; ++t)
+            addChildComponent (strips.add (new Strip (*this, t)));
 
         const std::pair<const char*, int> links[] = {
             { "Transport", pages.transport }, { "Morf FX", pages.fx },
@@ -104,6 +140,9 @@ public:
     {
         for (auto* r : rows)
             r->refresh();
+        for (auto* st : strips)
+            st->refresh();
+        quantize.setSelectedId ((callbacks.getLaunchQuantize ? callbacks.getLaunchQuantize() : 0) + 1, juce::dontSendNotification);
         projectButton.setButtonText ("Project: " + (callbacks.projectName ? callbacks.projectName() : juce::String()));
         grid.repaint();
     }
@@ -113,6 +152,19 @@ public:
     void paint (juce::Graphics& g) override
     {
         Glassmorphism::paintPanel (g, getLocalBounds().toFloat(), sessionPagePalette);
+
+        if (mixerShown && ! strips.isEmpty())
+        {
+            // Column heads over the strips, from the first strip's layout.
+            const auto off = strips[0]->getPosition();
+            g.setColour (MidiMorfColors::textLight.withAlpha (0.5f));
+            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            for (auto [label, r] : { std::pair { "SOUND", strips[0]->sound.getBounds() },
+                                     std::pair { "PAN", strips[0]->pan.getBounds() },
+                                     std::pair { "MUTE", strips[0]->mute.getBounds() } })
+                g.drawText (label, r.translated (off.x, 0).withY (mixerHead.getY()).withHeight (mixerHead.getHeight()),
+                            juce::Justification::centredLeft);
+        }
     }
 
     void resized() override
@@ -121,8 +173,13 @@ public:
 
         auto bottom = area.removeFromBottom (32);
         area.removeFromBottom (6);
-        projectButton.setBounds (bottom.removeFromLeft (juce::jmin (220, bottom.getWidth() / 3)).reduced (2));
-        bottom.removeFromLeft (8);
+        projectButton.setBounds (bottom.removeFromLeft (juce::jmin (180, bottom.getWidth() / 4)).reduced (2));
+        bottom.removeFromLeft (6);
+        for (auto* b : viewButtons)
+            b->setBounds (bottom.removeFromLeft (64).reduced (2));
+        bottom.removeFromLeft (6);
+        quantize.setBounds (bottom.removeFromLeft (124).reduced (2));
+        bottom.removeFromLeft (6);
         const int lw = bottom.getWidth() / juce::jmax (1, linkButtons.size());
         for (auto* b : linkButtons)
             b->setBounds (bottom.removeFromLeft (lw).reduced (2));
@@ -138,6 +195,9 @@ public:
             rows[t]->setBounds (column.getX(), column.getY() + t * rowH, column.getWidth(), rowH - 4);
 
         viewport.setBounds (area);
+        for (int t = 0; t < strips.size(); ++t)
+            strips[t]->setBounds (area.getX(), area.getY() + headH + t * rowH, area.getWidth(), rowH - 4);
+        mixerHead = area.withHeight (headH);
         const int sceneW = juce::jmax (84, area.getWidth() / 4);
         grid.setSize (sceneW * SessionModel::NumScenes, area.getHeight());
         grid.sceneW = sceneW;
@@ -146,6 +206,88 @@ public:
 
 private:
     static constexpr int SceneHeaderH = 30;
+
+    void showMixer (bool m)
+    {
+        mixerShown = m;
+        viewport.setVisible (! m);
+        for (auto* st : strips)
+        {
+            st->setVisible (m);
+            st->refresh();
+        }
+        repaint();
+    }
+
+    //==========================================================================
+    // A track's mixer strip (compact): its sound, pan, mute. Sends and insert
+    // FX come with the full mixer.
+    struct Strip : public juce::Component
+    {
+        Strip (SessionPage& o, int t) : owner (o), track (t)
+        {
+            sound.onClick = [this] { if (owner.callbacks.openSound) owner.callbacks.openSound (track); };
+            sound.setColour (juce::TextButton::textColourOffId, TrackColours::get (t).brighter (0.3f));
+            addAndMakeVisible (sound);
+
+            pan.setSliderStyle (juce::Slider::LinearHorizontal);
+            pan.setTextBoxStyle (juce::Slider::TextBoxRight, false, 44, 20);
+            pan.setRange (-1.0, 1.0, 0.01);
+            pan.setDoubleClickReturnValue (true, 0.0);
+            pan.textFromValueFunction = [] (double v)
+            {
+                const int pct = juce::roundToInt (std::abs (v) * 100.0);
+                return pct == 0 ? juce::String ("C") : juce::String (pct) + (v < 0 ? "L" : "R");
+            };
+            pan.updateText();
+            pan.setColour (juce::Slider::thumbColourId, TrackColours::get (t));
+            pan.onValueChange = [this] { if (owner.callbacks.setPan) owner.callbacks.setPan (track, (float) pan.getValue()); };
+            pan.onDragEnd = [this] { if (owner.callbacks.changed) owner.callbacks.changed(); };
+            addAndMakeVisible (pan);
+
+            mute.setClickingTogglesState (true);
+            mute.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffB03A2E));
+            mute.onClick = [this]
+            {
+                if (owner.callbacks.setMuted) owner.callbacks.setMuted (track, mute.getToggleState());
+                if (owner.callbacks.changed) owner.callbacks.changed();
+            };
+            addAndMakeVisible (mute);
+        }
+
+        void refresh()
+        {
+            const auto name = owner.callbacks.soundName ? owner.callbacks.soundName (track) : juce::String();
+            sound.setButtonText (name);   // no pencil glyph: iOS draws those as emoji
+            sound.setEnabled (owner.callbacks.getSound && owner.callbacks.getSound (track) != 0);
+            pan.setValue (owner.callbacks.getPan ? owner.callbacks.getPan (track) : 0.0f, juce::dontSendNotification);
+            mute.setToggleState (owner.callbacks.getMuted && owner.callbacks.getMuted (track), juce::dontSendNotification);
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            auto r = getLocalBounds().toFloat();
+            g.setColour (juce::Colours::black.withAlpha (0.25f));
+            g.fillRoundedRectangle (r, 8.0f);
+            g.setColour (TrackColours::get (track).withAlpha (0.8f));
+            g.fillRoundedRectangle (r.removeFromLeft (5.0f), 2.0f);
+        }
+
+        void resized() override
+        {
+            auto r = getLocalBounds().reduced (10, 6);
+            mute.setBounds (r.removeFromRight (64).withSizeKeepingCentre (64, juce::jmin (36, r.getHeight())));
+            r.removeFromRight (10);
+            sound.setBounds (r.removeFromLeft (r.getWidth() * 45 / 100).withSizeKeepingCentre (r.getWidth() * 45 / 100, juce::jmin (36, r.getHeight())));
+            r.removeFromLeft (10);
+            pan.setBounds (r.withSizeKeepingCentre (r.getWidth(), juce::jmin (36, r.getHeight())));
+        }
+
+        SessionPage& owner;
+        const int track;
+        juce::TextButton sound, mute { "MUTE" };
+        juce::Slider pan;
+    };
 
     //==========================================================================
     // The clip grid: scene ▶ buttons on top, a cell per track and scene.
@@ -467,5 +609,10 @@ private:
     Grid grid;
     juce::OwnedArray<Row> rows;
     juce::TextButton projectButton;
+    juce::OwnedArray<juce::TextButton> viewButtons;
+    juce::ComboBox quantize;
+    juce::OwnedArray<Strip> strips;
+    juce::Rectangle<int> mixerHead;
+    bool mixerShown = false;
     juce::OwnedArray<juce::TextButton> linkButtons;
 };

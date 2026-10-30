@@ -98,6 +98,11 @@ public:
     void  setVolume (int track, float v) { if (validTrack (track)) volumes[(size_t) track].store (juce::jlimit (0.0f, MaxVolume, v)); }
     float getVolume (int track) const    { return validTrack (track) ? volumes[(size_t) track].load() : 0.0f; }
 
+    // Pan, -1 (left) .. +1 (right). A balance law: the centre is exactly
+    // unity on both sides, and panning turns the far side down.
+    void  setPan (int track, float p)    { if (validTrack (track)) pans[(size_t) track].store (juce::jlimit (-1.0f, 1.0f, p)); }
+    float getPan (int track) const       { return validTrack (track) ? pans[(size_t) track].load() : 0.0f; }
+
     // Mute keeps the volume setting and ramps like it.
     void setMuted (int track, bool m)    { if (validTrack (track)) muted[(size_t) track].store (m); }
     bool isMuted (int track) const       { return validTrack (track) && muted[(size_t) track].load(); }
@@ -115,10 +120,12 @@ public:
         limiterEnv = 0.0f;
 
         for (int t = 0; t < NumTracks; ++t)
-        {
-            gains[(size_t) t].reset (sampleRate, 0.02);
-            gains[(size_t) t].setCurrentAndTargetValue (muted[(size_t) t].load() ? 0.0f : volumes[(size_t) t].load());
-        }
+            for (int side = 0; side < 2; ++side)
+            {
+                auto& g = gains[(size_t) t][(size_t) side];
+                g.reset (sampleRate, 0.02);
+                g.setCurrentAndTargetValue (targetGain (t, side));
+            }
     }
 
     void release()
@@ -226,22 +233,34 @@ private:
         handle (scope.startIndex2, scope.blockSize2);
     }
 
-    // Adds the track's scratch render into `out` at its volume. Steady
-    // volume is a plain (gained) add — unity is exactly the unscaled signal;
-    // while a change is ramping, per sample.
+    // Volume x balance for one side (0 left, 1 right).
+    float targetGain (int t, int side) const
+    {
+        if (muted[(size_t) t].load())
+            return 0.0f;
+        const float pan = pans[(size_t) t].load();
+        const float balance = side == 0 ? juce::jmin (1.0f, 1.0f - pan) : juce::jmin (1.0f, 1.0f + pan);
+        return volumes[(size_t) t].load() * balance;
+    }
+
+    // Adds the track's scratch render into `out` at its volume and pan.
+    // Steady gains are a plain (gained) add — unity is exactly the unscaled
+    // signal; while a change is ramping, per sample.
     void mixTrack (int t, juce::AudioBuffer<float>& out, int start, int n)
     {
-        auto& gain = gains[(size_t) t];
-        gain.setTargetValue (muted[(size_t) t].load() ? 0.0f : volumes[(size_t) t].load());
+        auto& g = gains[(size_t) t];
+        for (int side = 0; side < 2; ++side)
+            g[(size_t) side].setTargetValue (targetGain (t, side));
         const int numOut = out.getNumChannels(), numIn = scratch.getNumChannels();
 
-        if (! gain.isSmoothing())
+        if (! g[0].isSmoothing() && ! g[1].isSmoothing())
         {
-            const float g = gain.getCurrentValue();
-            if (g <= 0.0f)
-                return;
             for (int ch = 0; ch < numOut; ++ch)
-                out.addFrom (ch, start, scratch, juce::jmin (ch, numIn - 1), 0, n, g);
+            {
+                const float gain = g[(size_t) juce::jmin (ch, 1)].getCurrentValue();
+                if (gain > 0.0f)
+                    out.addFrom (ch, start, scratch, juce::jmin (ch, numIn - 1), 0, n, gain);
+            }
             return;
         }
 
@@ -249,9 +268,9 @@ private:
         const float* src[2] = { scratch.getReadPointer (0), scratch.getReadPointer (juce::jmin (1, numIn - 1)) };
         for (int i = 0; i < n; ++i)
         {
-            const float g = gain.getNextValue();
-            dst[0][i] += g * src[0][i];
-            if (dst[1] != nullptr) dst[1][i] += g * src[1][i];
+            const float gl = g[0].getNextValue(), gr = g[1].getNextValue();
+            dst[0][i] += gl * src[0][i];
+            if (dst[1] != nullptr) dst[1][i] += gr * src[1][i];
         }
     }
 
@@ -287,8 +306,9 @@ private:
     std::vector<SoundSource*> pool;   // message thread
     MasterProcessor* master = nullptr;
     std::array<std::atomic<float>, NumTracks> volumes { 1.0f, 1.0f, 1.0f, 1.0f };
+    std::array<std::atomic<float>, NumTracks> pans {};
     std::array<std::atomic<bool>, NumTracks> muted {};
-    std::array<juce::SmoothedValue<float>, NumTracks> gains;   // audio thread
+    std::array<std::array<juce::SmoothedValue<float>, 2>, NumTracks> gains;   // audio thread, per side
     juce::AudioBuffer<float> scratch;
 
     juce::AbstractFifo fifo { FifoSize };

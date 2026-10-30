@@ -19,6 +19,11 @@ static const PagePalette fxPagePalette {
     juce::Colour (0xCC000000)        // edge — translucent black
 };
 
+// Morf FX. In WiFi mode the XY pad, sliders and four buttons send CCs and
+// button messages to the DAW. In Local mode they play the punch-in FX on the
+// master bus: hold a button to punch its effect in, double-tap to latch it,
+// tap a latched one to let it go. The chevron on each button picks its
+// effect, and the sliders say what X and Y do for the effect last touched.
 class FXPunchInPage : public juce::Component,
                       public XYPad::Listener,
                       public FXButton::Listener,
@@ -46,13 +51,52 @@ public:
             btn->setPalette (&fxPagePalette);
             fxButtons.add (btn);
             addAndMakeVisible (btn);
+            wifiLabels.add ("FX " + juce::String (i + 1));
         }
     }
 
+    // A slot name from the server, for WiFi mode.
     void setButtonLabel (int slotIndex, const juce::String& name)
     {
         if (slotIndex >= 0 && slotIndex < fxButtons.size())
-            fxButtons[slotIndex]->setLabel (name);
+        {
+            wifiLabels.set (slotIndex, name);
+            refreshMode();
+        }
+    }
+
+    std::function<void()> onStateChanged;   // an effect was picked — worth saving
+
+    // Which effect sits on each button.
+    void saveState (juce::PropertySet& props) const
+    {
+        if (auto* punch = networkClient.getPunchFx())
+            for (int i = 0; i < PunchFx::NumSlots; ++i)
+                props.setValue ("punch_slot_" + juce::String (i), punch->getSlotEffect (i));
+    }
+
+    void restoreState (const juce::PropertySet& props)
+    {
+        if (auto* punch = networkClient.getPunchFx())
+            for (int i = 0; i < PunchFx::NumSlots; ++i)
+            {
+                const juce::String key = "punch_slot_" + juce::String (i);
+                if (props.containsKey (key))
+                    punch->setSlotEffect (i, props.getIntValue (key));
+            }
+        refreshMode();
+    }
+
+    // Call when the WiFi / Local mode changes.
+    void refreshFromRouter() { refreshMode(); }
+
+    // Labels follow the mode — the page may have been hidden while it changed.
+    void visibilityChanged() override
+    {
+        if (isVisible())
+            refreshMode();
+        else
+            releaseLocal();   // leaving the page lets go of anything latched
     }
 
     void paint (juce::Graphics& g) override
@@ -102,7 +146,6 @@ public:
     // XYPad::Listener
     void xyPadUpdated (float x, float y) override
     {
-        DBG ("FXPunchInPage::xyPadUpdated x=" << x << " y=" << y);
         networkClient.sendXYUpdate (x, y);
         xSlider.setDisplayValue (x);
         ySlider.setDisplayValue (y);
@@ -113,26 +156,79 @@ public:
     {
         lastPressedSlot = slotIndex;
         updateHighlights();
+
+        if (! local())
+        {
+            networkClient.sendButtonDown (slotIndex);
+            return;
+        }
+
+        auto& s = slotTouch[(size_t) slotIndex];
+        s.downAt = juce::Time::getMillisecondCounter();
+
+        // A tap on a latched effect lets it go.
+        if (fxButtons[slotIndex]->isLatched())
+        {
+            fxButtons[slotIndex]->setLatched (false);
+            networkClient.sendButtonUp (slotIndex);
+            s.swallowRelease = true;
+            return;
+        }
+
         networkClient.sendButtonDown (slotIndex);
     }
 
     void fxButtonReleased (int slotIndex) override
     {
-        networkClient.sendButtonUp (slotIndex);
-
-        // If released slot was last pressed, try to move to another held slot
-        if (slotIndex == lastPressedSlot)
+        if (! local())
         {
-            for (int i = 0; i < fxButtons.size(); ++i)
-            {
-                if (i != slotIndex && fxButtons[i]->isHeld())
-                {
-                    lastPressedSlot = i;
-                    break;
-                }
-            }
+            networkClient.sendButtonUp (slotIndex);
+            moveHighlightFrom (slotIndex);
+            return;
         }
-        updateHighlights();
+
+        auto& s = slotTouch[(size_t) slotIndex];
+        if (std::exchange (s.swallowRelease, false))
+            return;
+
+        // Two quick taps latch: the second release keeps the effect in.
+        const auto now = juce::Time::getMillisecondCounter();
+        const bool quickTap = now - s.downAt < 250;
+        if (quickTap && now - s.lastTapUp < 400)
+        {
+            fxButtons[slotIndex]->setLatched (true);
+            s.lastTapUp = 0;
+            return;
+        }
+
+        s.lastTapUp = quickTap ? now : 0;
+        networkClient.sendButtonUp (slotIndex);
+        moveHighlightFrom (slotIndex);
+    }
+
+    void fxButtonMenu (int slotIndex) override
+    {
+        auto* punch = networkClient.getPunchFx();
+        if (punch == nullptr || ! local())
+            return;
+
+        juce::PopupMenu menu;
+        const auto& names = PunchFx::effectNames();
+        for (int e = 0; e < names.size(); ++e)
+            menu.addItem (e + 1, names[e], true, punch->getSlotEffect (slotIndex) == e);
+
+        juce::Component::SafePointer<FXPunchInPage> safe (this);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (fxButtons[slotIndex])
+                                                       .withStandardItemHeight (36),
+            [safe, slotIndex] (int result)
+            {
+                if (safe == nullptr || result <= 0) return;
+                if (auto* p = safe->networkClient.getPunchFx())
+                    p->setSlotEffect (slotIndex, result - 1);
+                safe->lastPressedSlot = slotIndex;
+                safe->refreshMode();
+                if (safe->onStateChanged) safe->onStateChanged();
+            });
     }
 
     // AxisSlider::Listener
@@ -142,16 +238,82 @@ public:
     }
 
 private:
+    bool local() const { return networkClient.isLocal() && networkClient.getPunchFx() != nullptr; }
+
+    void refreshMode()
+    {
+        auto* punch = networkClient.getPunchFx();
+        const bool isLocal = local();
+
+        for (int i = 0; i < fxButtons.size(); ++i)
+        {
+            fxButtons[i]->setShowsMenu (isLocal);
+            fxButtons[i]->setLabel (isLocal ? PunchFx::effectNames()[punch->getSlotEffect (i)] : wifiLabels[i]);
+            if (! isLocal)
+                fxButtons[i]->setLatched (false);
+        }
+
+        if (isLocal)
+        {
+            const auto axes = PunchFx::axisNames (punch->getSlotEffect (juce::jmax (0, lastPressedSlot)));
+            xSlider.setLocalLabel ("X  " + axes.first);
+            ySlider.setLocalLabel ("Y");
+        }
+        else
+        {
+            xSlider.setLocalLabel ({});
+            ySlider.setLocalLabel ({});
+        }
+        updateHighlights();
+    }
+
+    void releaseLocal()
+    {
+        if (! local())
+            return;
+        for (int i = 0; i < fxButtons.size(); ++i)
+            if (fxButtons[i]->isLatched())
+            {
+                fxButtons[i]->setLatched (false);
+                networkClient.sendButtonUp (i);
+            }
+    }
+
+    // If the released slot was the last pressed, the highlight moves to
+    // another held one.
+    void moveHighlightFrom (int slotIndex)
+    {
+        if (slotIndex == lastPressedSlot)
+            for (int i = 0; i < fxButtons.size(); ++i)
+                if (i != slotIndex && (fxButtons[i]->isHeld() || fxButtons[i]->isLatched()))
+                {
+                    lastPressedSlot = i;
+                    break;
+                }
+        updateHighlights();
+    }
+
     void updateHighlights()
     {
         for (int i = 0; i < fxButtons.size(); ++i)
             fxButtons[i]->setHighlighted (i == lastPressedSlot);
+
+        if (local())
+        {
+            const auto axes = PunchFx::axisNames (networkClient.getPunchFx()->getSlotEffect (juce::jmax (0, lastPressedSlot)));
+            xSlider.setLocalLabel ("X  " + axes.first);
+            ySlider.setLocalLabel (axes.second);
+        }
     }
+
+    struct Touch { juce::uint32 downAt = 0, lastTapUp = 0; bool swallowRelease = false; };
 
     EventRouter& networkClient;
     XYPad xyPad;
     AxisSlider ySlider;
     AxisSlider xSlider;
     juce::OwnedArray<FXButton> fxButtons;
+    juce::StringArray wifiLabels;
+    std::array<Touch, MidiMorf::NUM_SLOTS> slotTouch;
     int lastPressedSlot = -1;
 };

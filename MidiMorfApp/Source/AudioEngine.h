@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "WavetableEngine.h"
 #include "LocalSequencers.h"
+#include "PunchFx.h"
 
 //==============================================================================
 // Owns the iOS audio device, the track sources and the track rack. The device
@@ -25,6 +26,9 @@ public:
             rack.addToPool (synths[(size_t) t].get());
         }
         rack.addToPool (&breaks);
+
+        punch.setTempoSource ([this] { return sequencers.getBpm(); });
+        rack.setMasterProcessor (&punch);
 
         synths[1]->setState (bassPatch());
         setTrackSound (0, Sound::Synth);
@@ -139,6 +143,7 @@ public:
     }
     LocalSequencers& getSequencers() noexcept { return sequencers; }
     TrackRack& getRack() noexcept             { return rack; }
+    PunchFx& getPunchFx() noexcept            { return punch; }
 
     // What a track's sound is called in the UI. Presets will name the synths
     // later; until then T2's starts as "Bass".
@@ -211,6 +216,7 @@ private:
     std::array<Sound, TrackRack::NumTracks> sounds { Sound::Empty, Sound::Empty, Sound::Empty, Sound::Empty };
     std::array<juce::String, TrackRack::NumTracks> soundNames { "Synth", "Synth", "Synth", "Synth" };
     BreakSource breaks;
+    PunchFx punch;
     TrackRack rack;
     LocalSequencers sequencers { rack, breaks };
     juce::AudioDeviceManager deviceManager;

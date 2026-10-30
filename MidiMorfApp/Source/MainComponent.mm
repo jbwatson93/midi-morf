@@ -73,6 +73,9 @@ MainComponent::MainComponent()
     // the next foreground.
     juce::Timer::callAfterDelay (250, [this] { audioEngine.start(); });
 
+    // Morf FX plays the master bus's punch-in FX in Local mode.
+    eventRouter.setPunchFx (&audioEngine.getPunchFx());
+
     HomePage::Callbacks cb;
     cb.getInstrument = [this] (int t) { return instrumentOf[t]; };
     cb.setInstrument = [this] (int t, int mode) { setInstrument (t, mode); updateRail(); };
@@ -106,7 +109,7 @@ MainComponent::MainComponent()
     addAndMakeVisible (pageContainer);
     addAndMakeVisible (header);
 
-    settingsPage.onModeChanged = [this] { saveState(); };
+    settingsPage.onModeChanged = [this] { fxPage.refreshFromRouter(); saveState(); };
     settingsPage.getAudioLoad  = [this] { return audioEngine.getCpuUsage(); };
 
     // The rail: Home, the four tracks, Play/Stop. It sits in the right gutter,
@@ -126,6 +129,7 @@ MainComponent::MainComponent()
 
     synthPage.onPatchChanged = [this] { saveState(); };
     breaksPage.onChanged = [this] { saveState(); };
+    fxPage.onStateChanged = [this] { saveState(); };
     transportPage.onStateChanged = [this] { saveState(); };
     stepSequencerPage.setOnStateChanged ([this] { saveState(); });
     sliceSequencerPage.setOnStateChanged ([this] { saveState(); });
@@ -549,6 +553,7 @@ void MainComponent::saveNow()
     dualMPadPage.saveState (pageState);
     morfChordPage.saveState (pageState);
     roseChordPage.saveState (pageState);
+    fxPage.saveState (pageState);
     audioEngine.getSequencers().saveState (pageState);
 
     juce::ValueTree project ("MidiMorfProject");
@@ -628,6 +633,7 @@ void MainComponent::restoreState()
     dualMPadPage.restoreState (pages);
     morfChordPage.restoreState (pages);
     roseChordPage.restoreState (pages);
+    fxPage.restoreState (pages);
     audioEngine.getSequencers().restoreState (pages);
     eventRouter.setSyncSource (settings->getIntValue ("seq_sync", 0) == 1 ? EventRouter::SyncSource::DAW
                                                                           : EventRouter::SyncSource::Local);
@@ -638,6 +644,7 @@ void MainComponent::restoreState()
     // still wins because it's read from the same key.
     eventRouter.setMode (settings->getIntValue ("mode", 1) == 1 ? EventRouter::Mode::Local : EventRouter::Mode::WiFi);
     settingsPage.refreshFromRouter();
+    fxPage.refreshFromRouter();
 
     // Tracks. Defaults: T1 Morf-Chord on a synth, T2 Step-Seq on the bass
     // synth, T3 Slice-Seq on the breaks, T4 empty.

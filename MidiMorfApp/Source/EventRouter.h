@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "NetworkClient.h"
 #include "TrackRack.h"
+#include "PunchFx.h"
 #include "MidiSink.h"
 #include "MorfPadHandler.h"
 #include "OmnichordHandler.h"
@@ -15,8 +16,8 @@
 //   • WiFi mode  → forward semantic events to NetworkClient (existing behaviour).
 //   • Local mode → translate semantic events into MIDI notes via per-controller
 //                  Handlers, which play the track that page is assigned to.
-// FX Punch-in and Transport are always WiFi-only — they don't play notes that
-// the local synth model can sensibly render.
+// Transport is always WiFi. FX Punch-in follows the mode: WiFi sends its
+// CCs and buttons to the DAW, Local plays the punch-in FX on the master bus.
 class EventRouter
 {
 public:
@@ -102,8 +103,16 @@ public:
         morfChord.allNotesOff();
         roseChord.allNotesOff();
 
+        if (punch != nullptr)
+            punch->releaseAll();   // nothing stays punched in across the switch
+
         mode.store (m);
     }
+
+    // Set once at startup.
+    void setPunchFx (PunchFx* p) { punch = p; }
+    PunchFx* getPunchFx() const noexcept { return punch; }
+    bool isLocal() const noexcept { return mode.load() == Mode::Local; }
 
     Mode getMode() const noexcept { return mode.load(); }
 
@@ -120,12 +129,33 @@ public:
     bool isLocalSync() const noexcept         { return syncSource.load() == SyncSource::Local; }
 
     //==========================================================================
-    // FX Punch-in / Transport / global — always WiFi.
+    // FX Punch-in: the DAW over WiFi, or the punch-in FX locally.
 
-    void sendXYUpdate (float x, float y)         { network.sendXYUpdate (x, y); }
-    void sendAxisUpdate (bool isXAxis, float v)  { network.sendAxisUpdate (isXAxis, v); }
-    void sendButtonDown (int slotIndex)          { network.sendButtonDown (slotIndex); }
-    void sendButtonUp (int slotIndex)            { network.sendButtonUp (slotIndex); }
+    void sendXYUpdate (float x, float y)
+    {
+        if (isLocal() && punch != nullptr) punch->setXY (x, y);
+        else                               network.sendXYUpdate (x, y);
+    }
+
+    void sendAxisUpdate (bool isXAxis, float v)
+    {
+        if (isLocal() && punch != nullptr) { if (isXAxis) punch->setX (v); else punch->setY (v); }
+        else                               network.sendAxisUpdate (isXAxis, v);
+    }
+
+    void sendButtonDown (int slotIndex)
+    {
+        if (isLocal() && punch != nullptr) punch->setActive (slotIndex, true);
+        else                               network.sendButtonDown (slotIndex);
+    }
+
+    void sendButtonUp (int slotIndex)
+    {
+        if (isLocal() && punch != nullptr) punch->setActive (slotIndex, false);
+        else                               network.sendButtonUp (slotIndex);
+    }
+
+    // Transport / global — always WiFi.
     void sendTiltUpdate (float tx, float ty)     { network.sendTiltUpdate (tx, ty); }
     void sendScreenMode (MidiMorf::ControllerMode m) { network.sendScreenMode (m); sequencers.setActivePage (m); }
     void sendTransportButton (uint8_t buttonId)  { network.sendTransportButton (buttonId); }
@@ -364,6 +394,7 @@ private:
     MorfChordHandler morfChord;
     RoseChordHandler roseChord;
 
+    PunchFx* punch = nullptr;
     std::atomic<Mode> mode { Mode::WiFi };
     std::atomic<SyncSource> syncSource { SyncSource::Local };
 };

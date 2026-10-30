@@ -23,6 +23,9 @@ public:
 
     void setListener (Listener* l) { listener = l; }
     void setCCNumber (int cc) { ccNumber = cc; repaint(); }
+
+    // Local mode names what the axis does instead of its CC. Empty: the CC.
+    void setLocalLabel (const juce::String& text) { if (text != localLabel) { localLabel = text; repaint(); } }
     void setDisplayValue (float v) { currentValue = juce::jlimit (0.0f, 1.0f, v); showingExternal = true; repaint(); }
 
     void paint (juce::Graphics& g) override
@@ -54,7 +57,7 @@ public:
         // Label
         g.setColour (MidiMorfColors::textLight.withAlpha (0.7f));
         g.setFont (juce::FontOptions (12.0f));
-        juce::String text = label + " - CC " + juce::String (ccNumber);
+        juce::String text = localLabel.isNotEmpty() ? localLabel : label + " - CC " + juce::String (ccNumber);
         if (isHorizontal)
             g.drawText (text, bounds.reduced (6.0f), juce::Justification::centred);
         else
@@ -96,6 +99,7 @@ private:
 
     bool isHorizontal;
     juce::String label;
+    juce::String localLabel;
     int ccNumber;
     float currentValue = 0.0f;
     bool touching = false;

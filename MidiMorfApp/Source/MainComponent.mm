@@ -53,7 +53,9 @@ static constexpr int settingsPageIdx  = MidiMorf::NUM_CONTROLLERS + 2;
 static constexpr int homePageIdx      = MidiMorf::NUM_CONTROLLERS + 3;
 static constexpr int samplerPageIdx   = MidiMorf::NUM_CONTROLLERS + 4;
 static constexpr int performPageIdx   = MidiMorf::NUM_CONTROLLERS + 5;
-static constexpr int numPages         = MidiMorf::NUM_CONTROLLERS + 6;
+static constexpr int drumGridPageIdx  = MidiMorf::NUM_CONTROLLERS + 6;   // an instrument, but the phone's own
+static constexpr int drumKitPageIdx   = MidiMorf::NUM_CONTROLLERS + 7;
+static constexpr int numPages         = MidiMorf::NUM_CONTROLLERS + 8;
 
 // The four-at-once Perform view is for iPad; an iPhone screen is too small.
 static bool isIPad()
@@ -68,12 +70,23 @@ static bool isIPad()
 static bool isSequencer (int mode)
 {
     return mode == (int) MidiMorf::ControllerMode::StepSequencer
-        || mode == (int) MidiMorf::ControllerMode::SliceSequencer;
+        || mode == (int) MidiMorf::ControllerMode::SliceSequencer
+        || mode == drumGridPageIdx;
 }
 
 static LocalSequencers::Which whichSequencer (int mode)
 {
+    if (mode == drumGridPageIdx)
+        return LocalSequencers::Drums;
     return mode == (int) MidiMorf::ControllerMode::StepSequencer ? LocalSequencers::Step : LocalSequencers::Slice;
+}
+
+// An instrument's name on the rail.
+static juce::String instrumentShortName (int mode)
+{
+    if (mode == drumGridPageIdx)
+        return "Drums";
+    return juce::isPositiveAndBelow (mode, MidiMorf::NUM_CONTROLLERS) ? controllerShortNames[mode] : juce::String();
 }
 
 MainComponent::MainComponent()
@@ -115,7 +128,7 @@ MainComponent::MainComponent()
     cb.changed       = [this] { saveState(); };
     homePage = std::make_unique<HomePage> (cb, HomePage::Pages { (int) MidiMorf::ControllerMode::Transport,
                                                                  (int) MidiMorf::ControllerMode::FXPunchIn,
-                                                                 settingsPageIdx, aboutPageIdx });
+                                                                 settingsPageIdx, aboutPageIdx, drumGridPageIdx });
 
     // Page container — controllers, then Sound, About, Settings, Home, Breaks.
     // The order is the page indices above.
@@ -134,6 +147,8 @@ MainComponent::MainComponent()
     pageContainer.addPage (homePage.get());
     pageContainer.addPage (&samplerPage);
     pageContainer.addPage (&performView);
+    pageContainer.addPage (&drumGridPage);
+    pageContainer.addPage (&drumKitPage);
 
     // Perform borrows the tracks' instrument pages and hands them back.
     performView.onShow       = [this] { populatePerform(); };
@@ -150,7 +165,7 @@ MainComponent::MainComponent()
     performView.onTouched    = [this] (int t)
     {
         const int mode = instrumentOf[t];
-        if (mode >= 0 && mode != focusedMode)
+        if (juce::isPositiveAndBelow (mode, MidiMorf::NUM_CONTROLLERS) && mode != focusedMode)
         {
             focusedMode = mode;
             eventRouter.sendScreenMode (static_cast<MidiMorf::ControllerMode> (mode));
@@ -192,6 +207,15 @@ MainComponent::MainComponent()
     };
     samplerPage.onChanged = [this] { homePage->refresh(); updateRail(); saveState(); };
     samplerPage.setRecorder (audioEngine.getRecorder());
+
+    drumGridPage.onStateChanged = [this] { saveState(); };
+    drumGridPage.onAudition = [this] (int note, bool down)
+    {
+        audition (audioEngine.getSequencers().getTrack (LocalSequencers::Drums), note, down);
+    };
+    drumKitPage.onChanged   = [this] { saveState(); };
+    drumKitPage.onKitLoaded = [this] { homePage->refresh(); updateRail(); };
+    drumKitPage.onAudition  = [this] (int note, bool down) { audition (drumKitPage.getTrack(), note, down); };
     samplerPage.onMicNeeded = [this] (std::function<void (bool)> done)
     {
         requestMicrophone ([this, done] (bool granted) { done (granted && audioEngine.setMicOn (true)); });
@@ -343,6 +367,8 @@ juce::String MainComponent::getPageDisplayName (int pageIndex) const
     if (pageIndex == homePageIdx)      return "Home";
     if (pageIndex == samplerPageIdx)   return "Sampler";
     if (pageIndex == performPageIdx)   return "Perform";
+    if (pageIndex == drumGridPageIdx)  return "Drum Grid";
+    if (pageIndex == drumKitPageIdx)   return "Drums";
     return {};
 }
 
@@ -360,7 +386,7 @@ void MainComponent::setInstrument (int track, int mode)
     // damaged settings file) means no instrument.
     using CM = MidiMorf::ControllerMode;
     const bool isInstrument = mode == (int) CM::MorfPad || mode == (int) CM::Omnichord || mode == (int) CM::DualMPad
-                           || mode == (int) CM::MorfChord || mode == (int) CM::RoseChord || isSequencer (mode);
+                           || mode == (int) CM::MorfChord || mode == (int) CM::RoseChord || isSequencer (mode);   // incl. Drum Grid
     if (! isInstrument)
         mode = -1;
 
@@ -373,16 +399,25 @@ void MainComponent::setInstrument (int track, int mode)
         audioEngine.getSequencers().setPlaying (whichSequencer (old), false);
 
     instrumentOf[track] = mode;
-    if (mode >= 0)
+    if (mode == drumGridPageIdx)
+    {
+        audioEngine.getSequencers().setTrack (LocalSequencers::Drums, track);
+        drumGridPage.setTrack (track);
+    }
+    else if (mode >= 0)
+    {
         eventRouter.setTrackFor (static_cast<MidiMorf::ControllerMode> (mode), track);
+    }
 }
 
 void MainComponent::setSound (int track, int sound)
 {
-    audioEngine.setTrackSound (track, static_cast<AudioEngine::Sound> (juce::jlimit (0, 2, sound)));
+    audioEngine.setTrackSound (track, static_cast<AudioEngine::Sound> (juce::jlimit (0, 3, sound)));
 
-    // The Sound page can't keep editing a synth its track no longer plays.
-    if (pageContainer.getCurrentPage() == synthPageIdx && audioEngine.getWavetable (soundTrack) == nullptr)
+    // A sound page can't keep editing a sound its track no longer plays.
+    const int page = pageContainer.getCurrentPage();
+    if ((page == synthPageIdx && audioEngine.getWavetable (soundTrack) == nullptr)
+        || (page == drumKitPageIdx && audioEngine.getTrackSound (drumKitPage.getTrack()) != AudioEngine::Sound::Drums))
         pageContainer.setPage (homePageIdx);
 }
 
@@ -395,6 +430,9 @@ int MainComponent::trackOfPage (int pageIndex) const
     if (pageIndex == samplerPageIdx)
         return samplerPage.getTrack();
 
+    if (pageIndex == drumKitPageIdx)
+        return drumKitPage.getTrack();
+
     for (int t = 0; t < TrackRack::NumTracks; ++t)
         if (instrumentOf[t] == pageIndex)
             return t;
@@ -403,7 +441,7 @@ int MainComponent::trackOfPage (int pageIndex) const
 
 bool MainComponent::pageIsSound (int pageIndex) const
 {
-    return pageIndex == synthPageIdx || pageIndex == samplerPageIdx;
+    return pageIndex == synthPageIdx || pageIndex == samplerPageIdx || pageIndex == drumKitPageIdx;
 }
 
 // First tap: the track's instrument. Tapping the lit track again flips
@@ -449,10 +487,23 @@ void MainComponent::showSound (int track)
             pageContainer.setPage (samplerPageIdx);
             break;
 
+        case AudioEngine::Sound::Drums:
+            drumKitPage.edit (audioEngine.getTrackDrums (track), track);
+            pageContainer.setPage (drumKitPageIdx);
+            break;
+
         case AudioEngine::Sound::Empty:
             break;
     }
     updateRail();
+}
+
+// A pad or lane name held: straight to the track's sound, outside any
+// sequencer.
+void MainComponent::audition (int track, int note, bool down)
+{
+    if (down) audioEngine.getRack().postNoteOn (track, 10, note, 110);
+    else      audioEngine.getRack().postNoteOff (track, 10, note);
 }
 
 juce::String MainComponent::headerText (int pageIndex) const
@@ -513,7 +564,7 @@ void MainComponent::updateRail()
         const bool hasSound = audioEngine.getTrackSound (t) != AudioEngine::Sound::Empty;
         const int  inst     = instrumentOf[t];
 
-        juce::String caption = inst >= 0 ? controllerShortNames[inst]
+        juce::String caption = inst >= 0 ? instrumentShortName (inst)
                              : hasSound  ? juce::String ("Sound")
                                          : juce::String::fromUTF8 ("\xe2\x80\x94");
         if (lit && pageIsSound (page))
@@ -541,7 +592,7 @@ void MainComponent::togglePlay()
         return;
     }
 
-    if (seqs.isPlaying (LocalSequencers::Step) || seqs.isPlaying (LocalSequencers::Slice))
+    if (seqs.isAnyPlaying())
     {
         seqs.stopAll();
         return;
@@ -618,7 +669,7 @@ void MainComponent::timerCallback()
     if (eventRouter.isLocalSync())
     {
         auto& seqs = audioEngine.getSequencers();
-        playButton.setLit (seqs.isPlaying (LocalSequencers::Step) || seqs.isPlaying (LocalSequencers::Slice));
+        playButton.setLit (seqs.isAnyPlaying());
     }
 
     // Write the project once things have been still for half a second, so
@@ -662,6 +713,7 @@ void MainComponent::saveNow()
     roseChordPage.saveState (pageState);
     fxPage.saveState (pageState);
     audioEngine.getSequencers().saveState (pageState);
+    drumGridPage.saveState (pageState);
 
     juce::ValueTree project ("MidiMorfProject");
     project.setProperty ("version", 1, nullptr);
@@ -676,6 +728,7 @@ void MainComponent::saveNow()
         track.setProperty ("muted", audioEngine.getRack().isMuted (t), nullptr);
         track.appendChild (audioEngine.getTrackSynth (t).getState(), nullptr);     // both kept, whichever
         track.appendChild (audioEngine.getTrackSampler (t).getState(), nullptr);   // the track plays
+        track.appendChild (audioEngine.getTrackDrums (t).getState(), nullptr);
         project.appendChild (track, nullptr);
     }
     if (auto xml = pageState.createXml ("PageState"))
@@ -745,6 +798,7 @@ void MainComponent::restoreState()
     roseChordPage.restoreState (pages);
     fxPage.restoreState (pages);
     audioEngine.getSequencers().restoreState (pages);
+    drumGridPage.restoreState (pages);
     eventRouter.setSyncSource (settings->getIntValue ("seq_sync", 0) == 1 ? EventRouter::SyncSource::DAW
                                                                           : EventRouter::SyncSource::Local);
 
@@ -757,10 +811,10 @@ void MainComponent::restoreState()
     fxPage.refreshFromRouter();
 
     // Tracks. Defaults: T1 Morf-Chord on a synth, T2 Step-Seq on the bass
-    // synth, T3 Slice-Seq on the breaks, T4 empty.
+    // synth, T3 Slice-Seq on the breaks, T4 Drum Grid on the drum synth.
     using CM = MidiMorf::ControllerMode;
-    const int defaultInst[TrackRack::NumTracks]  = { (int) CM::MorfChord, (int) CM::StepSequencer, (int) CM::SliceSequencer, -1 };
-    const int defaultSound[TrackRack::NumTracks] = { 1, 1, 2, 0 };
+    const int defaultInst[TrackRack::NumTracks]  = { (int) CM::MorfChord, (int) CM::StepSequencer, (int) CM::SliceSequencer, drumGridPageIdx };
+    const int defaultSound[TrackRack::NumTracks] = { 1, 1, 2, 3 };
 
     if (project.isValid())
     {
@@ -774,6 +828,8 @@ void MainComponent::restoreState()
                 audioEngine.getTrackSampler (t).setState (sampler);
             else if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Sampler)
                 migrateBreak (t, pages);   // a project from before samplers
+            if (auto kit = track.getChildWithName (DrumSource::stateType); kit.isValid())
+                audioEngine.getTrackDrums (t).setState (kit);
             setInstrument (t, track.getProperty ("instrument", defaultInst[t]));
             audioEngine.getRack().setVolume (t, (float) (double) track.getProperty ("volume", 1.0));
             audioEngine.setSoundName (t, track["soundName"].toString());
@@ -822,11 +878,19 @@ void MainComponent::restoreState()
             break;
         }
 
+    // The Drums page likewise, on the first track playing drums.
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+        if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Drums)
+        {
+            drumKitPage.edit (audioEngine.getTrackDrums (t), t);
+            break;
+        }
+
     // Last page, if it still belongs somewhere; otherwise T1's
     // instrument (Morf-Chord on first launch), or Home.
     int lastPage = settings->getIntValue ("lastPage", -1);
     const bool reachable = lastPage >= 0 && lastPage < numPages
-                           && (lastPage >= MidiMorf::NUM_CONTROLLERS
+                           && ((lastPage >= MidiMorf::NUM_CONTROLLERS && lastPage != drumGridPageIdx)
                                || lastPage == (int) CM::Transport || lastPage == (int) CM::FXPunchIn
                                || trackOfPage (lastPage) >= 0);
     if (! reachable)

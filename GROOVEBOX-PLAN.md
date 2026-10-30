@@ -222,9 +222,11 @@ Phases 1–4 are entirely free-side, so they can ship as free updates while the 
 
 ### Phase 4 — Drum synth + Drum Grid (free)
 
-- [ ] **Drum Synth** source: 8 voices on fixed notes (kick, snare, clap, closed hat, open hat, tom, rim, perc), 2–4 knobs each. It reuses the synthesis already in `BreakLibrary`.
-- [ ] **Drum Grid** input: 8 lanes × 16 steps, with per-step velocity and Euclidean fill as a mode. This is the sequencer from the old plan's WS-1, now free.
-- [ ] Factory kits by genre (Boom Bap, Jungle, House, Trap, Lo-fi...).
+- [x] **Drum Synth** source: 8 voices on fixed notes (kick, snare, clap, closed hat, open hat, tom, rim, perc), 2–4 knobs each. It reuses the synthesis already in `BreakLibrary`.
+- [x] **Drum Grid** input: 8 lanes × 16 steps, with per-step velocity and Euclidean fill as a mode. This is the sequencer from the old plan's WS-1, now free.
+- [x] Factory kits by genre (Boom Bap, Jungle, House, Trap, Lo-fi...).
+
+Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit Drive and Dust) into three one-shot takes and plays them back, GM notes, hats choke. The Drum Grid (`DrumGridPage.h`) runs on the local clock with sample-exact swing, loads the built-in break patterns as beats, and saves its pattern in the project. Kits: 808, Boom Bap, Jungle, House, Trap, Lo-fi, Disco, Techno. Not yet: saving your own kits; the Drum Grid in WiFi mode (it always plays the phone's sounds).
 
 ### Phase 5 — Session + projects (paid)
 

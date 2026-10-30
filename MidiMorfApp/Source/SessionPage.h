@@ -22,8 +22,9 @@ static const PagePalette sessionPagePalette {
 //     A ▶ over each scene launches the whole column. Tap a clip to launch it
 //     on the next bar; tap the playing one to edit it on its page; hold one
 //     for Duplicate / Delete. "+" makes a new clip from the track's current
-//     pattern. Clips belong to sequencer tracks (Step-Seq, Slice-Seq, Drum
-//     Grid); controller tracks get theirs when recording arrives.
+//     pattern. On a controller track (Morf-Chord, Morf-Pad...) clips are
+//     notes you record: tap an empty slot to record into it (tap again to
+//     stop), hold a take for Edit / Record over / Quantize / Undo last pass.
 //   • the track column — what plays the track, its sound, its volume, ■.
 //   • MIXER (instead of the grid) — per track: its sound (tap to edit it),
 //     pan and mute. Volume is in the track column.
@@ -51,6 +52,16 @@ public:
         std::function<void (int track, int scene)> launchClip, newClip, editClip, duplicateClip, deleteClip;
         std::function<void (int scene)> launchScene;
         std::function<void (int track)> stopTrack;
+        std::function<int (int track)> recordingScene;          // -1 unless recording there
+        std::function<bool()> isCountingIn;
+        std::function<void (int track, int scene)> recordClip, quantizeClip;
+        std::function<void()> stopRecording;
+        std::function<void (int track)> undoPass;
+        std::function<bool (int track, int scene)> canUndo;
+        std::function<int()> getRecBars;
+        std::function<void (int)> setRecBars;
+        std::function<bool()> getRecQuantize, getMetronome;
+        std::function<void (bool)> setRecQuantize, setMetronome;
         std::function<int()> getLaunchQuantize;                  // 0 bar, 1 beat, 2 off
         std::function<void (int)> setLaunchQuantize;
 
@@ -98,6 +109,9 @@ public:
         }
         viewButtons[0]->setToggleState (true, juce::dontSendNotification);
 
+        recButton.onClick = [this] { showRecMenu(); };
+        addAndMakeVisible (recButton);
+
         quantize.addItem ("Launch: bar", 1);
         quantize.addItem ("Launch: beat", 2);
         quantize.addItem ("Launch: now", 3);
@@ -143,6 +157,8 @@ public:
         for (auto* st : strips)
             st->refresh();
         quantize.setSelectedId ((callbacks.getLaunchQuantize ? callbacks.getLaunchQuantize() : 0) + 1, juce::dontSendNotification);
+        const int recBars = callbacks.getRecBars ? callbacks.getRecBars() : 2;
+        recButton.setButtonText ("REC " + juce::String (recBars) + (recBars == 1 ? " bar" : " bars"));
         projectButton.setButtonText ("Project: " + (callbacks.projectName ? callbacks.projectName() : juce::String()));
         grid.repaint();
     }
@@ -173,13 +189,14 @@ public:
 
         auto bottom = area.removeFromBottom (32);
         area.removeFromBottom (6);
-        projectButton.setBounds (bottom.removeFromLeft (juce::jmin (180, bottom.getWidth() / 4)).reduced (2));
-        bottom.removeFromLeft (6);
+        projectButton.setBounds (bottom.removeFromLeft (juce::jmin (150, bottom.getWidth() / 5)).reduced (2));
+        bottom.removeFromLeft (4);
         for (auto* b : viewButtons)
-            b->setBounds (bottom.removeFromLeft (64).reduced (2));
-        bottom.removeFromLeft (6);
-        quantize.setBounds (bottom.removeFromLeft (124).reduced (2));
-        bottom.removeFromLeft (6);
+            b->setBounds (bottom.removeFromLeft (58).reduced (2));
+        bottom.removeFromLeft (4);
+        quantize.setBounds (bottom.removeFromLeft (118).reduced (2));
+        recButton.setBounds (bottom.removeFromLeft (86).reduced (2));
+        bottom.removeFromLeft (4);
         const int lw = bottom.getWidth() / juce::jmax (1, linkButtons.size());
         for (auto* b : linkButtons)
             b->setBounds (bottom.removeFromLeft (lw).reduced (2));
@@ -206,6 +223,29 @@ public:
 
 private:
     static constexpr int SceneHeaderH = 30;
+
+    // Settings for new recordings.
+    void showRecMenu()
+    {
+        juce::PopupMenu m;
+        const int bars = callbacks.getRecBars ? callbacks.getRecBars() : 2;
+        m.addSectionHeader ("New takes");
+        for (int b : { 1, 2, 4, 8 })
+            m.addItem (b, juce::String (b) + (b == 1 ? " bar" : " bars"), true, bars == b);
+        m.addSeparator();
+        m.addItem (100, "Quantize to 1/16", true, callbacks.getRecQuantize && callbacks.getRecQuantize());
+        m.addItem (101, "Metronome", true, callbacks.getMetronome && callbacks.getMetronome());
+        juce::Component::SafePointer<SessionPage> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&recButton), [safe] (int r)
+        {
+            if (safe == nullptr || r == 0) return;
+            auto& cb = safe->callbacks;
+            if (r <= 8 && cb.setRecBars) cb.setRecBars (r);
+            if (r == 100 && cb.setRecQuantize) cb.setRecQuantize (! cb.getRecQuantize());
+            if (r == 101 && cb.setMetronome) cb.setMetronome (! cb.getMetronome());
+            safe->refresh();
+        });
+    }
 
     void showMixer (bool m)
     {
@@ -330,29 +370,45 @@ private:
                 const int seq = cb.sequencerOf ? cb.sequencerOf (t) : -1;
                 const bool running = cb.isRunning && cb.isRunning (t);
 
+                const int kind = seq >= 0 ? seq : SessionModel::NotesClip;
+                const int recScene = cb.recordingScene ? cb.recordingScene (t) : -1;
+
                 for (int s = 0; s < SessionModel::NumScenes; ++s)
                 {
                     auto r = cellBounds (t, s).reduced (3, 2).toFloat();
-
-                    if (seq < 0)
-                    {
-                        g.setColour (juce::Colours::black.withAlpha (0.15f));
-                        g.fillRoundedRectangle (r, 6.0f);
-                        continue;
-                    }
 
                     const auto& c = m.clip (t, s);
                     if (! c.has_value())
                     {
                         g.setColour (juce::Colours::black.withAlpha (0.25f));
                         g.fillRoundedRectangle (r, 6.0f);
-                        g.setColour (MidiMorfColors::textLight.withAlpha (0.25f));
-                        g.setFont (juce::FontOptions (18.0f));
-                        g.drawText ("+", r, juce::Justification::centred);
+                        if (seq < 0)
+                        {
+                            // An empty slot on a controller track records.
+                            g.setColour (juce::Colour (0xffE0342A).withAlpha (0.45f));
+                            g.fillEllipse (r.withSizeKeepingCentre (10.0f, 10.0f));
+                        }
+                        else
+                        {
+                            g.setColour (MidiMorfColors::textLight.withAlpha (0.25f));
+                            g.setFont (juce::FontOptions (18.0f));
+                            g.drawText ("+", r, juce::Justification::centred);
+                        }
                         continue;
                     }
 
-                    const bool fits    = c->sequencer == seq;
+                    if (s == recScene)
+                    {
+                        const bool countIn = cb.isCountingIn && cb.isCountingIn();
+                        g.setColour (juce::Colour (0xffE0342A).withAlpha (countIn && ! blink ? 0.45f : 0.9f));
+                        g.fillRoundedRectangle (r, 6.0f);
+                        g.setColour (juce::Colours::white);
+                        g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+                        g.drawFittedText ((countIn ? "Count-in  " : "Recording  ") + c->name, r.reduced (6.0f, 2.0f).toNearestInt(), juce::Justification::centredLeft, 2);
+                        continue;
+                    }
+
+                    const bool fits    = c->sequencer == kind;
                     const bool playing = m.getPlaying (t) == s;
                     const bool queued  = m.getQueued (t) == s;
 
@@ -378,14 +434,6 @@ private:
                     g.drawFittedText (c->name, text.toNearestInt(), juce::Justification::centredLeft, 2);
                 }
 
-                if (seq < 0)
-                {
-                    // A controller track: say why there's nothing here, once.
-                    auto row = juce::Rectangle<int> (0, SceneHeaderH + t * rowH, sceneW * 3, rowH - 4).reduced (10, 0);
-                    g.setColour (MidiMorfColors::textLight.withAlpha (0.35f));
-                    g.setFont (juce::FontOptions (12.0f));
-                    g.drawFittedText ("Played live. Clips for this track come with recording.", row, juce::Justification::centredLeft, 2);
-                }
             }
         }
 
@@ -442,10 +490,11 @@ private:
             {
                 if (cb.launchScene) cb.launchScene (s);
             }
-            else if (juce::isPositiveAndBelow (t, TrackRack::NumTracks) && cb.sequencerOf && cb.sequencerOf (t) >= 0)
+            else if (juce::isPositiveAndBelow (t, TrackRack::NumTracks))
             {
                 auto& m = owner.model;
-                if (! m.hasClip (t, s))                                    { if (cb.newClip) cb.newClip (t, s); }
+                if (cb.recordingScene && cb.recordingScene (t) == s)      { if (cb.stopRecording) cb.stopRecording(); }
+                else if (! m.hasClip (t, s))                               { if (cb.newClip) cb.newClip (t, s); }
                 else if (m.getPlaying (t) == s && cb.isRunning && cb.isRunning (t)) { if (cb.editClip) cb.editClip (t, s); }
                 else                                                       { if (cb.launchClip) cb.launchClip (t, s); }
             }
@@ -458,8 +507,16 @@ private:
             if (! juce::isPositiveAndBelow (t, TrackRack::NumTracks) || ! owner.model.hasClip (t, s))
                 return;
 
+            const bool notes = owner.model.clip (t, s)->isNotes();
+            const auto& cb = owner.callbacks;
             juce::PopupMenu menu;
             menu.addItem (1, "Edit");
+            if (notes)
+            {
+                menu.addItem (4, "Record over it");
+                menu.addItem (5, "Quantize to 1/16");
+                menu.addItem (6, "Undo last pass", cb.canUndo && cb.canUndo (t, s));
+            }
             menu.addItem (2, "Duplicate");
             menu.addSeparator();
             menu.addItem (3, "Delete");
@@ -473,6 +530,9 @@ private:
                     if (result == 1 && cb.editClip)      cb.editClip (track, scene);
                     if (result == 2 && cb.duplicateClip) cb.duplicateClip (track, scene);
                     if (result == 3 && cb.deleteClip)    cb.deleteClip (track, scene);
+                    if (result == 4 && cb.recordClip)    cb.recordClip (track, scene);
+                    if (result == 5 && cb.quantizeClip)  cb.quantizeClip (track, scene);
+                    if (result == 6 && cb.undoPass)      cb.undoPass (track);
                     safe->repaint();
                 });
         }
@@ -557,7 +617,6 @@ private:
             sound.setSelectedId ((owner.callbacks.getSound ? owner.callbacks.getSound (track) : 0) + 1, juce::dontSendNotification);
             const float gain = owner.callbacks.getVolume ? owner.callbacks.getVolume (track) : 1.0f;
             volume.setValue (juce::Decibels::gainToDecibels (gain, -40.0f), juce::dontSendNotification);
-            stop.setVisible (owner.callbacks.sequencerOf && owner.callbacks.sequencerOf (track) >= 0);
         }
 
         void paint (juce::Graphics& g) override
@@ -611,6 +670,7 @@ private:
     juce::TextButton projectButton;
     juce::OwnedArray<juce::TextButton> viewButtons;
     juce::ComboBox quantize;
+    juce::TextButton recButton;
     juce::OwnedArray<Strip> strips;
     juce::Rectangle<int> mixerHead;
     bool mixerShown = false;

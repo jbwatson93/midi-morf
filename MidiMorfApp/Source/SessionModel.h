@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "ClockedSequencer.h"
 #include "TrackRack.h"
+#include "NoteClip.h"
 #include <array>
 #include <optional>
 
@@ -86,11 +87,17 @@ class SessionModel
 public:
     static constexpr int NumTracks = TrackRack::NumTracks, NumScenes = 8;
 
+    // A clip is a sequencer's pattern, or (on a controller track) notes.
+    static constexpr int NotesClip = -1;
+
     struct Clip
     {
         juce::String name;
         SeqPattern pattern;
-        int sequencer = 0;   // LocalSequencers::Which it was made on; it only plays there
+        int sequencer = 0;   // LocalSequencers::Which it was made on, or NotesClip; it only plays there
+        NoteClip notes;
+
+        bool isNotes() const { return sequencer == NotesClip; }
     };
 
     const std::optional<Clip>& clip (int track, int scene) const { return clips[(size_t) track][(size_t) scene]; }
@@ -109,11 +116,12 @@ public:
     }
 
     // A name nobody on this track uses yet: "Pattern 1", "Pattern 2"...
-    juce::String freshName (int track) const
+    // ("Take 1"... for recordings).
+    juce::String freshName (int track, const juce::String& stem = "Pattern") const
     {
         for (int n = 1;; ++n)
         {
-            const auto name = "Pattern " + juce::String (n);
+            const auto name = stem + " " + juce::String (n);
             bool used = false;
             for (int s = 0; s < NumScenes; ++s)
                 used |= hasClip (track, s) && clip (track, s)->name == name;
@@ -141,8 +149,9 @@ public:
                     ct.setProperty ("track", tr, nullptr);
                     ct.setProperty ("scene", s, nullptr);
                     ct.setProperty ("name", c->name, nullptr);
-                    ct.setProperty ("pattern", c->pattern.toString(), nullptr);
                     ct.setProperty ("sequencer", c->sequencer, nullptr);
+                    if (c->isNotes()) ct.setProperty ("notes", c->notes.toString(), nullptr);
+                    else              ct.setProperty ("pattern", c->pattern.toString(), nullptr);
                     t.appendChild (ct, nullptr);
                 }
         }
@@ -155,8 +164,13 @@ public:
         for (const auto& ct : t)
         {
             const int tr = ct["track"], s = ct["scene"];
-            if (auto p = SeqPattern::fromString (ct["pattern"].toString()); p && valid (tr, s))
-                setClip (tr, s, { ct["name"].toString(), *p, (int) ct.getProperty ("sequencer", 0) });
+            const int seq = ct.getProperty ("sequencer", 0);
+            if (! valid (tr, s))
+                continue;
+            if (seq == NotesClip)
+                setClip (tr, s, { ct["name"].toString(), {}, NotesClip, NoteClip::fromString (ct["notes"].toString()) });
+            else if (auto p = SeqPattern::fromString (ct["pattern"].toString()))
+                setClip (tr, s, { ct["name"].toString(), *p, seq });
         }
         for (int tr = 0; tr < NumTracks; ++tr)
         {

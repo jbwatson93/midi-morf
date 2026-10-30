@@ -8,6 +8,7 @@
 #include "MidiMorfProtocol.h"
 #include "DrumSynth.h"
 #include "SessionModel.h"
+#include "NoteClip.h"
 
 //==============================================================================
 // The sequencers in Local mode: the same engines the server runs, driven by
@@ -28,7 +29,8 @@
 // the pages take `lock` briefly; the engines' note output is queued under the
 // same lock and drained on the audio thread, so the track sources are only
 // ever played from there.
-class LocalSequencers : public juce::AudioSource
+class LocalSequencers : public juce::AudioSource,
+                        private LiveEventObserver
 {
 public:
     enum Which { Step = 0, Slice = 1, Drums = 2 };
@@ -46,7 +48,10 @@ public:
           stepSeq (stepSink, 8),
           sliceSeq (sliceSink, 9)
     {
+        rack.setLiveEventObserver (this);
     }
+
+    ~LocalSequencers() override { rack.setLiveEventObserver (nullptr); }
 
     //==========================================================================
     // AudioSource
@@ -83,14 +88,28 @@ public:
                     }
                     n = juce::jmin (remaining, juce::jmax (1, (int) std::ceil (samplesToTick)));
 
+                    // Where we are between ticks, in ticks.
+                    const double now = (double) globalTick - samplesToTick / samplesPerTick();
                     if (running[Drums].load())
                     {
-                        // Where we are between ticks, in ticks.
-                        const double now = (double) globalTick - samplesToTick / samplesPerTick();
                         fireDueDrumSteps (now);
                         const int until = (int) std::lround ((drumStepTick (nextDrumSixteenth) - now) * samplesPerTick());
                         n = juce::jmin (n, juce::jmax (1, until));
                     }
+
+                    // Note clips fire on their exact sample too.
+                    for (int t = 0; t < TrackRack::NumTracks; ++t)
+                        if (notePlayers[(size_t) t].active)
+                        {
+                            fireDueNotes (t, now);
+                            const int until = (int) std::lround ((nextNoteTick (t) - now) * samplesPerTick());
+                            n = juce::jmin (n, juce::jmax (1, until));
+                        }
+                    segmentTick = lastNow = now;
+                }
+                else
+                {
+                    segmentTick = -1.0;
                 }
 
                 drainEvents();
@@ -101,6 +120,7 @@ public:
             }
 
             rack.render (*buf, pos, n);
+            addClick (*buf, pos, n);
 
             if (clockRunning)
                 samplesToTick -= n;
@@ -121,14 +141,139 @@ public:
     {
         for (auto& w : wantPlaying)
             w.store (false);
+        const juce::SpinLock::ScopedLockType sl (lock);
+        for (auto& p : notePlayers)
+        {
+            p.wanted = false;
+            p.hasPending = false;
+        }
+        if (recording != RecIdle)
+            stopRecordingLocked();
     }
 
     bool isAnyPlaying() const
     {
         for (auto& w : wantPlaying)
             if (w.load()) return true;
-        return false;
+        const juce::SpinLock::ScopedLockType sl (lock);
+        for (auto& p : notePlayers)
+            if (p.wanted) return true;
+        return recording != RecIdle;
     }
+
+    //==========================================================================
+    // Note clips — message thread. Each track has a player: a launched note
+    // clip loops on it, from the launch point (quantized like patterns).
+    void queueNoteClip (int track, const NoteClip& c)
+    {
+        if (! juce::isPositiveAndBelow (track, TrackRack::NumTracks)) return;
+        const juce::SpinLock::ScopedLockType sl (lock);
+        auto& p = notePlayers[(size_t) track];
+        p.pending = c;
+        p.hasPending = true;
+        p.pendingStop = false;
+        p.wanted = true;
+    }
+
+    void queueNoteStop (int track)
+    {
+        if (! juce::isPositiveAndBelow (track, TrackRack::NumTracks)) return;
+        const juce::SpinLock::ScopedLockType sl (lock);
+        auto& p = notePlayers[(size_t) track];
+        p.hasPending = false;
+        if (p.active) p.pendingStop = true;
+        else          p.wanted = false;
+    }
+
+    // Replaces what's playing without moving the loop (an edit, or a
+    // recorded pass merged in).
+    void updateNoteClip (int track, const NoteClip& c)
+    {
+        if (! juce::isPositiveAndBelow (track, TrackRack::NumTracks)) return;
+        const juce::SpinLock::ScopedLockType sl (lock);
+        if (recording != RecIdle && recTrack == track)
+            recClip = c;   // the next pass plays this, not the raw takes
+        auto& p = notePlayers[(size_t) track];
+        if (! p.active) return;
+        releaseNotes (track);
+        p.clip = c;
+        p.clip.sort();
+        // Pick up from the next note after where the loop is now.
+        p.nextIndex = 0;
+        const double pos = (lastNow - p.loopStart) / SeqPPQN;
+        while (p.nextIndex < p.clip.numNotes && p.clip.notes[(size_t) p.nextIndex].start < pos)
+            ++p.nextIndex;
+    }
+
+    bool isNoteClipPlaying (int track) const
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        return juce::isPositiveAndBelow (track, TrackRack::NumTracks) && notePlayers[(size_t) track].active;
+    }
+
+    bool isNoteLaunchPending (int track) const
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        return juce::isPositiveAndBelow (track, TrackRack::NumTracks)
+               && (notePlayers[(size_t) track].hasPending || notePlayers[(size_t) track].pendingStop);
+    }
+
+    // 0..1 through the playing loop, -1 if not playing — for the editors.
+    double getNoteClipPosition (int track) const
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        if (! juce::isPositiveAndBelow (track, TrackRack::NumTracks)) return -1.0;
+        const auto& p = notePlayers[(size_t) track];
+        if (! p.active || p.clip.lengthBeats <= 0.0) return -1.0;
+        return juce::jlimit (0.0, 1.0, (lastNow - p.loopStart) / (p.clip.lengthBeats * SeqPPQN));
+    }
+
+    //==========================================================================
+    // Recording — message thread.
+    //
+    // startRecording arms a track: on the next bar (after a one-bar count-in
+    // if the clock wasn't running) it starts a pass of `lengthBeats`, and
+    // keeps going in passes until stopRecording. `existing` is what the clip
+    // already holds: it plays underneath, so each pass overdubs. Live notes
+    // on that track are captured on the audio thread; finished passes are
+    // collected with takePass.
+    enum RecState { RecIdle = 0, RecArmed, RecCountIn, RecRecording };
+
+    void startRecording (int track, const NoteClip& existing, bool metronome)
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        if (! juce::isPositiveAndBelow (track, TrackRack::NumTracks)) return;
+        if (recording != RecIdle) stopRecordingLocked();
+        recTrack = track;
+        recClip = existing;
+        recCountIn = ! clockRunning;
+        recMetronome = metronome;
+        captured.clear();
+        captured.lengthBeats = existing.lengthBeats;
+        openNotes.fill (-1.0);
+        recording = RecArmed;
+    }
+
+    void stopRecording()
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        stopRecordingLocked();
+    }
+
+    int  getRecordingTrack() const { const juce::SpinLock::ScopedLockType sl (lock); return recording != RecIdle ? recTrack : -1; }
+    RecState getRecState() const   { const juce::SpinLock::ScopedLockType sl (lock); return recording; }
+    int  getPassCount() const      { return passCount.load(); }
+
+    // The notes of the passes finished since the last call (in clip beats).
+    NoteClip takePass()
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        auto out = finishedPasses;
+        finishedPasses.clear();
+        return out;
+    }
+
+    void setMetronome (bool on) { const juce::SpinLock::ScopedLockType sl (lock); recMetronome = on; }
 
     // Message thread. The old track gets the sequencer's note-offs (and, if
     // it's the break player, a cut — slices ignore note-offs) before the
@@ -591,7 +736,13 @@ private:
     // Audio thread, under lock.
     void updateTransport()
     {
-        bool anyWanted = false;
+        bool anyWanted = recording != RecIdle;
+        for (auto& p : notePlayers)
+        {
+            anyWanted |= p.wanted;
+            if (! p.wanted && p.active)
+                stopNotePlayer ((int) (&p - notePlayers.data()));
+        }
 
         for (int w = 0; w < NumSequencers; ++w)
         {
@@ -614,9 +765,229 @@ private:
         }
     }
 
+    //==========================================================================
+    // Note clips and recording — audio thread, under lock.
+    struct NotePlayer
+    {
+        NoteClip clip, pending;
+        bool hasPending = false, pendingStop = false, wanted = false, active = false;
+        double loopStart = 0.0;   // global tick of the current loop's beat 0
+        int nextIndex = 0;
+        std::array<double, 128> heldUntil {};   // tick each held note ends, or 0
+    };
+
+    static constexpr int NoteChannel = 15;   // clear of the controllers' channels
+
+    double tickOf (const NotePlayer& p, int index) const { return p.loopStart + p.clip.notes[(size_t) index].start * SeqPPQN; }
+
+    // The next on or off due on this track, in ticks.
+    double nextNoteTick (int t) const
+    {
+        const auto& p = notePlayers[(size_t) t];
+        double next = p.loopStart + p.clip.lengthBeats * SeqPPQN;   // the loop point
+        if (p.nextIndex < p.clip.numNotes)
+            next = juce::jmin (next, tickOf (p, p.nextIndex));
+        for (double until : p.heldUntil)
+            if (until > 0.0)
+                next = juce::jmin (next, until);
+        return next;
+    }
+
+    void fireDueNotes (int t, double now)
+    {
+        auto& p = notePlayers[(size_t) t];
+        const double due = now + 0.5 / samplesPerTick();   // within half a sample
+        lastNow = now;
+
+        for (int guard = 0; guard < NoteClip::MaxNotes * 2; ++guard)
+        {
+            // Offs first, so a note retriggered on the same sample restarts.
+            for (int n = 0; n < 128; ++n)
+                if (p.heldUntil[(size_t) n] > 0.0 && p.heldUntil[(size_t) n] <= due)
+                {
+                    p.heldUntil[(size_t) n] = 0.0;
+                    push ({ t, false, NoteChannel, n, 0 });
+                }
+
+            if (p.nextIndex < p.clip.numNotes && tickOf (p, p.nextIndex) <= due)
+            {
+                const auto& e = p.clip.notes[(size_t) p.nextIndex++];
+                if (p.heldUntil[e.note] > 0.0)
+                    push ({ t, false, NoteChannel, e.note, 0 });
+                push ({ t, true, NoteChannel, e.note, e.velocity });
+                p.heldUntil[e.note] = juce::jmax (now + 0.001, tickOf (p, p.nextIndex - 1) + e.length * SeqPPQN);
+                continue;
+            }
+
+            const double loopEnd = p.loopStart + p.clip.lengthBeats * SeqPPQN;
+            if (loopEnd <= due && p.clip.lengthBeats > 0.0)
+            {
+                p.loopStart = loopEnd;
+                p.nextIndex = 0;
+                continue;
+            }
+            break;
+        }
+    }
+
+    void releaseNotes (int t)
+    {
+        auto& p = notePlayers[(size_t) t];
+        for (int n = 0; n < 128; ++n)
+            if (std::exchange (p.heldUntil[(size_t) n], 0.0) > 0.0)
+                push ({ t, false, NoteChannel, n, 0 });
+    }
+
+    void stopNotePlayer (int t)
+    {
+        releaseNotes (t);
+        notePlayers[(size_t) t].active = false;
+    }
+
+    // On a launch point: queued note clips start, queued stops stop.
+    void notesAtLaunchPoint()
+    {
+        for (int t = 0; t < TrackRack::NumTracks; ++t)
+        {
+            auto& p = notePlayers[(size_t) t];
+            if (std::exchange (p.pendingStop, false))
+            {
+                p.wanted = false;
+                stopNotePlayer (t);
+            }
+            else if (std::exchange (p.hasPending, false))
+            {
+                releaseNotes (t);
+                p.clip = p.pending;
+                p.clip.sort();
+                p.loopStart = (double) globalTick;
+                p.nextIndex = 0;
+                p.active = true;
+            }
+        }
+    }
+
+    // Each bar while recording: the count-in ends, a pass ends and the next
+    // begins.
+    void recordingAtBar()
+    {
+        if (recording == RecArmed)
+        {
+            if (recCountIn)
+            {
+                recording = RecCountIn;
+                recPassStart = (double) globalTick + 4 * SeqPPQN;
+                return;
+            }
+            beginPass();
+        }
+        else if (recording == RecCountIn && (double) globalTick >= recPassStart)
+        {
+            beginPass();
+        }
+        else if (recording == RecRecording && (double) globalTick >= recPassStart + captured.lengthBeats * SeqPPQN)
+        {
+            endPass ((double) globalTick);
+            beginPass();
+        }
+    }
+
+    void beginPass()
+    {
+        recording = RecRecording;
+        recPassStart = (double) globalTick;
+
+        // The clip plays underneath from the pass start, so what you hear
+        // lines up with what you record.
+        auto& p = notePlayers[(size_t) recTrack];
+        releaseNotes (recTrack);
+        p.clip = recClip;
+        p.clip.sort();
+        p.loopStart = recPassStart;
+        p.nextIndex = 0;
+        p.active = p.wanted = true;
+        p.hasPending = p.pendingStop = false;
+    }
+
+    // Notes still held at the end of a pass end there.
+    void endPass (double atTick)
+    {
+        const double end = (atTick - recPassStart) / SeqPPQN;
+        for (int n = 0; n < 128; ++n)
+            if (openNotes[(size_t) n] >= 0.0)
+            {
+                captured.add ({ openNotes[(size_t) n], juce::jmax (0.05, end - openNotes[(size_t) n]), (uint8_t) n, openVelocity[(size_t) n] });
+                openNotes[(size_t) n] = -1.0;
+            }
+
+        for (int i = 0; i < captured.numNotes; ++i)
+        {
+            finishedPasses.lengthBeats = captured.lengthBeats;
+            finishedPasses.add (captured.notes[(size_t) i]);
+            recClip.add (captured.notes[(size_t) i]);   // the next pass hears this one
+        }
+        captured.clear();
+        passCount.fetch_add (1);
+    }
+
+    void stopRecordingLocked()
+    {
+        if (recording == RecRecording && lastNow >= 0.0)
+            endPass (lastNow);
+        recording = RecIdle;
+    }
+
+    // LiveEventObserver — audio thread, during rack.render (not under lock).
+    void liveEvent (int track, bool on, int, int note, int velocity) override
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        if (recording != RecRecording || track != recTrack || segmentTick < 0.0 || ! juce::isPositiveAndBelow (note, 128))
+            return;
+
+        const double beat = juce::jlimit (0.0, captured.lengthBeats, (segmentTick - recPassStart) / SeqPPQN);
+        if (on)
+        {
+            openNotes[(size_t) note] = beat;
+            openVelocity[(size_t) note] = (uint8_t) juce::jlimit (1, 127, velocity);
+        }
+        else if (openNotes[(size_t) note] >= 0.0)
+        {
+            captured.add ({ openNotes[(size_t) note], juce::jmax (0.05, beat - openNotes[(size_t) note]), (uint8_t) note, openVelocity[(size_t) note] });
+            openNotes[(size_t) note] = -1.0;
+        }
+    }
+
+    // The click for the count-in and while recording: higher on the bar.
+    void addClick (juce::AudioBuffer<float>& buf, int start, int n)
+    {
+        if (clickLeft <= 0) return;
+        const int count = juce::jmin (n, clickLeft);
+        for (int i = 0; i < count; ++i)
+        {
+            const double t = (double) clickPos++ / sampleRate;
+            const float v = 0.3f * (float) (std::sin (juce::MathConstants<double>::twoPi * clickHz * t) * std::exp (-t / 0.012));
+            for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+                buf.addSample (ch, start + i, v);
+        }
+        clickLeft -= count;
+    }
+
     // Audio thread, under lock.
     void tick()
     {
+        if (globalTick % (4 * SeqPPQN) == 0 && recording != RecIdle)
+            recordingAtBar();
+
+        if (globalTick % (launchSixteenths() * (SeqPPQN / 4)) == 0)
+            notesAtLaunchPoint();
+
+        if (globalTick % SeqPPQN == 0 && recMetronome && (recording == RecCountIn || recording == RecRecording))
+        {
+            clickHz = globalTick % (4 * SeqPPQN) == 0 ? 1500.0 : 1000.0;
+            clickPos = 0;
+            clickLeft = (int) (0.06 * sampleRate);
+        }
+
         // Launch points for the tick-driven two; the drum grid has its own.
         if (globalTick % (launchSixteenths() * (SeqPPQN / 4)) == 0)
             for (int w : { Step, Slice })
@@ -671,6 +1042,20 @@ private:
     std::array<bool, DrumLanes> drumSounding {};                            // under lock
     int nextDrumSixteenth = 0;                                              // under lock
     std::atomic<float> drumSwing { 0.0f };
+
+    // Note clips and recording, under lock.
+    std::array<NotePlayer, TrackRack::NumTracks> notePlayers {};
+    double segmentTick = -1.0, lastNow = -1.0;
+    RecState recording = RecIdle;
+    int recTrack = 0;
+    bool recCountIn = false, recMetronome = true;
+    double recPassStart = 0.0;
+    NoteClip recClip, captured, finishedPasses;
+    std::array<double, 128> openNotes {};
+    std::array<uint8_t, 128> openVelocity {};
+    std::atomic<int> passCount { 0 };
+    double clickHz = 1000.0;
+    int clickPos = 0, clickLeft = 0;   // audio thread
 
     // Session launching, under lock.
     std::array<SeqPattern, NumSequencers> pending {};

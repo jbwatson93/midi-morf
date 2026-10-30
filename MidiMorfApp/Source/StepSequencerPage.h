@@ -338,16 +338,22 @@ public:
     void setRange (int s, int e) { start = s; end = e; repaint(); }
     void setAccent (juce::Colour c) { accent = c; repaint(); }
 
-    // A slim yellow bracket; the bar stays tall so it's easy to grab.
+    // A slim yellow line just under the step boxes, with a yellow triangle
+    // hanging down at each end to grab. The bar stays tall so it's easy to
+    // touch.
     void paint (juce::Graphics& g) override
     {
         const auto r = getLocalBounds().toFloat();
-        const float x0 = xOf (start) + 2.0f, x1 = xOf (end + 1) - 2.0f, mid = r.getCentreY();
+        const float x0 = xOf (start) + 2.0f, x1 = xOf (end + 1) - 2.0f, y = r.getY() + 1.0f;
+        const float w = 11.0f, h = juce::jmin (13.0f, r.getHeight() - 3.0f);
 
         g.setColour (accent);
-        g.fillRect (juce::Rectangle<float> (x0, mid - 1.0f, x1 - x0, 2.0f));
-        for (float x : { x0, x1 - 2.0f })
-            g.fillRect (juce::Rectangle<float> (x, mid - 6.0f, 2.0f, 7.0f));   // the ends turn up toward the steps
+        g.fillRect (juce::Rectangle<float> (x0, y, x1 - x0, 2.0f));
+
+        juce::Path ends;
+        ends.addTriangle (x0, y, x0 + w, y, x0, y + h);
+        ends.addTriangle (x1, y, x1 - w, y, x1, y + h);
+        g.fillPath (ends);
     }
 
     void mouseDown (const juce::MouseEvent& e) override
@@ -622,7 +628,7 @@ public:
         transport.setBounds (area.removeFromBottom (30));
         area.removeFromBottom (4);
         rangeBar.setBounds (area.removeFromBottom (24));
-        area.removeFromBottom (3);
+        area.removeFromBottom (1);   // the line sits right under the boxes
         auto boxRow = area.removeFromBottom (juce::jlimit (34, 52, area.getHeight() / 5));
         area.removeFromBottom (6);
 

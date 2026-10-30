@@ -333,6 +333,7 @@ MainComponent::MainComponent()
     // routing; the server is told which page is in use (WiFi).
     performView.onTouched    = [this] (int t)
     {
+        performFocus = t;
         const int mode = instrumentOf[t];
         if (juce::isPositiveAndBelow (mode, MidiMorf::NUM_CONTROLLERS))
             trackRouters[(size_t) t]->sendScreenMode (static_cast<MidiMorf::ControllerMode> (mode));
@@ -360,7 +361,21 @@ MainComponent::MainComponent()
     homeButton.onClick = [this] { pageContainer.setPage (homePageIdx); };
     addAndMakeVisible (homeButton);
 
-    performButton.onClick = [this] { pageContainer.setPage (performPageIdx); };
+    // In Perform, a second tap goes back to one page at a time, full screen,
+    // on the quarter touched last.
+    performButton.onClick = [this]
+    {
+        if (pageContainer.getCurrentPage() != performPageIdx)
+        {
+            pageContainer.setPage (performPageIdx);
+            return;
+        }
+        const int t = performFocus;
+        if (performShowsSound[(size_t) t] && audioEngine.getTrackSound (t) != AudioEngine::Sound::Empty) showSound (t);
+        else if (instrumentOf[t] >= 0)                                                                    showInstrument (t);
+        else                                                                                              pageContainer.setPage (homePageIdx);
+        updateRail();
+    };
     if (isIPad())
         addAndMakeVisible (performButton);
 
@@ -703,12 +718,28 @@ void MainComponent::trackTapped (int track)
     const bool hasInstrument = instrumentOf[track] >= 0;
     const bool hasSound      = audioEngine.getTrackSound (track) != AudioEngine::Sound::Empty;
 
-    // In Perform every track's instrument is already on screen, so a track
-    // tap opens its sound.
+    // In Perform (iPad) a tap flips that track's quarter between its
+    // instrument and its sound, in place; the others keep playing.
     if (page == performPageIdx)
     {
-        if (hasSound) showSound (track);
-        else          pageContainer.setPage (homePageIdx);
+        if (! hasSound && ! hasInstrument)
+        {
+            pageContainer.setPage (homePageIdx);
+        }
+        else
+        {
+            performShowsSound[(size_t) track] = hasSound && (! performShowsSound[(size_t) track] || ! hasInstrument);
+
+            // One editor of each kind: another quarter showing the same kind
+            // goes back to its instrument.
+            if (performShowsSound[(size_t) track])
+                for (int t = 0; t < TrackRack::NumTracks; ++t)
+                    if (t != track && performShowsSound[(size_t) t] && audioEngine.getTrackSound (t) == audioEngine.getTrackSound (track))
+                        performShowsSound[(size_t) t] = false;
+
+            performFocus = track;
+            populatePerform();
+        }
     }
     else if (onThisTrack && ! pageIsSound (page) && hasSound)
         showSound (track);
@@ -730,28 +761,34 @@ void MainComponent::showInstrument (int track)
 
 void MainComponent::showSound (int track)
 {
+    const int page = prepareSoundPage (track);
+    if (page >= 0)
+        pageContainer.setPage (page);
+    updateRail();
+}
+
+// There's one editor of each kind (synth, sampler, drum kit); this points
+// the right one at the track.
+int MainComponent::prepareSoundPage (int track)
+{
     switch (audioEngine.getTrackSound (track))
     {
         case AudioEngine::Sound::Synth:
             soundTrack = track;
             synthPage.edit (audioEngine.getTrackSynth (track), audioEngine.getSoundName (track), TrackColours::get (track));
-            pageContainer.setPage (synthPageIdx);
-            break;
+            return synthPageIdx;
 
         case AudioEngine::Sound::Sampler:
             samplerPage.edit (audioEngine.getTrackSampler (track), track);
-            pageContainer.setPage (samplerPageIdx);
-            break;
+            return samplerPageIdx;
 
         case AudioEngine::Sound::Drums:
             drumKitPage.edit (audioEngine.getTrackDrums (track), track);
-            pageContainer.setPage (drumKitPageIdx);
-            break;
+            return drumKitPageIdx;
 
-        case AudioEngine::Sound::Empty:
-            break;
+        default:
+            return -1;
     }
-    updateRail();
 }
 
 //==============================================================================
@@ -1431,12 +1468,40 @@ void MainComponent::migrateBreak (int track, juce::PropertySet& pages)
 // in the same words as the top strip.
 void MainComponent::populatePerform()
 {
+    // Everything back first, so a page moving between quarters can't be
+    // handed back from the one it left after the one it joined took it.
+    performView.returnAll();
+
+    // What each quarter shows: its sound if flipped to it (or if it has no
+    // instrument), else its instrument. There's one editor of each kind, so
+    // flipped quarters claim theirs first.
+    std::array<int, TrackRack::NumTracks> show;
+    std::set<int> usedEditors;
+    for (int pass = 0; pass < 2; ++pass)
+        for (int t = 0; t < TrackRack::NumTracks; ++t)
+        {
+            const bool hasSound = audioEngine.getTrackSound (t) != AudioEngine::Sound::Empty;
+            const bool wantsSound = hasSound && (performShowsSound[(size_t) t] || pageOf (t) < 0);
+            if (pass == 0)
+                show[(size_t) t] = pageOf (t);
+            if (! wantsSound || (pass == 0) != performShowsSound[(size_t) t])
+                continue;
+
+            const int editor = audioEngine.getTrackSound (t) == AudioEngine::Sound::Synth   ? synthPageIdx
+                             : audioEngine.getTrackSound (t) == AudioEngine::Sound::Sampler ? samplerPageIdx
+                                                                                             : drumKitPageIdx;
+            if (usedEditors.insert (editor).second)
+                show[(size_t) t] = prepareSoundPage (t);
+            else if (pageOf (t) >= 0)
+                performShowsSound[(size_t) t] = false;   // taken: back to its instrument
+        }
+
     for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
-        const int inst = pageOf (t);
-        const juce::String text = inst >= 0 ? headerText (inst)
+        const int page = show[(size_t) t];
+        const juce::String text = page >= 0 ? headerText (page)
                                             : "T" + juce::String (t + 1) + juce::String::fromUTF8 ("  \xc2\xb7  ") + audioEngine.getSoundName (t);
-        performView.setQuarter (t, inst >= 0 ? pageContainer.getPage (inst) : nullptr, text,
+        performView.setQuarter (t, page >= 0 ? pageContainer.getPage (page) : nullptr, text,
                                 audioEngine.getRack().isMuted (t));
     }
 }
@@ -1455,7 +1520,7 @@ void MainComponent::updateRail()
         juce::String caption = inst >= 0 ? instrumentShortName (inst)
                              : hasSound  ? juce::String ("Sound")
                                          : juce::String::fromUTF8 ("\xe2\x80\x94");
-        if (lit && pageIsSound (page))
+        if ((lit && pageIsSound (page)) || (page == performPageIdx && performShowsSound[(size_t) t] && hasSound))
             caption = "Sound";
 
         trackButtons[t]->setState (caption, lit, inst < 0 && ! hasSound);

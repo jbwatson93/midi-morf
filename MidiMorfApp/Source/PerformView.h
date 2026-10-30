@@ -127,7 +127,7 @@ private:
             {
                 g.setColour (MidiMorfColors::textLight.withAlpha (0.45f));
                 g.setFont (juce::FontOptions (14.0f));
-                g.drawText ("Nothing plays this track. Set it up on Home.", r, juce::Justification::centred);
+                g.drawText ("Nothing plays this track. Set it up on Session.", r, juce::Justification::centred);
             }
 
             g.setColour (colour.withAlpha (0.7f));

@@ -222,8 +222,8 @@ Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit
 - [x] **Session screen** (`SessionPage.h`, where Home was): tracks as rows, 8 scenes left to right (scrolls), ▶ per scene, the track column (instrument, sound, volume, ■). Tap a clip to launch, tap the playing one to edit it, hold for Edit / Duplicate / Delete, "+" copies the track's current pattern into a new clip.
 - [x] Every pattern is saved, as clips in the project. A project from before Session gets its current patterns as Pattern 1.
 - [x] **Projects** (`ProjectBrowser.h`): New (a starter project), Save As, Duplicate, Open, Delete. A named project autosaves to its own file as well as the working copy.
-- [ ] Compact mixer row (Sound ✎, fader, pan, send) and the drag handle. The full mixer arrives in Phase 7.
-- [ ] Launch quantize choice (1 bar / 1 beat / off). It's 1 bar for now.
+- [x] **Compact mixer:** a CLIPS / MIXER switch on Session (instead of a drag handle, which doesn't fit an iPhone in landscape). Per track: its sound (tap to edit), pan (balance law, centre exactly unity) and mute; volume stays in the track column. Sends wait for the send buses in Phase 7.
+- [x] Launch quantize: bar / beat / now, saved with the project.
 - [ ] Built-in **demo project**, made with JB, opened on first launch. "New" opens a plain starter for now.
 
 ### Phase 6 — Clip recording + editors

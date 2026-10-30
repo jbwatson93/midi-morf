@@ -139,6 +139,14 @@ MainComponent::MainComponent()
     cb.deleteClip    = [this] (int t, int s) { deleteClip (t, s); };
     cb.launchScene   = [this] (int s) { launchScene (s); };
     cb.stopTrack     = [this] (int t) { stopTrack (t); };
+    cb.getLaunchQuantize = [this] { return audioEngine.getSequencers().getLaunchQuantize(); };
+    cb.setLaunchQuantize = [this] (int q) { audioEngine.getSequencers().setLaunchQuantize (q); };
+    cb.soundName     = [this] (int t) { return audioEngine.getSoundName (t); };
+    cb.openSound     = [this] (int t) { showSound (t); };
+    cb.getPan        = [this] (int t) { return audioEngine.getRack().getPan (t); };
+    cb.setPan        = [this] (int t, float p) { audioEngine.getRack().setPan (t, p); };
+    cb.getMuted      = [this] (int t) { return audioEngine.getRack().isMuted (t); };
+    cb.setMuted      = [this] (int t, bool m) { audioEngine.getRack().setMuted (t, m); };
     cb.openPage      = [this] (int page) { pageContainer.setPage (page); };
     cb.openProjects  = [this] { showProjects(); };
     cb.projectName   = [this] { return projectName; };
@@ -1058,6 +1066,7 @@ void MainComponent::saveNow()
         track.setProperty ("volume", audioEngine.getRack().getVolume (t), nullptr);
         track.setProperty ("soundName", audioEngine.getSynthName (t), nullptr);
         track.setProperty ("muted", audioEngine.getRack().isMuted (t), nullptr);
+        track.setProperty ("pan", audioEngine.getRack().getPan (t), nullptr);
         track.appendChild (audioEngine.getTrackSynth (t).getState(), nullptr);     // both kept, whichever
         track.appendChild (audioEngine.getTrackSampler (t).getState(), nullptr);   // the track plays
         track.appendChild (audioEngine.getTrackDrums (t).getState(), nullptr);
@@ -1172,6 +1181,7 @@ void MainComponent::restoreState()
             audioEngine.getRack().setVolume (t, (float) (double) track.getProperty ("volume", 1.0));
             audioEngine.setSoundName (t, track["soundName"].toString());
             audioEngine.getRack().setMuted (t, track.getProperty ("muted", false));
+            audioEngine.getRack().setPan (t, (float) (double) track.getProperty ("pan", 0.0));
         }
     }
     else

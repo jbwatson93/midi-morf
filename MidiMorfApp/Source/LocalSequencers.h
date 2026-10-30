@@ -178,16 +178,22 @@ public:
     //==========================================================================
     // Session launching — message thread.
     //
-    // A queued pattern takes over on the next bar line, exactly (the audio
-    // thread swaps it in before the bar's first step). A sequencer that isn't
-    // running takes it at once. queueStop stops it on the next bar.
+    // A queued pattern takes over on the next launch point, exactly (the
+    // audio thread swaps it in before that point's first step): the next bar,
+    // the next beat, or at once (Off). A sequencer that isn't running takes it
+    // at once. queueStop stops it on the next launch point.
+    enum LaunchQuantize { Bar = 0, Beat = 1, Off = 2 };
+
+    void setLaunchQuantize (int q) { launchQuantize.store (juce::jlimit (0, 2, q)); }
+    int  getLaunchQuantize() const { return launchQuantize.load(); }
+
     void queuePattern (Which w, const SeqPattern& p)
     {
         const juce::SpinLock::ScopedLockType sl (lock);
         pending[w] = p;
         hasPending[w] = true;
         pendingStop[w] = false;
-        if (! running[w].load())
+        if (! running[w].load() || launchQuantize.load() == Off)
             applyPending (w);
     }
 
@@ -270,17 +276,19 @@ public:
         return dynamic_cast<SamplerSource*> (rack.getSource (tracks[Slice]));
     }
 
-    // Tempo survives relaunches (the samplers keep their own samples);
-    // patterns don't yet.
+    // Tempo and launch quantize, in the project. The patterns are the
+    // Session's clips.
     void saveState (juce::PropertySet& p) const
     {
         p.setValue ("seq_bpm", getBpm());
+        p.setValue ("launch_q", getLaunchQuantize());
     }
 
     void restoreState (juce::PropertySet& p)
     {
         if (p.containsKey ("seq_bpm"))
             setBpm (p.getDoubleValue ("seq_bpm"));
+        setLaunchQuantize (p.getIntValue ("launch_q", Bar));
     }
 
     //==========================================================================
@@ -488,8 +496,8 @@ private:
     {
         while ((drumStepTick (nextDrumSixteenth) - now) * samplesPerTick() < 0.5)
         {
-            if (nextDrumSixteenth % DrumSteps == 0 && atBarLine (Drums))
-                return;   // stopped on the bar
+            if (nextDrumSixteenth % launchSixteenths() == 0 && atBarLine (Drums))
+                return;   // stopped on the launch point
 
             // Last step's notes end as the next step starts (a sampler in
             // Keys mode needs its note-offs; the drum synth ignores them).
@@ -538,7 +546,18 @@ private:
         launches[w].fetch_add (1);
     }
 
-    // Audio thread, under lock, on a bar line: a queued stop or pattern.
+    // How many 16ths apart the launch points are.
+    int launchSixteenths() const
+    {
+        switch (launchQuantize.load())
+        {
+            case Bar:  return 16;
+            case Beat: return 4;
+            default:   return 1;
+        }
+    }
+
+    // Audio thread, under lock, on a launch point: a queued stop or pattern.
     // True if the sequencer stopped.
     bool atBarLine (int w)
     {
@@ -598,8 +617,8 @@ private:
     // Audio thread, under lock.
     void tick()
     {
-        // Bar lines for the tick-driven two; the drum grid has its own.
-        if (globalTick % (SeqPPQN * 4) == 0)
+        // Launch points for the tick-driven two; the drum grid has its own.
+        if (globalTick % (launchSixteenths() * (SeqPPQN / 4)) == 0)
             for (int w : { Step, Slice })
                 if (running[w].load())
                     atBarLine (w);
@@ -657,6 +676,7 @@ private:
     std::array<SeqPattern, NumSequencers> pending {};
     bool hasPending[NumSequencers] {}, pendingStop[NumSequencers] {};
     std::atomic<int> launches[NumSequencers] { { 0 }, { 0 }, { 0 } };
+    std::atomic<int> launchQuantize { Bar };
     std::atomic<int> drumStep { -1 };
     bool   clockRunning  = false;   // audio thread
     int    globalTick    = 0;

@@ -90,6 +90,7 @@ private:
     void trackTapped (int track);
     void showInstrument (int track);
     void showSound (int track);
+    int  prepareSoundPage (int track);          // points the track's sound page at it; its page index, or -1
     int  trackOfPage (int pageIndex) const;     // -1 if the page belongs to no track
     bool pageIsSound (int pageIndex) const;
     void updateRail();
@@ -101,6 +102,8 @@ private:
     int soundTrack = 0;     // whose synth the Sound page is editing
     bool dawPlaying = false;
     void populatePerform();
+    std::array<bool, TrackRack::NumTracks> performShowsSound {};   // iPad Perform: a quarter on its sound
+    int performFocus = 0;                                           // the quarter touched last
     void migrateBreak (int track, juce::PropertySet& pages);
     void audition (int track, int note, bool down);
 

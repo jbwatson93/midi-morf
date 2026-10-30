@@ -105,9 +105,12 @@ public:
 
     void resized() override
     {
+        // Pages lent to the Perform view are its to lay out (it sizes them to
+        // their quarter); only the ones still here are full size.
         auto area = getLocalBounds();
         for (int i = 0; i < pages.size(); ++i)
-            pages[i]->setBounds (area);
+            if (pages[i]->getParentComponent() == this)
+                pages[i]->setBounds (area);
     }
 
 private:

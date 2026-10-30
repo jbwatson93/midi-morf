@@ -9,18 +9,56 @@
 // plays LocalSequencers, which renders the rack and runs the sequencers'
 // Local-mode clock in between. Stereo out, no input.
 //
-// Tracks for now: T1 the main synth (the controllers), T2 a second synth with
-// a bass patch (the step sequencer), T3 the break player (the slice
-// sequencer), T4 empty.
+// Each track has its own synth, used when the track's sound is Synth; the
+// one break player can sit on any one track. Defaults: T1 Synth, T2 Synth
+// with a bass patch, T3 Breaks, T4 empty.
 class AudioEngine
 {
 public:
+    enum class Sound { Empty = 0, Synth = 1, Breaks = 2 };
+
     AudioEngine()
     {
-        bass.setState (bassPatch());
-        rack.setSource (0, &synth);
-        rack.setSource (LocalSequencers::DefaultStepTrack, &bass);
-        rack.setSource (LocalSequencers::DefaultSliceTrack, &breaks);
+        for (int t = 0; t < TrackRack::NumTracks; ++t)
+        {
+            synths[(size_t) t] = std::make_unique<WavetableEngine> (t == 0 ? 24 : 12);
+            rack.addToPool (synths[(size_t) t].get());
+        }
+        rack.addToPool (&breaks);
+
+        synths[1]->setState (bassPatch());
+        setTrackSound (0, Sound::Synth);
+        setTrackSound (1, Sound::Synth);
+        setTrackSound (2, Sound::Breaks);
+        soundNames[1] = "Bass";
+    }
+
+    //==========================================================================
+    // Track sounds — message thread.
+
+    // Breaks can only be on one track: putting it here empties its old track.
+    void setTrackSound (int track, Sound sound)
+    {
+        if (! juce::isPositiveAndBelow (track, TrackRack::NumTracks) || sounds[(size_t) track] == sound)
+            return;
+
+        if (sound == Sound::Breaks)
+            for (int t = 0; t < TrackRack::NumTracks; ++t)
+                if (t != track && sounds[(size_t) t] == Sound::Breaks)
+                {
+                    sounds[(size_t) t] = Sound::Empty;
+                    rack.setSource (t, nullptr);
+                }
+
+        sounds[(size_t) track] = sound;
+        rack.setSource (track, sound == Sound::Synth  ? (SoundSource*) synths[(size_t) track].get()
+                             : sound == Sound::Breaks ? (SoundSource*) &breaks
+                                                      : nullptr);
+    }
+
+    Sound getTrackSound (int track) const
+    {
+        return juce::isPositiveAndBelow (track, TrackRack::NumTracks) ? sounds[(size_t) track] : Sound::Empty;
     }
 
     ~AudioEngine()
@@ -77,13 +115,16 @@ public:
         }
     }
 
-    WavetableEngine& getSynth() noexcept { return synth; }
-    WavetableEngine& getBassSynth() noexcept { return bass; }
+    // T1's synth — the one the original Synth page patch belongs to.
+    WavetableEngine& getSynth() noexcept { return *synths[0]; }
+
+    // A track's own synth, whether or not the track is playing it.
+    WavetableEngine& getTrackSynth (int track) noexcept { return *synths[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
 
     // Tilt is a global mod source: every synth hears it.
     void setTilt (float x, float y)
     {
-        for (auto* s : { &synth, &bass })
+        for (auto& s : synths)
         {
             s->setAccelX (x);
             s->setAccelY (y);
@@ -99,19 +140,23 @@ public:
     LocalSequencers& getSequencers() noexcept { return sequencers; }
     TrackRack& getRack() noexcept             { return rack; }
 
-    // What a track is called in the UI, by what it plays. Presets will name
-    // the synths later.
-    juce::String getTrackName (int track) const
+    // What a track's sound is called in the UI. Presets will name the synths
+    // later; until then T2's starts as "Bass".
+    juce::String getSoundName (int track) const
     {
-        const auto* s = rack.getSource (track);
-        if (s == &synth)  return "Synth";
-        if (s == &bass)   return "Bass";
-        if (s == &breaks) return "Breaks";
-        return "Empty";
+        switch (getTrackSound (track))
+        {
+            case Sound::Synth:  return soundNames[(size_t) track];
+            case Sound::Breaks: return "Breaks";
+            default:            return "Empty";
+        }
     }
 
-    // The track's synth, or nullptr if it plays something else.
-    WavetableEngine* getWavetable (int track) { return dynamic_cast<WavetableEngine*> (rack.getSource (track)); }
+    // The track's synth if it's playing one, else nullptr.
+    WavetableEngine* getWavetable (int track)
+    {
+        return getTrackSound (track) == Sound::Synth ? synths[(size_t) track].get() : nullptr;
+    }
 
     // 0..1 of the callback's time budget, averaged by JUCE.
     double getCpuUsage() const { return deviceManager.getCpuUsage(); }
@@ -160,10 +205,11 @@ private:
         return t;
     }
 
-    // Voice budgets: chords and strums with long releases on T1; the step
-    // sequencer plays one note per step on T2.
-    WavetableEngine synth { 24 };
-    WavetableEngine bass { 8 };
+    // Voice budgets: chords and strums with long releases on T1, 12 elsewhere.
+    // Voices cost nothing until they sound.
+    std::array<std::unique_ptr<WavetableEngine>, TrackRack::NumTracks> synths;
+    std::array<Sound, TrackRack::NumTracks> sounds { Sound::Empty, Sound::Empty, Sound::Empty, Sound::Empty };
+    std::array<juce::String, TrackRack::NumTracks> soundNames { "Synth", "Synth", "Synth", "Synth" };
     BreakSource breaks;
     TrackRack rack;
     LocalSequencers sequencers { rack, breaks };

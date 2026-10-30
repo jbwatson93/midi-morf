@@ -2,6 +2,8 @@
 
 #include <JuceHeader.h>
 #include <array>
+#include <vector>
+#include <algorithm>
 
 //==============================================================================
 // Anything a track can play: the wavetable synth, the break player, and later
@@ -9,9 +11,8 @@
 // controller page, a sequencer) is the track's input, routed elsewhere.
 //
 // Threading: render() and the *Audio note calls run on the audio thread.
-// controller() may be called from any thread; allNotesOff() is audio thread
-// for some sources, so callers off the audio thread go through
-// TrackRack::postAllNotesOff. State is message thread.
+// controller() and allNotesOff() may be called from any thread. State is
+// message thread.
 class SoundSource
 {
 public:
@@ -48,19 +49,33 @@ public:
 //                own queue.
 //   • noteOn() / noteOff() — audio thread (the sequencers' clock), immediate.
 //
-// Sources are assigned before audio starts and outlive the rack.
+// Sources outlive the rack. A track's source can be swapped while audio runs
+// (setSource, message thread): every source that may ever play is added to
+// the pool first, so prepare() has already readied it.
 class TrackRack
 {
 public:
     static constexpr int NumTracks = 4;
 
-    void setSource (int track, SoundSource* s)
+    void addToPool (SoundSource* s)
     {
-        if (validTrack (track))
-            sources[(size_t) track] = s;
+        if (s != nullptr && std::find (pool.begin(), pool.end(), s) == pool.end())
+            pool.push_back (s);
     }
 
-    SoundSource* getSource (int track) const { return validTrack (track) ? sources[(size_t) track] : nullptr; }
+    // The outgoing source is silenced, so it has no stale voices if it comes
+    // back later.
+    void setSource (int track, SoundSource* s)
+    {
+        if (! validTrack (track))
+            return;
+
+        addToPool (s);
+        if (auto* old = sources[(size_t) track].exchange (s); old != nullptr && old != s)
+            old->allNotesOff();
+    }
+
+    SoundSource* getSource (int track) const { return validTrack (track) ? sources[(size_t) track].load() : nullptr; }
 
     // Track volume, 0..MaxVolume linear (1 = unity). Any thread; the audio
     // thread ramps to it over 20 ms so a fader move never clicks.
@@ -71,9 +86,8 @@ public:
     void prepare (double sampleRate, int maxBlockSize)
     {
         scratch.setSize (2, juce::jmax (maxBlockSize, 1024));
-        for (auto* s : sources)
-            if (s != nullptr)
-                s->prepare (sampleRate, scratch.getNumSamples());
+        for (auto* s : pool)
+            s->prepare (sampleRate, scratch.getNumSamples());
 
         limiterRelease = (float) std::exp (-1.0 / (0.08 * sampleRate));   // 80 ms
         limiterEnv = 0.0f;
@@ -87,9 +101,8 @@ public:
 
     void release()
     {
-        for (auto* s : sources)
-            if (s != nullptr)
-                s->release();
+        for (auto* s : pool)
+            s->release();
     }
 
     //==========================================================================
@@ -134,7 +147,7 @@ public:
 
             for (int t = 0; t < NumTracks; ++t)
             {
-                auto* s = sources[(size_t) t];
+                auto* s = sources[(size_t) t].load();
                 if (s == nullptr)
                     continue;
 
@@ -245,7 +258,8 @@ private:
         }
     }
 
-    std::array<SoundSource*, NumTracks> sources {};
+    std::array<std::atomic<SoundSource*>, NumTracks> sources {};
+    std::vector<SoundSource*> pool;   // message thread
     std::array<std::atomic<float>, NumTracks> volumes { 1.0f, 1.0f, 1.0f, 1.0f };
     std::array<juce::SmoothedValue<float>, NumTracks> gains;   // audio thread
     juce::AudioBuffer<float> scratch;

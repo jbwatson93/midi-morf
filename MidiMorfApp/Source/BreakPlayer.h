@@ -282,6 +282,9 @@ public:
 
     void render (juce::AudioBuffer<float>& buffer, int start, int num) override
     {
+        if (releasePending.exchange (false))
+            breaks.releaseAll();
+
         float* L = buffer.getNumChannels() > 0 ? buffer.getWritePointer (0, start) : nullptr;
         float* R = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1, start) : nullptr;
         if (L != nullptr) juce::FloatVectorOperations::clear (L, num);
@@ -298,8 +301,8 @@ public:
 
     void noteOffAudio (int, int) override {}
 
-    // Audio thread only, unlike the synth's: the voices aren't atomic.
-    void allNotesOff() override { breaks.releaseAll(); }
+    // Any thread: the voices aren't atomic, so this flags the audio thread.
+    void allNotesOff() override { releasePending.store (true); }
 
     juce::ValueTree getState() const override
     {
@@ -326,6 +329,7 @@ private:
     BreakPlayer breaks;
     int breakIndex = -1;
     juce::File importedFile;
+    std::atomic<bool> releasePending { false };
     int sliceRoot = 36;
     double sliceStepBeats = 0.25;
 };

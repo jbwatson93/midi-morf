@@ -54,12 +54,6 @@
       <FILE id="aRcHd1" name="RoseChordHandler.h" compile="0" resource="0"
             file="Source/RoseChordHandler.h"/>
       <FILE id="aRcPg1" name="RoseChordPage.h" compile="0" resource="0" file="Source/RoseChordPage.h"/>
-      <FILE id="aPkBn1" name="PianoKeysButton.h" compile="0" resource="0"
-            file="Source/PianoKeysButton.h"/>
-      <FILE id="aSyBn1" name="SynthShortcutButton.h" compile="0" resource="0"
-            file="Source/SynthShortcutButton.h"/>
-      <FILE id="aFvBn1" name="FavoriteButton.h" compile="0" resource="0"
-            file="Source/FavoriteButton.h"/>
       <FILE id="aHpTc1" name="Haptics.h" compile="0" resource="0" file="Source/Haptics.h"/>
       <FILE id="aHpTc2" name="Haptics.mm" compile="1" resource="0" file="Source/Haptics.mm"/>
       <FILE id="aGlMr1" name="Glassmorphism.h" compile="0" resource="0" file="Source/Glassmorphism.h"/>
@@ -84,7 +78,10 @@
       <FILE id="lclSeq" name="LocalSequencers.h" compile="0" resource="0" file="Source/LocalSequencers.h"/>
       <FILE id="sqTrBr" name="SeqTransportBar.h" compile="0" resource="0" file="Source/SeqTransportBar.h"/>
       <FILE id="trkRck" name="TrackRack.h" compile="0" resource="0" file="Source/TrackRack.h"/>
-      <FILE id="trkBdg" name="TrackBadge.h" compile="0" resource="0" file="Source/TrackBadge.h"/>
+      <FILE id="trkRal" name="TrackRail.h" compile="0" resource="0" file="Source/TrackRail.h"/>
+      <FILE id="homePg" name="HomePage.h" compile="0" resource="0" file="Source/HomePage.h"/>
+      <FILE id="brkPg1" name="BreaksPage.h" compile="0" resource="0" file="Source/BreaksPage.h"/>
+      <FILE id="brkImp" name="BreakImport.h" compile="0" resource="0" file="Source/BreakImport.h"/>
       <FILE id="slPg01" name="SliceSequencerPage.h" compile="0" resource="0" file="Source/SliceSequencerPage.h"/>
     </GROUP>
   </MAINGROUP>

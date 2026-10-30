@@ -2,7 +2,24 @@
 
 #if JUCE_IOS
  #import <UIKit/UIKit.h>
+ #import <AVFoundation/AVFoundation.h>
 #endif
+
+// Asks for the microphone (iOS shows its prompt the first time) and calls
+// back on the message thread with the answer.
+static void requestMicrophone (std::function<void (bool)> done)
+{
+   #if JUCE_IOS
+    JUCE_BEGIN_IGNORE_DEPRECATION_WARNINGS
+    [[AVAudioSession sharedInstance] requestRecordPermission: ^(BOOL granted)
+    {
+        juce::MessageManager::callAsync ([done, granted] { done (granted); });
+    }];
+    JUCE_END_IGNORE_DEPRECATION_WARNINGS
+   #else
+    juce::MessageManager::callAsync ([done] { done (true); });
+   #endif
+}
 
 static const juce::String controllerNames[] = {
     "Morf FX",
@@ -174,6 +191,12 @@ MainComponent::MainComponent()
         saveState();
     };
     samplerPage.onChanged = [this] { homePage->refresh(); updateRail(); saveState(); };
+    samplerPage.setRecorder (audioEngine.getRecorder());
+    samplerPage.onMicNeeded = [this] (std::function<void (bool)> done)
+    {
+        requestMicrophone ([this, done] (bool granted) { done (granted && audioEngine.setMicOn (true)); });
+    };
+    samplerPage.onMicDone = [this] { audioEngine.setMicOn (false); };
 
     // A break loaded into the slicer's sampler sets the tempo to the loop's
     // own, as picking it on Slice-Seq does.

@@ -5,11 +5,13 @@
 #include "LocalSequencers.h"
 #include "PunchFx.h"
 #include "WavetablePresets.h"
+#include "SampleRecorder.h"
 
 //==============================================================================
 // Owns the iOS audio device, the track sources and the track rack. The device
 // plays LocalSequencers, which renders the rack and runs the sequencers'
-// Local-mode clock in between. Stereo out, no input.
+// Local-mode clock in between. Stereo out; the mic comes on only to record
+// a sample.
 //
 // Each track has its own synth and its own sampler, and plays one of them
 // (or nothing). Defaults: T1 Synth, T2 Synth with the Acid Bass preset, T3
@@ -104,10 +106,42 @@ public:
         if (! running)
             return;
 
+        setMicOn (false);   // no mic in the background
         deviceManager.removeAudioCallback (&sourcePlayer);
         sourcePlayer.setSource (nullptr);
         running = false;
     }
+
+    // Message thread. Opens or closes the first input channel and attaches the
+    // recorder to it. Opening it the first time is when iOS asks for the mic;
+    // the outputs keep playing (the device restarts, a brief gap).
+    bool setMicOn (bool on)
+    {
+        if (micOn == on)
+            return true;
+        if (! deviceInitialised)
+            return false;
+
+        auto setup = deviceManager.getAudioDeviceSetup();
+        setup.useDefaultInputChannels = false;
+        setup.inputChannels.clear();
+        if (on)
+            setup.inputChannels.setBit (0);
+
+        const auto error = deviceManager.setAudioDeviceSetup (setup, true);
+        if (error.isNotEmpty())
+        {
+            DBG ("AudioEngine: mic " << (on ? "on" : "off") << " failed: " << error);
+            return false;
+        }
+
+        if (on) deviceManager.addAudioCallback (&recorder);
+        else    deviceManager.removeAudioCallback (&recorder);
+        micOn = on;
+        return true;
+    }
+
+    SampleRecorder& getRecorder() noexcept { return recorder; }
 
     // Full teardown — only called from MainComponent destructor / app shutdown.
     void shutdown()
@@ -195,6 +229,8 @@ private:
     LocalSequencers sequencers { rack };
     juce::AudioDeviceManager deviceManager;
     juce::AudioSourcePlayer sourcePlayer;
+    SampleRecorder recorder;
     bool running = false;
+    bool micOn = false;
     bool deviceInitialised = false;
 };

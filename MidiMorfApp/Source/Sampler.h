@@ -54,6 +54,35 @@ public:
         return breaks.getBreak();
     }
 
+    // A mic recording (SampleRecorder::stop). Saved as Documents/Recordings/
+    // Recording N.wav and loaded like an import, so it's remembered the same
+    // way and shows up in the Files app.
+    const Break* loadRecording (const juce::AudioBuffer<float>& audio, double sampleRate, juce::String& error)
+    {
+        auto dir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Recordings");
+        dir.createDirectory();
+        int number = 1;
+        while (dir.getChildFile ("Recording " + juce::String (number) + ".wav").exists())
+            ++number;
+        const auto file = dir.getChildFile ("Recording " + juce::String (number) + ".wav");
+
+        {
+            std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (file);
+            juce::WavAudioFormat wav;
+            auto writer = wav.createWriterFor (stream, juce::AudioFormatWriterOptions().withSampleRate (sampleRate)
+                                                                                     .withNumChannels (1)
+                                                                                     .withBitsPerSample (24));
+            if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (audio, 0, audio.getNumSamples()))
+            {
+                error = "Couldn't save the recording";
+                file.deleteFile();
+                return nullptr;
+            }
+        }
+
+        return importBreak (file, error);
+    }
+
     // One note (middle C) of a factory synth preset, rendered offline — held
     // 2 s, then 1 s of release. Becomes the sample, with its root at C.
     const Break* renderFromPreset (const juce::String& presetName)

@@ -6,6 +6,7 @@
 #include "BreakImport.h"
 #include "TrackRail.h"
 #include "Sampler.h"
+#include "SampleRecorder.h"
 
 //==============================================================================
 // The waveform of the sampler's sample. Slice mode draws the beats (where the
@@ -73,11 +74,44 @@ private:
 };
 
 //==============================================================================
+// The big round record button: a red dot, a square while recording.
+class RecordButton : public juce::Button
+{
+public:
+    RecordButton() : juce::Button ("Record") {}
+
+    void setRecording (bool r) { recording = r; repaint(); }
+
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto r = getLocalBounds().toFloat();
+        const float d = juce::jmin (r.getWidth(), r.getHeight()) - 4.0f;
+        auto ring = r.withSizeKeepingCentre (d, d);
+
+        g.setColour (juce::Colours::black.withAlpha (0.4f));
+        g.fillEllipse (ring);
+        g.setColour (MidiMorfColors::textLight.withAlpha (isEnabled() ? 0.5f : 0.2f));
+        g.drawEllipse (ring, 2.0f);
+
+        const auto red = juce::Colour (0xffE0342A).withMultipliedBrightness (down ? 0.8f : (over ? 1.1f : 1.0f));
+        g.setColour (isEnabled() ? red : red.withSaturation (0.2f));
+        if (recording)
+            g.fillRoundedRectangle (ring.withSizeKeepingCentre (d * 0.36f, d * 0.36f), 4.0f);
+        else
+            g.fillEllipse (ring.reduced (d * 0.2f));
+    }
+
+private:
+    bool recording = false;
+};
+
+//==============================================================================
 // The sound page for a track's sampler: how it plays (Slice / Keys /
-// One-shot), what it plays (a built-in break, an imported file, or a note
-// rendered from a synth preset), and in Keys mode the root note and
-// envelope.
-class SamplerPage : public juce::Component
+// One-shot), what it plays (a built-in break, a note rendered from a synth
+// preset — both dropdowns — a recording from the mic, or an imported file),
+// and in Keys mode the root note and envelope.
+class SamplerPage : public juce::Component,
+                    private juce::Timer
 {
 public:
     SamplerPage()
@@ -127,16 +161,21 @@ public:
         };
         addAndMakeVisible (synthCombo);
 
+        breakCombo.setTextWhenNothingSelected ("Built-in breaks");
+        breakCombo.addItemList (BreakLibrary::builtInNames(), 1);
+        breakCombo.onChange = [this]
+        {
+            if (sampler != nullptr && breakCombo.getSelectedId() > 0
+                && breakCombo.getSelectedId() - 1 != sampler->getBuiltInBreakIndex()
+                && sampler->setBuiltInBreak (breakCombo.getSelectedId() - 1) != nullptr)
+                loaded();
+        };
+        addAndMakeVisible (breakCombo);
+
         addAndMakeVisible (display);
 
-        const auto names = BreakLibrary::builtInNames();
-        for (int i = 0; i < names.size(); ++i)
-        {
-            auto* b = breakButtons.add (new juce::TextButton (names[i]));
-            b->setLookAndFeel (&glassLnf);
-            b->onClick = [this, i] { if (sampler != nullptr && sampler->setBuiltInBreak (i) != nullptr) loaded(); };
-            addAndMakeVisible (b);
-        }
+        recordButton.onClick = [this] { recordPressed(); };
+        addAndMakeVisible (recordButton);
 
         rootDown.onClick = [this] { nudgeRoot (-1); };
         rootUp.onClick   = [this] { nudgeRoot (1); };
@@ -163,16 +202,23 @@ public:
 
     ~SamplerPage() override
     {
-        for (auto* b : breakButtons)
-            b->setLookAndFeel (nullptr);
+        stopTimer();
         setLookAndFeel (nullptr);
     }
 
     std::function<void()> onChanged;                         // persist
     std::function<void (int track, const Break*)> onLoaded;  // a new sample (the slicer may follow its tempo)
 
+    // The mic. onMicNeeded asks for permission and opens the input, then
+    // calls back with whether it can hear; onMicDone closes it again.
+    std::function<void (std::function<void (bool ok)>)> onMicNeeded;
+    std::function<void()> onMicDone;
+    void setRecorder (SampleRecorder& r) { recorder = &r; }
+
     void edit (SamplerSource& s, int trackIndex)
     {
+        if (&s != sampler && isRecording())
+            finishRecording();   // the take belongs to the track it started on
         sampler = &s;
         track = trackIndex;
         refresh();
@@ -189,10 +235,7 @@ public:
         for (int m = 0; m < modeButtons.size(); ++m)
             modeButtons[m]->setToggleState (m == (int) mode, juce::dontSendNotification);
 
-        const int current = sampler->getBuiltInBreakIndex();
-        for (int i = 0; i < breakButtons.size(); ++i)
-            breakButtons[i]->setColour (juce::TextButton::textColourOffId,
-                                        i == current ? TrackColours::get (track) : MidiMorfColors::textLight);
+        breakCombo.setSelectedId (sampler->getBuiltInBreakIndex() + 1, juce::dontSendNotification);
 
         synthCombo.setSelectedId (0, juce::dontSendNotification);
         if (sampler->isFromPreset())
@@ -215,7 +258,25 @@ public:
         repaint();
     }
 
-    void visibilityChanged() override { if (isVisible()) refresh(); }
+    void visibilityChanged() override
+    {
+        if (isVisible())
+        {
+            refresh();
+            return;
+        }
+
+        // Leaving the page keeps what was recorded and closes the mic.
+        if (isRecording())
+            finishRecording();
+        if (micOpen)
+        {
+            micOpen = false;
+            stopTimer();
+            meter = 0.0f;
+            if (onMicDone) onMicDone();
+        }
+    }
 
     void paint (juce::Graphics& g) override
     {
@@ -235,6 +296,28 @@ public:
         g.setFont (juce::FontOptions (11.0f));
         g.setColour (MidiMorfColors::textLight.withAlpha (0.55f));
         g.drawFittedText (detail, infoArea.withTrimmedTop (infoArea.getHeight() / 2), juce::Justification::topLeft, 1);
+
+        // The record panel: input meter and what's happening.
+        {
+            auto bar = meterArea.toFloat();
+            g.setColour (juce::Colours::black.withAlpha (0.4f));
+            g.fillRoundedRectangle (bar, 3.0f);
+            const float db = juce::Decibels::gainToDecibels (meter, -60.0f);
+            const float fill = juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f);
+            g.setColour (meter > 0.9f ? juce::Colour (0xffE0342A) : TrackColours::get (track));
+            g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * fill), 3.0f);
+
+            juce::String status;
+            if (isRecording())
+                status = "Recording  " + juce::String (recorder->getSecondsRecorded(), 1) + " s";
+            else if (micOpen)
+                status = "Tap to record. Up to " + juce::String ((int) SampleRecorder::MaxSeconds) + " s";
+            else
+                status = "Record a sample from the mic";
+            g.setColour (isRecording() ? juce::Colour (0xffFF6B5E) : MidiMorfColors::textLight.withAlpha (0.75f));
+            g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+            g.drawFittedText (status, statusArea, juce::Justification::bottomLeft, 1);
+        }
 
         if (sampler->getMode() == SamplerSource::OneShot)
         {
@@ -256,8 +339,8 @@ public:
         for (auto* b : modeButtons)
             b->setBounds (top.removeFromLeft (86).reduced (2));
         top.removeFromLeft (6);
-        synthCombo.setBounds (top.removeFromRight (190).reduced (2));
-        importButton.setBounds (top.removeFromRight (120).reduced (2));
+        synthCombo.setBounds (top.removeFromRight (180).reduced (2));
+        breakCombo.setBounds (top.removeFromRight (160).reduced (2));
         infoArea = top.reduced (4, 0);
         area.removeFromTop (6);
 
@@ -282,13 +365,18 @@ public:
             envSliders[i]->setBounds (side.getX() + i * sw, side.getY(), sw, side.getHeight());
         }
 
-        // The breaks: a grid filling the rest.
-        const int cols = 4, gap = 6;
-        const int rowsN = (breakButtons.size() + cols - 1) / cols;
-        const int cellW = (area.getWidth() - (cols - 1) * gap) / cols;
-        const int cellH = juce::jmin (40, (area.getHeight() - (rowsN - 1) * gap) / juce::jmax (1, rowsN));
-        for (int i = 0; i < breakButtons.size(); ++i)
-            breakButtons[i]->setBounds (area.getX() + (i % cols) * (cellW + gap), area.getY() + (i / cols) * (cellH + gap), cellW, cellH);
+        // Recording and importing fill the rest: the record button, then the
+        // status over the meter, and Import underneath.
+        importButton.setBounds (area.removeFromBottom (36).removeFromLeft (170).reduced (2));
+        area.removeFromBottom (6);
+        const int size = juce::jlimit (40, 84, area.getHeight());
+        auto row = area.withSizeKeepingCentre (area.getWidth(), size);
+        recordButton.setBounds (row.removeFromLeft (size));
+        row.removeFromLeft (12);
+        auto text = row.withSizeKeepingCentre (row.getWidth(), 44);
+        statusArea = text.removeFromTop (24);
+        text.removeFromTop (8);
+        meterArea = text.removeFromTop (10);
     }
 
 private:
@@ -298,6 +386,90 @@ private:
     };
 
     void changed() { if (onChanged) onChanged(); }
+
+    bool isRecording() const { return recordTarget != nullptr; }
+
+    // First tap opens the mic (iOS asks the first time) and starts; the next
+    // tap stops.
+    void recordPressed()
+    {
+        if (isRecording())
+        {
+            finishRecording();
+            return;
+        }
+        if (sampler == nullptr || recorder == nullptr || onMicNeeded == nullptr)
+            return;
+
+        recordButton.setEnabled (false);
+        juce::Component::SafePointer<SamplerPage> safe (this);
+        onMicNeeded ([safe] (bool ok)
+        {
+            if (safe == nullptr) return;
+            safe->recordButton.setEnabled (true);
+            if (! ok)
+            {
+                safe->alert ("No microphone", "Midi-Morf can't use the mic. Allow it in Settings > Midi-Morf > Microphone.");
+                return;
+            }
+            if (! safe->isShowing() || safe->sampler == nullptr)
+            {
+                if (safe->onMicDone) safe->onMicDone();
+                return;
+            }
+            safe->micOpen = true;
+            safe->recordTarget = safe->sampler;
+            safe->recorder->start();
+            safe->recordButton.setRecording (true);
+            safe->startTimerHz (30);
+            safe->repaint();
+        });
+    }
+
+    // Stop, and load the take into the sampler it was recorded for.
+    void finishRecording()
+    {
+        auto* target = std::exchange (recordTarget, nullptr);
+        recordButton.setRecording (false);
+        const auto audio = recorder->stop();
+        repaint();
+        if (target == nullptr)
+            return;
+
+        if (audio.getNumSamples() == 0)
+        {
+            alert ("Nothing recorded", "No sound came in from the mic. If it's blocked, allow it in Settings > Midi-Morf > Microphone.");
+            return;
+        }
+
+        juce::String error;
+        if (target->loadRecording (audio, recorder->getSampleRate(), error) == nullptr)
+        {
+            alert ("Recording failed", error);
+            return;
+        }
+        if (target->getMode() == SamplerSource::Slice)
+            target->setMode (SamplerSource::Keys);   // a recording is for playing, not slicing
+        if (target == sampler)
+            loaded();
+        else
+            changed();
+    }
+
+    void timerCallback() override
+    {
+        meter = juce::jmax (recorder->takeLevel(), meter * 0.85f);
+        if (isRecording() && ! recorder->isRecording())
+            finishRecording();   // hit the time limit
+        repaint (meterArea.getUnion (statusArea));
+    }
+
+    static void alert (const juce::String& title, const juce::String& message)
+    {
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon)
+                                                              .withTitle (title).withMessage (message).withButton ("OK"),
+                                      nullptr);
+    }
 
     void loaded()
     {
@@ -338,26 +510,29 @@ private:
             if (target == sampler) loaded();
             return;
         }
-        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon)
-                                                              .withTitle ("Import failed").withMessage (error).withButton ("OK"),
-                                      nullptr);
+        alert ("Import failed", error);
     }
 
     SamplerSource* sampler = nullptr;
     SamplerSource* pendingImport = nullptr;
     int track = 2;
 
-    SynthLookAndFeel laf;   // declared before the children
-    GlassButtonLookAndFeel glassLnf { samplerPagePalette, MidiMorfColors::accent, 8.0f };
+    SampleRecorder* recorder = nullptr;
+    SamplerSource* recordTarget = nullptr;   // non-null while recording
+    bool micOpen = false;
+    float meter = 0.0f;
 
-    juce::OwnedArray<juce::TextButton> modeButtons, breakButtons;
-    juce::TextButton importButton { "Import .wav..." };
-    juce::ComboBox synthCombo;
+    SynthLookAndFeel laf;   // declared before the children
+
+    juce::OwnedArray<juce::TextButton> modeButtons;
+    juce::TextButton importButton { "Import a file..." };
+    juce::ComboBox breakCombo, synthCombo;
+    RecordButton recordButton;
     SampleDisplay display;
     juce::TextButton rootDown { "-" }, rootUp { "+" };
     juce::Label rootLabel;
     juce::OwnedArray<juce::Slider> envSliders;
     juce::OwnedArray<juce::Label> envLabels;
     std::unique_ptr<juce::FileChooser> chooser;
-    juce::Rectangle<int> infoArea, sideArea;
+    juce::Rectangle<int> infoArea, sideArea, statusArea, meterArea;
 };

@@ -123,6 +123,13 @@ public:
             return false;
 
         auto setup = deviceManager.getAudioDeviceSetup();
+        // The device was opened output-only, so it has no input device named;
+        // without one JUCE silently drops the input channels. Name the default
+        // input (on iOS, the same "iOS Audio" device). It stays named when the
+        // mic goes off, so only the channels change after the first time.
+        if (setup.inputDeviceName.isEmpty())
+            if (auto* type = deviceManager.getCurrentDeviceTypeObject())
+                setup.inputDeviceName = type->getDeviceNames (true)[juce::jmax (0, type->getDefaultDeviceIndex (true))];
         setup.useDefaultInputChannels = false;
         setup.inputChannels.clear();
         if (on)

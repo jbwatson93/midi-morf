@@ -207,7 +207,7 @@ public:
     }
 
     std::function<void()> onChanged;                         // persist
-    std::function<void (int track, const Break*)> onLoaded;  // a new sample (the slicer may follow its tempo)
+    std::function<void (int track, const Break*)> onLoaded;  // a new sample
 
     // The mic. onMicNeeded asks for permission and opens the input, then
     // calls back with whether it can hear; onMicDone closes it again.

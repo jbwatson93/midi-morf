@@ -14,9 +14,9 @@
 //
 // Slices are measured in beats, not as N equal parts of the file: slice i
 // starts i steps into the loop at the loop's own tempo, and plays at native
-// speed. Picking a break sets the clock to that tempo, so the untouched
-// pattern reproduces the loop; other tempos tighten or loosen the slices
-// without repitching them (REX-style).
+// speed. Picking a break leaves the project's tempo alone: the slices warp
+// the loop to it without repitching (see BreakPlayer), and at the loop's own
+// tempo the untouched pattern reproduces it exactly.
 struct Break
 {
     juce::String name;
@@ -107,7 +107,14 @@ namespace BreakLibrary
     inline std::vector<Recorded> recorded()
     {
         static const Recorded all[] = {
-            { "Amen Break", "AmenBreak140_wav", 8.0, 1 },   // 2 bars, 140 BPM; opens on 16 steps of bar 1
+            { "Amen Break",      "Amen140_wav",         8.0, 1 },   // 2 bars, 140 BPM; opens on 16 steps of bar 1
+            { "Think",           "Think111_wav",        4.0, 1 },   // 1 bar, 111 BPM
+            { "Funky Drummer",   "FunkyDrummer98_wav",  4.0, 1 },   // 1 bar, 98 BPM
+            { "Funky Drummer 2", "FunkyDrummer98b_wav", 4.0, 1 },   // 1 bar, 98 BPM, a second take
+            { "Impeach",         "Impeach94_wav",       4.0, 1 },   // 1 bar, 94 BPM
+            { "Synthetic Sub",   "SyntheticSub95_wav",  8.0, 1 },   // 2 bars, 95 BPM
+            { "Jungle Jazz",     "JungleJazz110_wav",   4.0, 1 },   // 1 bar, 110 BPM
+            { "Who Is She",      "WhoIsShe101_wav",     4.0, 1 },   // 1 bar, 101 BPM
         };
 
         std::vector<Recorded> present;

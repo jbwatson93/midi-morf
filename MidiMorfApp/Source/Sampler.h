@@ -155,10 +155,11 @@ public:
 
     // Audio thread: where slices start and how long they are, from the slice
     // sequencer.
-    void setSliceMapping (int rootNote, double stepBeats)
+    void setSliceMapping (int rootNote, double stepBeats, double secondsPerBeat)
     {
         sliceRoot = rootNote;
         sliceStepBeats = stepBeats;
+        sliceSecondsPerBeat = secondsPerBeat;
     }
 
     //==========================================================================
@@ -184,7 +185,7 @@ public:
         const float vel = (float) velocity127 / 127.0f;
         switch (getMode())
         {
-            case Slice:   breaks.trigger (note - sliceRoot, sliceStepBeats, vel); break;
+            case Slice:   breaks.trigger (note - sliceRoot, sliceStepBeats, sliceSecondsPerBeat, vel); break;
             case Keys:    breaks.startKey (note, vel, std::pow (2.0, (note - root.load()) / 12.0), false, getEnvelope()); break;
             case OneShot: breaks.startKey (note, vel, 1.0, true, {}); break;
         }
@@ -259,4 +260,5 @@ private:
 
     int sliceRoot = 36;          // audio thread
     double sliceStepBeats = 0.25;
+    double sliceSecondsPerBeat = 0.0;   // the project's tempo, to warp slices to
 };

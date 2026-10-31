@@ -465,15 +465,14 @@ public:
     }
 
     //==========================================================================
-    // Breaks — message thread. A new break also sets the tempo to the loop's own.
+    // Breaks — message thread. The tempo stays; slices warp the loop to it.
     void setBuiltInBreak (int track, int index)
     {
         auto* s = sliceSampler (track);
         if (s == nullptr)
             return;
         s->setMode (SamplerSource::Slice);   // a break picked for the slicer is to be sliced
-        if (auto* b = s->setBuiltInBreak (index))
-            setBpm (b->bpm());
+        s->setBuiltInBreak (index);
     }
 
     bool importBreak (int track, const juce::File& file, juce::String& error)
@@ -485,12 +484,7 @@ public:
             return false;
         }
         s->setMode (SamplerSource::Slice);
-        auto* b = s->importBreak (file, error);
-        if (b == nullptr)
-            return false;
-
-        setBpm (b->bpm());
-        return true;
+        return s->importBreak (file, error) != nullptr;
     }
 
     // A slicer's sample: whatever the sampler on its track holds. Nothing if
@@ -724,10 +718,10 @@ private:
             {
                 if (slots[(size_t) t].kind == Kind::Slice)
                     if (auto* s = sliceSampler (t))
-                        s->setSliceMapping ((int) slots[(size_t) t].slice->getRootNote(), stepBeats (t));
+                        s->setSliceMapping ((int) slots[(size_t) t].slice->getRootNote(), stepBeats (t), 60.0 / bpm.load());
                 if (slots[(size_t) t].kind == Kind::Remix)
                     if (auto* s = sliceSampler (t))
-                        s->setSliceMapping (RemixRoot, 0.25);
+                        s->setSliceMapping (RemixRoot, 0.25, 60.0 / bpm.load());
             }
 
         for (int i = 0; i < numEvents; ++i)

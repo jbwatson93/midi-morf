@@ -2,7 +2,7 @@
 
 <JUCERPROJECT id="tEiODR" name="MidiMorfApp" projectType="guiapp" useAppConfig="0"
               addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" companyName="Retro Relic"
-              version="2.0.1">
+              version="3.0.0">
   <MAINGROUP id="rL3Kk6" name="MidiMorfApp">
     <GROUP id="{819795D2-B9DA-2740-0AF6-C8F10D4674AA}" name="Source">
       <FILE id="U1w5TJ" name="AboutPage.h" compile="0" resource="0" file="Source/AboutPage.h"/>

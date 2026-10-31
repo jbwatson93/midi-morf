@@ -15,6 +15,12 @@
 // sequencer is monophonic, so a new slice chokes the old one with a 2 ms
 // fade; a small voice pool lets fades overlap.
 //
+// Slices also warp the loop to the project's tempo without repitching it,
+// like Ableton's Beats mode: each slice lasts one step at the project tempo.
+// Faster than the loop, it fades out early; slower, it loops the back half of
+// its own region (crossfaded) until its step is up. At the loop's own tempo
+// neither happens and the loop plays back unchanged.
+//
 // Keys: the whole sample, polyphonic, pitched from a root note — with an
 // ADSR (Keys mode) or as a plain one-shot (One-shot mode). These read with
 // 4-point Hermite interpolation, which keeps pitched-up samples cleaner than
@@ -64,8 +70,9 @@ public:
     // Audio thread.
 
     // `slice` counts steps of `stepBeats` quarter notes into the loop, wrapping
-    // if the grid is longer than the loop.
-    void trigger (int slice, double stepBeats, float velocity)
+    // if the grid is longer than the loop. `secondsPerBeat` is the project's
+    // tempo; 0 plays the slice at the loop's own length.
+    void trigger (int slice, double stepBeats, double secondsPerBeat, float velocity)
     {
         const Break* b = syncBreak();
         if (b == nullptr || slice < 0)
@@ -93,6 +100,14 @@ public:
         v->env     = 0.0f;
         v->envStep = 1.0f / fadeSamples (fadeSeconds);
         v->releasing = false;
+        v->fadeFrom  = -1.0;
+
+        // Warp: how long this step lasts at the project's tempo, against how
+        // long the slice is at its own. Within a millisecond, play it as is.
+        const double native = (v->end - v->pos) * deviceRate / b->sampleRate;
+        const double wanted = stepBeats * secondsPerBeat * deviceRate;
+        v->life = secondsPerBeat > 0.0 && std::abs (wanted - native) > deviceRate * 0.001 ? wanted : -1.0;
+        v->loopLen = juce::jmax ((v->end - v->pos) * 0.5, b->sampleRate * loopFadeSeconds * 2.0);
     }
 
     // A keyed note: the whole sample from the start, pitched by `ratio`
@@ -190,6 +205,12 @@ private:
         double pos = 0.0, end = 0.0;
         float  gain = 1.0f, env = 0.0f, envStep = 0.0f;
 
+        // Warping. `life` counts down the output samples left in the step
+        // (negative: not warped). Looping back, the old read head `fadeFrom`
+        // fades out as `pos` fades in (`loopMix` 0..1).
+        double life = -1.0, loopLen = 0.0, fadeFrom = -1.0;
+        float  loopMix = 1.0f, loopMixStep = 0.0f;
+
         void release (float samples)
         {
             releasing = true;
@@ -212,6 +233,9 @@ private:
     // Slice-edge crossfade. Short enough to keep transients sharp, long
     // enough that a cut never clicks.
     static constexpr double fadeSeconds = 0.002;
+
+    // The crossfade where a warped slice loops back.
+    static constexpr double loopFadeSeconds = 0.005;
 
     float fadeSamples (double seconds) const { return (float) (seconds * deviceRate); }
 
@@ -247,12 +271,28 @@ private:
                 continue;
 
             any = true;
+            const double loopFade = b.sampleRate * loopFadeSeconds;
             for (int i = 0; i < n; ++i)
             {
+                if (v.life >= 0.0 && ! v.releasing)
+                {
+                    // Warped: the step is up — fade out where it is.
+                    if ((v.life -= 1.0) <= fadeSamples (fadeSeconds))
+                        v.release (fadeSamples (fadeSeconds));
+                    // Still time left at the end of the region: loop its
+                    // back half, crossfading so the old head ends at `end`.
+                    else if (v.fadeFrom < 0.0 && v.pos >= v.end - loopFade)
+                    {
+                        v.fadeFrom = v.pos;
+                        v.pos -= v.loopLen;
+                        v.loopMix = 0.0f;
+                        v.loopMixStep = (float) (rate / loopFade);
+                    }
+                }
                 // Past its own region it fades out over the same few ms the
                 // next slice fades in, reading on into the loop — so the
                 // untouched pattern crossfades audio with itself, seamlessly.
-                if (! v.releasing && v.pos >= v.end)
+                else if (! v.releasing && v.pos >= v.end)
                     v.release (fadeSamples (fadeSeconds));
 
                 v.env += v.envStep;
@@ -263,12 +303,23 @@ private:
                     break;
                 }
 
-                const int i0 = (int) v.pos % len;
-                const int i1 = (i0 + 1) % len;
-                const float frac = (float) (v.pos - std::floor (v.pos));
                 const float g = v.env * v.gain;
-                scratchL[(size_t) i] += g * (srcL[i0] + frac * (srcL[i1] - srcL[i0]));
-                scratchR[(size_t) i] += g * (srcR[i0] + frac * (srcR[i1] - srcR[i0]));
+                if (v.fadeFrom < 0.0)
+                {
+                    scratchL[(size_t) i] += g * linear (srcL, len, v.pos);
+                    scratchR[(size_t) i] += g * linear (srcR, len, v.pos);
+                }
+                else
+                {
+                    // Equal-power: the two heads read different audio.
+                    const float in = std::sin (v.loopMix * juce::MathConstants<float>::halfPi);
+                    const float out = std::cos (v.loopMix * juce::MathConstants<float>::halfPi);
+                    scratchL[(size_t) i] += g * (in * linear (srcL, len, v.pos) + out * linear (srcL, len, v.fadeFrom));
+                    scratchR[(size_t) i] += g * (in * linear (srcR, len, v.pos) + out * linear (srcR, len, v.fadeFrom));
+                    v.fadeFrom += rate;
+                    if ((v.loopMix += v.loopMixStep) >= 1.0f)
+                        v.fadeFrom = -1.0;
+                }
                 v.pos += rate;
             }
         }
@@ -302,6 +353,14 @@ private:
 
         juce::FloatVectorOperations::add (L, scratchL.data(), n);
         juce::FloatVectorOperations::add (R != nullptr ? R : L, scratchR.data(), n);
+    }
+
+    static float linear (const float* d, int len, double pos)
+    {
+        const int i0 = (int) pos % len;
+        const int i1 = (i0 + 1) % len;
+        const float frac = (float) (pos - std::floor (pos));
+        return d[i0] + frac * (d[i1] - d[i0]);
     }
 
     static float hermite (const float* d, int len, double pos)

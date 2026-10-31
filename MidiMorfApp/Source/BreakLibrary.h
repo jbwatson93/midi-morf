@@ -14,9 +14,9 @@
 //
 // Slices are measured in beats, not as N equal parts of the file: slice i
 // starts i steps into the loop at the loop's own tempo, and plays at native
-// speed. Picking a break sets the clock to that tempo, so the untouched
-// pattern reproduces the loop; other tempos tighten or loosen the slices
-// without repitching them (REX-style).
+// speed. Picking a break leaves the project's tempo alone: the slices warp
+// the loop to it without repitching (see BreakPlayer), and at the loop's own
+// tempo the untouched pattern reproduces it exactly.
 struct Break
 {
     juce::String name;

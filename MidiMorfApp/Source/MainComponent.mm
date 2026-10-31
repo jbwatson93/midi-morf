@@ -435,14 +435,6 @@ MainComponent::MainComponent()
     };
     samplerPage.onMicDone = [this] { audioEngine.setMicOn (false); };
 
-    // A break loaded into the slicer's sampler sets the tempo to the loop's
-    // own, as picking it on Slice-Seq does.
-    samplerPage.onLoaded = [this] (int t, const Break* b)
-    {
-        if (b != nullptr && sequencerOf (t) == KindSlice
-            && audioEngine.getTrackSampler (t).getMode() == SamplerSource::Slice)
-            audioEngine.getSequencers().setBpm (b->bpm());
-    };
     fxPage.onStateChanged = [this] { saveState(); };
     transportPage.onStateChanged = [this] { saveState(); };
 

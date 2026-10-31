@@ -107,7 +107,14 @@ namespace BreakLibrary
     inline std::vector<Recorded> recorded()
     {
         static const Recorded all[] = {
-            { "Amen Break", "AmenBreak140_wav", 8.0, 1 },   // 2 bars, 140 BPM; opens on 16 steps of bar 1
+            { "Amen Break",      "Amen140_wav",         8.0, 1 },   // 2 bars, 140 BPM; opens on 16 steps of bar 1
+            { "Think",           "Think111_wav",        4.0, 1 },   // 1 bar, 111 BPM
+            { "Funky Drummer",   "FunkyDrummer98_wav",  4.0, 1 },   // 1 bar, 98 BPM
+            { "Funky Drummer 2", "FunkyDrummer98b_wav", 4.0, 1 },   // 1 bar, 98 BPM, a second take
+            { "Impeach",         "Impeach94_wav",       4.0, 1 },   // 1 bar, 94 BPM
+            { "Synthetic Sub",   "SyntheticSub95_wav",  8.0, 1 },   // 2 bars, 95 BPM
+            { "Jungle Jazz",     "JungleJazz110_wav",   4.0, 1 },   // 1 bar, 110 BPM
+            { "Who Is She",      "WhoIsShe101_wav",     4.0, 1 },   // 1 bar, 101 BPM
         };
 
         std::vector<Recorded> present;

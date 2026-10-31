@@ -66,7 +66,14 @@
             file="../../../../../Downloads/fonts-DSEG_v046/DSEG14-Modern-MINI/DSEG14ModernMini-Regular.ttf"/>
       <FILE id="NVfyJV" name="wood2.jpg" compile="0" resource="1" file="../../../../../Downloads/simple-realistic-wood-texture/wood2.jpg"/>
       <FILE id="aInBlm" name="inBloom.png" compile="0" resource="1" file="../inBloom.png"/>
-      <FILE id="aAmen1" name="AmenBreak140.wav" compile="0" resource="1" file="Resources/Breaks/AmenBreak140.wav"/>
+      <FILE id="aAmen1" name="Amen140.wav" compile="0" resource="1" file="Resources/Breaks/Amen140.wav"/>
+      <FILE id="aBrk02" name="Think111.wav" compile="0" resource="1" file="Resources/Breaks/Think111.wav"/>
+      <FILE id="aBrk03" name="FunkyDrummer98.wav" compile="0" resource="1" file="Resources/Breaks/FunkyDrummer98.wav"/>
+      <FILE id="aBrk04" name="FunkyDrummer98b.wav" compile="0" resource="1" file="Resources/Breaks/FunkyDrummer98b.wav"/>
+      <FILE id="aBrk05" name="Impeach94.wav" compile="0" resource="1" file="Resources/Breaks/Impeach94.wav"/>
+      <FILE id="aBrk06" name="SyntheticSub95.wav" compile="0" resource="1" file="Resources/Breaks/SyntheticSub95.wav"/>
+      <FILE id="aBrk07" name="JungleJazz110.wav" compile="0" resource="1" file="Resources/Breaks/JungleJazz110.wav"/>
+      <FILE id="aBrk08" name="WhoIsShe101.wav" compile="0" resource="1" file="Resources/Breaks/WhoIsShe101.wav"/>
       <FILE id="aAppIc" name="Icon.png" compile="0" resource="1" file="../MidiMorfServer/Icon.png"/>
       <FILE id="sqPg01" name="StepSequencerPage.h" compile="0" resource="0" file="Source/StepSequencerPage.h"/>
       <FILE id="seqPlt" name="SequencerPlatform.h" compile="0" resource="0" file="Source/SequencerPlatform.h"/>

@@ -17,10 +17,70 @@
 // The sample is a built-in break, an imported audio file, or a note rendered
 // from one of the synth's factory presets (so "Bell Keys" can become a
 // sampled instrument). Every one of those is ours or the user's.
+//
+// Edits never touch the loaded sample (the "source"): START/END trim it, BARS
+// says how long the trimmed part is (and so its tempo), REVERSE and the fades
+// shape it, and the player gets a fresh copy built from those. The playback
+// settings (Param) go straight to the player, Simpler style.
 class SamplerSource : public SoundSource
 {
 public:
     enum Mode { Slice = 0, Keys = 1, OneShot = 2 };
+
+    // What's cut from the source. Times in seconds; end < 0 is the end.
+    struct Edit
+    {
+        double start = 0.0, end = -1.0;
+        double beats = 0.0;               // the trimmed sample's length; 0 = the source's
+        bool   reverse = false;
+        float  fadeIn = 0.0f, fadeOut = 0.0f;   // ms
+
+        bool operator== (const Edit& o) const
+        {
+            return start == o.start && end == o.end && beats == o.beats && reverse == o.reverse
+                && fadeIn == o.fadeIn && fadeOut == o.fadeOut;
+        }
+    };
+
+    enum Param { Transpose = 0, Detune, Warp, Grain, Speed, Gain, VelSense, Loop,
+                 FilterType, Cutoff, Resonance, NumParams };
+
+    struct ParamInfo { const char* key; float min, max, def; };
+    static const ParamInfo& paramInfo (Param p)
+    {
+        static const ParamInfo info[NumParams] = {
+            { "transpose", -24.0f, 24.0f, 0.0f },     // semitones
+            { "detune",    -50.0f, 50.0f, 0.0f },     // cents
+            { "warp",       0.0f,  2.0f,  0.0f },     // BreakPlayer::Warp
+            { "grain",      5.0f,  250.0f, 40.0f },   // ms
+            { "speed",      0.25f, 4.0f,  1.0f },
+            { "gain",     -24.0f, 12.0f,  0.0f },     // dB
+            { "vel",        0.0f,  1.0f,  1.0f },
+            { "loop",       0.0f,  1.0f,  0.0f },
+            { "ftype",      0.0f,  3.0f,  0.0f },     // BreakPlayer::FilterType
+            { "cutoff",    20.0f, 20000.0f, 20000.0f },
+            { "res",        0.0f,  1.0f,  0.2f },
+        };
+        return info[p];
+    }
+
+    static const juce::StringArray& warpNames()
+    {
+        static const juce::StringArray n { "Beats", "Stretch", "Repitch" };
+        return n;
+    }
+
+    static const juce::StringArray& filterNames()
+    {
+        static const juce::StringArray n { "Off", "Low-pass", "Band-pass", "High-pass" };
+        return n;
+    }
+
+    SamplerSource()
+    {
+        for (int p = 0; p < NumParams; ++p)
+            params[(size_t) p].store (paramInfo ((Param) p).def);
+    }
 
     static const juce::StringArray& modeNames()
     {
@@ -39,8 +99,7 @@ public:
             return nullptr;
 
         origin = { Origin::BuiltIn, BreakLibrary::builtInNames()[index], {} };
-        breaks.setBreak (std::move (b));
-        return breaks.getBreak();
+        return setSource (std::move (b));
     }
 
     const Break* importBreak (const juce::File& file, juce::String& error)
@@ -50,8 +109,7 @@ public:
             return nullptr;
 
         origin = { Origin::File, file.getFileNameWithoutExtension(), file };
-        breaks.setBreak (std::move (b));
-        return breaks.getBreak();
+        return setSource (std::move (b));
     }
 
     // A mic recording (SampleRecorder::stop). Saved as Documents/Recordings/
@@ -121,9 +179,29 @@ public:
 
         origin = { Origin::Preset, presetName, {} };
         setRootNote (60);
-        breaks.setBreak (std::move (b));
+        return setSource (std::move (b));
+    }
+
+    //==========================================================================
+    // Editing — message thread.
+    const Break* getSource() const { return source.get(); }
+    const Edit&  getEdit() const   { return edit; }
+
+    // Applies an edit: the player gets a new sample built from the source.
+    const Break* setEdit (const Edit& e)
+    {
+        edit = e;
+        rebuild();
         return breaks.getBreak();
     }
+
+    void  setParam (Param p, float v)
+    {
+        const auto& info = paramInfo (p);
+        params[(size_t) p].store (juce::jlimit (info.min, info.max, v));
+        applyParams();
+    }
+    float getParam (Param p) const { return params[(size_t) p].load(); }
 
     const Break* getBreak() const        { return breaks.getBreak(); }
     juce::String getSampleName() const   { return origin.name; }
@@ -215,6 +293,10 @@ public:
         t.setProperty ("break",  origin.kind == Origin::BuiltIn ? origin.name : juce::String(), nullptr);
         t.setProperty ("file",   origin.file.getFullPathName(), nullptr);
         t.setProperty ("preset", origin.kind == Origin::Preset ? origin.name : juce::String(), nullptr);
+        t.setProperty ("edit", juce::String (edit.start, 6) + "," + juce::String (edit.end, 6) + "," + juce::String (edit.beats, 4) + ","
+                               + juce::String ((int) edit.reverse) + "," + juce::String (edit.fadeIn) + "," + juce::String (edit.fadeOut), nullptr);
+        for (int p = 0; p < NumParams; ++p)
+            t.setProperty (paramInfo ((Param) p).key, params[(size_t) p].load(), nullptr);
         return t;
     }
 
@@ -224,6 +306,8 @@ public:
     {
         setMode ((Mode) juce::jlimit (0, 2, (int) t.getProperty ("mode", (int) Slice)));
         setRootNote (t.getProperty ("root", 60));
+        for (int p = 0; p < NumParams; ++p)
+            setParam ((Param) p, (float) t.getProperty (paramInfo ((Param) p).key, paramInfo ((Param) p).def));
 
         auto env = juce::StringArray::fromTokens (t["env"].toString(), ",", "");
         if (env.size() == 4)
@@ -240,6 +324,11 @@ public:
             {}
         else
             setBuiltInBreak (juce::jmax (0, BreakLibrary::indexForName (name)));
+
+        auto e = juce::StringArray::fromTokens (t["edit"].toString(), ",", "");
+        if (e.size() == 6)
+            setEdit ({ e[0].getDoubleValue(), e[1].getDoubleValue(), e[2].getDoubleValue(),
+                       e[3].getIntValue() != 0, e[4].getFloatValue(), e[5].getFloatValue() });
     }
 
 private:
@@ -251,8 +340,65 @@ private:
         juce::File file;
     };
 
+    // A newly loaded sample starts unedited.
+    const Break* setSource (std::unique_ptr<Break> b)
+    {
+        source = std::move (b);
+        edit = {};
+        rebuild();
+        return breaks.getBreak();
+    }
+
+    // The player's sample: the source trimmed, reversed and faded.
+    void rebuild()
+    {
+        if (source == nullptr)
+            return;
+
+        const auto& src = *source;
+        const int n = src.audio.getNumSamples();
+        const int minLength = juce::jmin (n, (int) (src.sampleRate * 0.02));
+        const int s0 = juce::jlimit (0, n - minLength, (int) std::lround (edit.start * src.sampleRate));
+        const int s1 = juce::jlimit (s0 + minLength, n, edit.end < 0.0 ? n : (int) std::lround (edit.end * src.sampleRate));
+        const int len = s1 - s0;
+
+        auto b = std::make_unique<Break>();
+        b->name = src.name;
+        b->sampleRate = src.sampleRate;
+        b->beats = edit.beats > 0.0 ? edit.beats : src.beats;
+        b->gridBars = (edit.beats > 0.0 || s0 > 0 || s1 < n) ? 0 : src.gridBars;
+        b->audio.setSize (2, len);
+        for (int ch = 0; ch < 2; ++ch)
+            b->audio.copyFrom (ch, 0, src.audio, ch, s0, len);
+
+        if (edit.reverse)
+            b->audio.reverse (0, len);
+
+        const int in  = juce::jmin (len, (int) (edit.fadeIn * 0.001 * src.sampleRate));
+        const int out = juce::jmin (len, (int) (edit.fadeOut * 0.001 * src.sampleRate));
+        if (in > 0)  b->audio.applyGainRamp (0, in, 0.0f, 1.0f);
+        if (out > 0) b->audio.applyGainRamp (len - out, out, 1.0f, 0.0f);
+
+        breaks.setBreak (std::move (b));
+    }
+
+    void applyParams()
+    {
+        breaks.setTune (getParam (Transpose) + getParam (Detune) * 0.01f);
+        breaks.setWarp ((BreakPlayer::Warp) juce::roundToInt (getParam (Warp)));
+        breaks.setGrainMs (getParam (Grain));
+        breaks.setSpeed (getParam (Speed));
+        breaks.setGain (juce::Decibels::decibelsToGain (getParam (Gain)));
+        breaks.setVelocitySense (getParam (VelSense));
+        breaks.setLoop (getParam (Loop) >= 0.5f);
+        breaks.setFilter ((BreakPlayer::FilterType) juce::roundToInt (getParam (FilterType)), getParam (Cutoff), getParam (Resonance));
+    }
+
     BreakPlayer breaks;
     Origin origin;   // message thread
+    std::unique_ptr<Break> source;   // as loaded; the player has the edited copy
+    Edit edit;
+    std::array<std::atomic<float>, NumParams> params;
 
     std::atomic<int> mode { Slice }, root { 60 };
     std::atomic<float> attack { 0.002f }, decay { 0.3f }, sustain { 1.0f }, release { 0.3f };

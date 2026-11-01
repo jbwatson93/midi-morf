@@ -370,9 +370,11 @@ private:
 //==============================================================================
 // The sound page for a track's sampler, laid out like Ableton's Simpler:
 //
-//   • top:    how it plays (Slice / Keys / One-shot) and what it plays — a
-//             built-in break, a note rendered from a synth preset, a file
-//             (WAV, AIFF, MP3, M4A) or a recording from the mic
+//   • top:    how it plays (Slice / Keys / One-shot), one dropdown of the
+//             built-in breaks (it shows the name of anything else loaded),
+//             and IMPORT: a file (WAV, AIFF, MP3, M4A), the mic, or a note
+//             rendered from a synth preset. The mic opens a record bar in
+//             place of the edit row until DONE
 //   • middle: the sample editor — trim it, and in Slice mode say how many
 //             bars the trimmed part is, so a loop that isn't cut right can be
 //             fixed here; REVERSE
@@ -396,41 +398,10 @@ public:
             addAndMakeVisible (b);
         }
 
-        importButton.onClick = [this]
-        {
-            if (sampler == nullptr) return;
-            importButton.setEnabled (false);
-            // The importer loads into whichever sampler: give it this one.
-            pendingImport = sampler;
-            juce::Component::SafePointer<SamplerPage> safe (this);
-            chooser = std::make_unique<juce::FileChooser> ("Import a sample", juce::File(), BreakImport::patterns);
-            chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                [safe] (const juce::FileChooser& fc) { if (safe != nullptr) safe->imported (fc.getURLResult()); });
-        };
-        addAndMakeVisible (importButton);
-
-        synthCombo.setTextWhenNothingSelected ("From a synth preset");
-        int id = 1;
-        for (auto& cat : WavetablePresets::categories())
-        {
-            synthCombo.addSectionHeading (cat);
-            for (auto& p : WavetablePresets::factory())
-                if (p.category == cat)
-                    synthCombo.addItem (p.name, id++);
-        }
-        synthCombo.onChange = [this]
-        {
-            if (sampler == nullptr || synthCombo.getSelectedId() == 0) return;
-            if (sampler->renderFromPreset (synthCombo.getText()) != nullptr)
-            {
-                if (sampler->getMode() == SamplerSource::Slice)
-                    sampler->setMode (SamplerSource::Keys);   // a rendered note is for playing, not slicing
-                loaded();
-            }
-        };
-        addAndMakeVisible (synthCombo);
-
-        breakCombo.setTextWhenNothingSelected ("Built-in breaks");
+        // The one dropdown of what's loaded: the built-in breaks, or the name
+        // of whatever came in through Import.
+        breakCombo.setTextWhenNothingSelected ("Choose a break");
+        breakCombo.addSectionHeading ("Breaks");
         breakCombo.addItemList (BreakLibrary::builtInNames(), 1);
         breakCombo.onChange = [this]
         {
@@ -441,8 +412,18 @@ public:
         };
         addAndMakeVisible (breakCombo);
 
+        // Everything else comes in through Import: a file, the mic or a synth.
+        importButton.onClick = [this] { showImportMenu(); };
+        addAndMakeVisible (importButton);
+
+        // Recording: a bar that takes the place of the edit row while the
+        // mic is open.
         recordButton.onClick = [this] { recordPressed(); };
-        addAndMakeVisible (recordButton);
+        recordStatus.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+        recordStatus.setColour (juce::Label::textColourId, MidiMorfColors::textLight);
+        recordDone.onClick = [this] { closeRecorder(); };
+        for (auto* c : std::initializer_list<juce::Component*> { &recordButton, &recordStatus, &recordDone })
+            addChildComponent (c);
 
         editor.onTrimmed = [this] (double start, double end)
         {
@@ -521,6 +502,13 @@ public:
         rootDown.onClick = [this] { nudgeRoot (-1); };
         rootUp.onClick   = [this] { nudgeRoot (1); };
         rootLabel.setJustificationType (juce::Justification::centred);
+        rootLabel.setFont (juce::FontOptions (22.0f, juce::Font::bold));
+        rootLabel.setColour (juce::Label::textColourId, MidiMorfColors::textLight);
+        rootLabel.setColour (juce::Label::backgroundColourId, juce::Colours::black.withAlpha (0.35f));
+        rootLabel.setColour (juce::Label::outlineColourId, MidiMorfColors::textLight.withAlpha (0.2f));
+        rootCaption.setJustificationType (juce::Justification::centred);
+        rootCaption.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        rootCaption.setColour (juce::Label::textColourId, MidiMorfColors::textLight);
 
         const char* names4[] = { "A", "D", "S", "R" };
         for (int i = 0; i < 4; ++i)
@@ -577,10 +565,8 @@ public:
             modeButtons[m]->setToggleState (m == (int) mode, juce::dontSendNotification);
 
         breakCombo.setSelectedId (sampler->getBuiltInBreakIndex() + 1, juce::dontSendNotification);
-
-        synthCombo.setSelectedId (0, juce::dontSendNotification);
-        if (sampler->isFromPreset())
-            synthCombo.setText (sampler->getSampleName(), juce::dontSendNotification);
+        if (sampler->getBuiltInBreakIndex() < 0 && sampler->getBreak() != nullptr)
+            breakCombo.setText (sampler->getSampleName(), juce::dontSendNotification);
 
         const auto& e = sampler->getEdit();
         reverseButton.setToggleState (e.reverse, juce::dontSendNotification);
@@ -593,7 +579,7 @@ public:
         filterCombo.setSelectedId (juce::roundToInt (sampler->getParam (SamplerSource::FilterType)) + 1, juce::dontSendNotification);
         loopButton.setToggleState (sampler->getParam (SamplerSource::Loop) >= 0.5f, juce::dontSendNotification);
 
-        rootLabel.setText ("ROOT " + juce::MidiMessage::getMidiNoteName (sampler->getRootNote(), true, true, 4), juce::dontSendNotification);
+        rootLabel.setText (juce::MidiMessage::getMidiNoteName (sampler->getRootNote(), true, true, 4), juce::dontSendNotification);
         const auto env = sampler->getEnvelope();
         const float v[4] = { env.attack, env.decay, env.sustain, env.release };
         for (int i = 0; i < 4; ++i)
@@ -617,16 +603,7 @@ public:
         }
 
         // Leaving the page keeps what was recorded and closes the mic.
-        if (isRecording())
-            finishRecording();
-        if (micOpen)
-        {
-            micOpen = false;
-            stopTimer();
-            meter = 0.0f;
-            editor.setOverlay ({}, 0.0f, false);
-            if (onMicDone) onMicDone();
-        }
+        closeRecorder();
     }
 
     void paint (juce::Graphics& g) override
@@ -662,10 +639,8 @@ public:
         for (auto* b : modeButtons)
             b->setBounds (top.removeFromLeft (78).reduced (2));
         top.removeFromLeft (6);
-        recordButton.setBounds (top.removeFromRight (34));
+        importButton.setBounds (top.removeFromRight (110).reduced (2));
         top.removeFromRight (4);
-        importButton.setBounds (top.removeFromRight (96).reduced (2));
-        synthCombo.setBounds (top.removeFromRight (juce::jmin (170, top.getWidth() / 2)).reduced (2));
         breakCombo.setBounds (top.reduced (2));
         area.removeFromTop (6);
 
@@ -673,9 +648,26 @@ public:
         // the rest.
         controlsArea = area.removeFromBottom (juce::jlimit (96, 132, area.getHeight() * 38 / 100));
         area.removeFromBottom (4);
-        auto row = area.removeFromBottom (30);
+        auto row = area.removeFromBottom (micOpen ? 44 : 30);
         area.removeFromBottom (4);
         editor.setBounds (area);
+
+        // While the mic is open the edit row is the record bar: a big
+        // record button, what it's doing, and DONE to close the mic.
+        for (auto* c : std::initializer_list<juce::Component*> { &recordButton, &recordStatus, &recordDone })
+            c->setVisible (micOpen);
+        for (auto* c : std::initializer_list<juce::Component*> { &reverseButton, &playTab, &shapeTab })
+            c->setVisible (! micOpen);
+        if (micOpen)
+        {
+            recordButton.setBounds (row.removeFromLeft (52));
+            row.removeFromLeft (8);
+            recordDone.setBounds (row.removeFromRight (90).reduced (2, 6));
+            recordStatus.setBounds (row);
+            infoArea = {};
+            layoutControls();
+            return;
+        }
 
         reverseButton.setBounds (row.removeFromLeft (64).reduced (2));
         row.removeFromLeft (6);
@@ -714,7 +706,7 @@ private:
     std::vector<juce::Component*> allControls()
     {
         std::vector<juce::Component*> c { &warpCombo, &warpLabel, &filterCombo, &filterLabel, &loopButton,
-                                          &rootDown, &rootUp, &rootLabel, &fadeInKnob, &fadeOutKnob };
+                                          &rootDown, &rootUp, &rootLabel, &rootCaption, &fadeInKnob, &fadeOutKnob };
         for (auto& [knob, param] : paramKnobs) c.push_back (knob);
         for (auto* s : envSliders) c.push_back (s);
         for (auto* l : envLabels) c.push_back (l);
@@ -733,7 +725,7 @@ private:
         const bool slice = mode == SamplerSource::Slice, keys = mode == SamplerSource::Keys;
         const bool slicing = slice && sampler->getBreak() != nullptr;
         for (auto* c : std::initializer_list<juce::Component*> { &barsDown, &barsUp, &barsLabel })
-            c->setVisible (slicing);
+            c->setVisible (slicing && ! micOpen);
 
         // Each item: a component (or a pair stacked label-over-control) and
         // its share of the row.
@@ -743,7 +735,7 @@ private:
         if (playTab.getToggleState())
         {
             if (slice) items.push_back ({ &warpCombo, &warpLabel, 1.5f });
-            if (keys)  items.push_back ({ &rootLabel, nullptr, 1.4f });
+            if (keys)  items.push_back ({ &rootLabel, nullptr, 1.1f });
             items.push_back ({ &transposeKnob });
             items.push_back ({ &detuneKnob });
             if (! slice) items.push_back ({ &speedKnob });
@@ -777,12 +769,17 @@ private:
 
             if (it.c == &rootLabel)
             {
-                // ROOT: the note name between − and +, centred.
-                auto r = cell.withSizeKeepingCentre (cell.getWidth(), 30);
-                rootDown.setBounds (r.removeFromLeft (30).reduced (1));
-                rootUp.setBounds (r.removeFromRight (30).reduced (1));
-                rootLabel.setBounds (r);
-                for (auto* c : std::initializer_list<juce::Component*> { &rootDown, &rootUp, &rootLabel }) c->setVisible (true);
+                // ROOT, laid out like a knob: the note in a display, − and +
+                // under it, and the name along the bottom with the others.
+                auto col = cell.withSizeKeepingCentre (juce::jmin (cell.getWidth(), 96), cell.getHeight());
+                rootCaption.setBounds (col.removeFromBottom (18));
+                col.removeFromBottom (4);
+                auto buttons = col.removeFromBottom (30);
+                rootDown.setBounds (buttons.removeFromLeft (buttons.getWidth() / 2).reduced (2, 1));
+                rootUp.setBounds (buttons.reduced (2, 1));
+                col.removeFromBottom (6);
+                rootLabel.setBounds (col.withSizeKeepingCentre (col.getWidth() - 4, juce::jmin (col.getHeight(), 40)));
+                for (auto* c : std::initializer_list<juce::Component*> { &rootDown, &rootUp, &rootLabel, &rootCaption }) c->setVisible (true);
                 continue;
             }
             if (it.label != nullptr)
@@ -875,24 +872,76 @@ private:
 
     bool isRecording() const { return recordTarget != nullptr; }
 
-    // First tap opens the mic (iOS asks the first time) and starts; the next
-    // tap stops.
-    void recordPressed()
+    // Import: a file, a recording from the mic, or a note rendered from one
+    // of the synth's presets.
+    void showImportMenu()
     {
-        if (isRecording())
+        if (sampler == nullptr) return;
+
+        enum { FromFile = 1, FromMic, FirstPreset = 100 };
+        juce::PopupMenu menu;
+        menu.addItem (FromFile, "Audio file (WAV, AIFF, MP3, M4A)...");
+        menu.addItem (FromMic, "Record from the mic", ! micOpen);
+        juce::PopupMenu synths;
+        const auto& presets = WavetablePresets::factory();
+        for (auto& cat : WavetablePresets::categories())
         {
-            finishRecording();
-            return;
+            juce::PopupMenu sub;
+            for (int i = 0; i < (int) presets.size(); ++i)
+                if (presets[(size_t) i].category == cat)
+                    sub.addItem (FirstPreset + i, presets[(size_t) i].name, true,
+                                 sampler->isFromPreset() && sampler->getSampleName() == presets[(size_t) i].name);
+            synths.addSubMenu (cat, sub);
         }
-        if (sampler == nullptr || recorder == nullptr || onMicNeeded == nullptr)
+        menu.addSubMenu ("Render a synth preset", synths);
+
+        juce::Component::SafePointer<SamplerPage> safe (this);
+        menu.showMenuAsync (PopupStyle::attached (menu, importButton, 36), [safe] (int result)
+        {
+            if (safe == nullptr || safe->sampler == nullptr || result <= 0) return;
+            if (result == FromFile)      safe->chooseFile();
+            else if (result == FromMic)  safe->openRecorder();
+            else if (result >= FirstPreset)
+            {
+                const auto& p = WavetablePresets::factory();
+                if (result - FirstPreset < (int) p.size())
+                    safe->renderPreset (p[(size_t) (result - FirstPreset)].name);
+            }
+        });
+    }
+
+    void chooseFile()
+    {
+        importButton.setEnabled (false);
+        // The importer loads into whichever sampler: give it this one.
+        pendingImport = sampler;
+        juce::Component::SafePointer<SamplerPage> safe (this);
+        chooser = std::make_unique<juce::FileChooser> ("Import a sample", juce::File(), BreakImport::patterns);
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+            [safe] (const juce::FileChooser& fc) { if (safe != nullptr) safe->imported (fc.getURLResult()); });
+    }
+
+    void renderPreset (const juce::String& name)
+    {
+        if (sampler->renderFromPreset (name) == nullptr) return;
+        if (sampler->getMode() == SamplerSource::Slice)
+            sampler->setMode (SamplerSource::Keys);   // a rendered note is for playing, not slicing
+        loaded();
+    }
+
+    // Opens the mic (iOS asks the first time) and shows the record bar,
+    // armed: nothing records until the record button is tapped.
+    void openRecorder()
+    {
+        if (micOpen || recorder == nullptr || onMicNeeded == nullptr)
             return;
 
-        recordButton.setEnabled (false);
+        importButton.setEnabled (false);
         juce::Component::SafePointer<SamplerPage> safe (this);
         onMicNeeded ([safe] (bool ok)
         {
             if (safe == nullptr) return;
-            safe->recordButton.setEnabled (true);
+            safe->importButton.setEnabled (true);
             if (! ok)
             {
                 safe->alert ("No microphone", "Midi-Morf can't use the mic. Allow it in Settings > Midi-Morf > Microphone.");
@@ -904,11 +953,40 @@ private:
                 return;
             }
             safe->micOpen = true;
-            safe->recordTarget = safe->sampler;
-            safe->recorder->start();
-            safe->recordButton.setRecording (true);
+            safe->recordStatus.setText ("Ready. Tap the red button to record.", juce::dontSendNotification);
             safe->startTimerHz (30);
+            safe->resized();
         });
+    }
+
+    // DONE, or leaving the page: keep what was recorded and close the mic.
+    void closeRecorder()
+    {
+        if (isRecording())
+            finishRecording();
+        if (! micOpen)
+            return;
+        micOpen = false;
+        stopTimer();
+        meter = 0.0f;
+        editor.setOverlay ({}, 0.0f, false);
+        if (onMicDone) onMicDone();
+        refresh();
+    }
+
+    // Each tap starts or stops a take; every take replaces the sample.
+    void recordPressed()
+    {
+        if (isRecording())
+        {
+            finishRecording();
+            return;
+        }
+        if (! micOpen || sampler == nullptr)
+            return;
+        recordTarget = sampler;
+        recorder->start();
+        recordButton.setRecording (true);
     }
 
     // Stop, and load the take into the sampler it was recorded for.
@@ -917,7 +995,8 @@ private:
         auto* target = std::exchange (recordTarget, nullptr);
         recordButton.setRecording (false);
         const auto audio = recorder->stop();
-        editor.setOverlay (micOpen ? "Tap record for another take" : juce::String(), 0.0f, false);
+        editor.setOverlay ({}, 0.0f, false);
+        recordStatus.setText ("Got it. Tap the red button for another take, or DONE.", juce::dontSendNotification);
         if (target == nullptr)
             return;
 
@@ -947,9 +1026,13 @@ private:
         if (isRecording() && ! recorder->isRecording())
             finishRecording();   // hit the time limit
         if (isRecording())
-            editor.setOverlay ("Recording  " + juce::String (recorder->getSecondsRecorded(), 1) + " s", meter, true);
+        {
+            const auto secs = juce::String (recorder->getSecondsRecorded(), 1) + " s";
+            editor.setOverlay ("Recording  " + secs, meter, true);
+            recordStatus.setText ("Recording " + secs + ". Tap to stop.", juce::dontSendNotification);
+        }
         else if (micOpen)
-            editor.setOverlay ("Tap record for another take", meter, false);
+            editor.setOverlay ("Mic is listening", meter, false);
     }
 
     static void alert (const juce::String& title, const juce::String& message)
@@ -1013,9 +1096,11 @@ private:
     SynthLookAndFeel laf;   // declared before the children
 
     juce::OwnedArray<juce::TextButton> modeButtons;
-    juce::TextButton importButton { "Import..." };
-    juce::ComboBox breakCombo, synthCombo;
+    juce::TextButton importButton { "IMPORT" };
+    juce::ComboBox breakCombo;
     RecordButton recordButton;
+    juce::Label recordStatus;
+    juce::TextButton recordDone { "DONE" };
     SampleEditor editor;
 
     juce::TextButton reverseButton { "REV" }, barsDown { "-" }, barsUp { "+" };
@@ -1031,7 +1116,7 @@ private:
     std::vector<std::pair<Knob*, SamplerSource::Param>> paramKnobs;
     juce::TextButton loopButton { "LOOP" };
     juce::TextButton rootDown { "-" }, rootUp { "+" };
-    juce::Label rootLabel;
+    juce::Label rootLabel, rootCaption { {}, "ROOT" };
     juce::OwnedArray<juce::Slider> envSliders;
     juce::OwnedArray<juce::Label> envLabels;
 

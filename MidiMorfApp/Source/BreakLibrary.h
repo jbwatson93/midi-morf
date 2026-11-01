@@ -251,7 +251,9 @@ namespace BreakLibrary
         }
     }
 
-    inline std::unique_ptr<Break> fromReader (std::unique_ptr<juce::AudioFormatReader>, const juce::String&, double, juce::String&);
+    static constexpr double MaxImportSeconds = 120.0;   // see fromReader
+    inline std::unique_ptr<Break> fromReader (std::unique_ptr<juce::AudioFormatReader>, const juce::String&, double, juce::String&,
+                                              double maxSeconds = MaxImportSeconds);
 
     // Renders three passes of the bar and keeps the middle one, so the reverb
     // and the last hits' tails wrap into the start and the loop is seamless.
@@ -444,9 +446,12 @@ namespace BreakLibrary
         return best;
     }
 
-    // beats <= 0 means guess it from the length.
+    // beats <= 0 means guess it from the length. Imports keep up to
+    // MaxImportSeconds of the file: enough to find a break in a whole song
+    // and trim it in the sample editor.
     inline std::unique_ptr<Break> fromReader (std::unique_ptr<juce::AudioFormatReader> reader,
-                                              const juce::String& name, double beats, juce::String& error)
+                                              const juce::String& name, double beats, juce::String& error,
+                                              double maxSeconds)
     {
         if (reader == nullptr)
         {
@@ -454,7 +459,6 @@ namespace BreakLibrary
             return nullptr;
         }
 
-        const double maxSeconds = 30.0;
         const auto length = (int) juce::jmin<juce::int64> (reader->lengthInSamples,
                                                            (juce::int64) (maxSeconds * reader->sampleRate));
         if (length < (int) (0.25 * reader->sampleRate))
@@ -480,11 +484,18 @@ namespace BreakLibrary
         return out;
     }
 
+    // WAV, AIFF and FLAC everywhere; on iPhone and Mac also MP3, M4A/AAC and
+    // CAF (Core Audio reads them).
     inline std::unique_ptr<Break> importFile (const juce::File& file, juce::String& error)
     {
         juce::AudioFormatManager formats;
         formats.registerBasicFormats();
-        return fromReader (std::unique_ptr<juce::AudioFormatReader> (formats.createReaderFor (file)),
-                           file.getFileNameWithoutExtension(), 0.0, error);
+        auto reader = std::unique_ptr<juce::AudioFormatReader> (formats.createReaderFor (file));
+        if (reader == nullptr)
+        {
+            error = "Couldn't read " + file.getFileName() + ". Try a WAV, AIFF, MP3 or M4A file.";
+            return nullptr;
+        }
+        return fromReader (std::move (reader), file.getFileNameWithoutExtension(), 0.0, error);
     }
 }

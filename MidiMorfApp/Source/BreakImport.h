@@ -11,6 +11,9 @@
 // still loads on the next launch.
 namespace BreakImport
 {
+    // What the pickers offer. MP3, M4A/AAC and CAF are read by Core Audio.
+    inline const juce::String patterns { "*.wav;*.aif;*.aiff;*.mp3;*.m4a;*.aac;*.caf;*.flac" };
+
     // The copy, or an empty File (with `error` set) if it couldn't be read.
     inline juce::File copyIn (const juce::URL& url, juce::String& error)
     {
@@ -37,7 +40,7 @@ namespace BreakImport
     inline void launch (std::unique_ptr<juce::FileChooser>& chooser, LocalSequencers& seqs, int track,
                         std::function<void()> onImported)
     {
-        chooser = std::make_unique<juce::FileChooser> ("Import a drum loop", juce::File(), "*.wav;*.aif;*.aiff");
+        chooser = std::make_unique<juce::FileChooser> ("Import a drum loop", juce::File(), patterns);
         chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
             [&seqs, track, onImported] (const juce::FileChooser& fc)
             {

@@ -11,7 +11,7 @@
 // DAW sync: the DAW owns the clock, so it is just a status line.
 // Local sync: PLAY for this page's sequencer, plus (slice page only) the
 // BREAK picker — built-in breaks, a previously imported loop, or
-// "Import .wav...". Tempo and the sync source live on the Transport page,
+// "Import audio...". Tempo and the sync source live on the Transport page,
 // the global transport; this strip just shows the tempo.
 //
 // Polls at 30 Hz: that covers the sync source flipping on the Transport page,
@@ -159,7 +159,7 @@ private:
         breakCombo.addSeparator();
         if (seqs.getImportedBreak (track()) != juce::File() && seqs.getBreak (track()) != nullptr)
             breakCombo.addItem (seqs.getBreak (track())->name, ImportedId);
-        breakCombo.addItem ("Import .wav...", ImportId);
+        breakCombo.addItem ("Import audio...", ImportId);
 
         const int idx = seqs.getBuiltInBreakIndex (track());
         breakCombo.setSelectedId (idx >= 0 ? idx + 1 : ImportedId, juce::dontSendNotification);

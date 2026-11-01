@@ -92,6 +92,7 @@
       <FILE id="mfx000" name="MixerFx.h" compile="0" resource="0" file="Source/MixerFx.h"/>
       <FILE id="wlk000" name="Walkthrough.h" compile="0" resource="0" file="Source/Walkthrough.h"/>
       <FILE id="rmx000" name="RemixPage.h" compile="0" resource="0" file="Source/RemixPage.h"/>
+      <FILE id="mlr000" name="Mlr.h" compile="0" resource="0" file="Source/Mlr.h"/>
       <FILE id="pop000" name="PopupStyle.h" compile="0" resource="0" file="Source/PopupStyle.h"/>
       <FILE id="nte001" name="NoteEditorPage.h" compile="0" resource="0" file="Source/NoteEditorPage.h"/>
       <FILE id="ses002" name="ProjectBrowser.h" compile="0" resource="0" file="Source/ProjectBrowser.h"/>

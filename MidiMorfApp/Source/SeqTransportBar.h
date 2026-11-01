@@ -124,7 +124,7 @@ private:
         // Only while this track really is a Breaker on a sampler: a sampler
         // used another way must keep its sample.
         const auto kind = seqs.getKind (track());
-        const bool slicing = hasBreaks && (kind == LocalSequencers::Kind::Slice || kind == LocalSequencers::Kind::Remix);
+        const bool slicing = hasBreaks && kind == LocalSequencers::Kind::Slice;
         if (slicing && seqs.sliceSampler (track()) != nullptr && seqs.getBreak (track()) == nullptr)
             seqs.setBuiltInBreak (track(), 0);   // no saved settings to restore from
 

@@ -150,8 +150,8 @@ MainComponent::MainComponent()
         dualMPadPages[(size_t) t]  = std::make_unique<DualMPadPage> (router);
         morfChordPages[(size_t) t] = std::make_unique<MorfChordPage> (router);
         roseChordPages[(size_t) t] = std::make_unique<RoseChordPage> (router);
-        remixPages[(size_t) t]     = std::make_unique<RemixPage> (router);
-        remixPages[(size_t) t]->setTrack (t);
+        remixPages[(size_t) t]     = std::make_unique<RemixPage> (audioEngine.getTrackMlr (t), audioEngine.getSequencers(), t);
+        remixPages[(size_t) t]->onChanged = [this] { saveState(); };
 
         stepPages[(size_t) t] = std::make_unique<StepSequencerPage> (router);
         stepPages[(size_t) t]->setTrack (t);
@@ -623,6 +623,7 @@ void MainComponent::setInstrument (int track, int mode)
     instrumentOf[track] = mode;
 
     auto& seqs = audioEngine.getSequencers();
+    audioEngine.setTrackRemix (track, mode == RemixId);
     if (isSequencer (mode))
     {
         const int kind = whichSequencer (mode);
@@ -631,9 +632,7 @@ void MainComponent::setInstrument (int track, int mode)
         // The engine starts from what the track's page shows.
         if (mode == RemixId)
         {
-            if (audioEngine.getTrackSound (track) == AudioEngine::Sound::Sampler)
-                audioEngine.getTrackSampler (track).setMode (SamplerSource::Slice);   // it plays the sample in slices
-            remixPages[(size_t) track]->updateLength();
+            remixPages[(size_t) track]->refresh();
         }
         else if (kind == KindDrums)
         {
@@ -763,6 +762,9 @@ void MainComponent::showSound (int track)
 // the right one at the track.
 int MainComponent::prepareSoundPage (int track)
 {
+    if (audioEngine.isTrackRemix (track))
+        return seqPageIdx (8, track);   // a Remix track's samples are on its grid
+
     switch (audioEngine.getTrackSound (track))
     {
         case AudioEngine::Sound::Synth:
@@ -1742,6 +1744,7 @@ void MainComponent::saveNow()
         track.appendChild (audioEngine.getTrackSynth (t).getState(), nullptr);     // both kept, whichever
         track.appendChild (audioEngine.getTrackSampler (t).getState(), nullptr);   // the track plays
         track.appendChild (audioEngine.getTrackDrums (t).getState(), nullptr);
+        track.appendChild (audioEngine.getTrackMlr (t).getState(), nullptr);
         project.appendChild (track, nullptr);
     }
     if (auto xml = pageState.createXml ("PageState"))
@@ -1863,6 +1866,8 @@ void MainComponent::restoreState()
                 migrateBreak (t, pages);   // a project from before samplers
             if (auto kit = track.getChildWithName (DrumSource::stateType); kit.isValid())
                 audioEngine.getTrackDrums (t).setState (kit);
+            if (auto grid = track.getChildWithName (MlrSource::stateType); grid.isValid())
+                audioEngine.getTrackMlr (t).setState (grid);
             setInstrument (t, track.getProperty ("instrument", defaultInst[t]));
             audioEngine.getRack().setVolume (t, (float) (double) track.getProperty ("volume", 1.0));
             audioEngine.setSoundName (t, track["soundName"].toString());

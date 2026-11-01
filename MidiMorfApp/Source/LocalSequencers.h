@@ -9,6 +9,7 @@
 #include "DrumSynth.h"
 #include "SessionModel.h"
 #include "NoteClip.h"
+#include "Mlr.h"
 
 //==============================================================================
 // The sequencers in Local mode, on the phone's own clock, plus the note-clip
@@ -18,10 +19,8 @@
 // sequencer), a Drum Grid or a Remix Lane, each with its own engine and
 // pattern, so two tracks can both run a Step-Seq.
 //
-// The Remix Lane plays the track's sample in 16th slices locked to the
-// clock, so it loops in time; a tap jumps playback to another place in it
-// (from the next 16th, then onward from there), holding two loops between
-// them, and SYNC puts it back in line with the bar — monome mlr style. The Step-Seq and Breaker engines are the
+// A Remix track plays its MlrSource (the mlr grid), which only needs the
+// clock: it is handed where the clock is before every sub-block. The Step-Seq and Breaker engines are the
 // ones the server runs, ticked at 24 PPQN; the Drum Grid is the phone's own
 // and fires at the exact sample (swing included).
 //
@@ -110,12 +109,6 @@ public:
                             const int until = (int) std::lround ((drumStepTick (t, s.nextDrumSixteenth) - now) * samplesPerTick());
                             n = juce::jmin (n, juce::jmax (1, until));
                         }
-                        if (s.kind == Kind::Remix && s.running.load())
-                        {
-                            fireDueRemixSteps (t, now);
-                            const int until = (int) std::lround (((double) s.nextDrumSixteenth * (SeqPPQN / 4) - now) * samplesPerTick());
-                            n = juce::jmin (n, juce::jmax (1, until));
-                        }
                         if (notePlayers[(size_t) t].active)
                         {
                             fireDueNotes (t, now);
@@ -131,6 +124,15 @@ public:
                 }
 
                 drainEvents();
+
+                // The Remix grids: where the clock is, or stopped.
+                for (int t = 0; t < NumTracks; ++t)
+                    if (auto* m = dynamic_cast<MlrSource*> (rack.getSource (t)))
+                    {
+                        const auto& s = slots[(size_t) t];
+                        const bool on = clockRunning && s.kind == Kind::Remix && s.running.load();
+                        m->setClock (on ? segmentTick : -1.0, samplesPerTick());
+                    }
 
                 for (int t = 0; t < NumTracks; ++t)
                     if (std::exchange (slots[(size_t) t].panicBreaks, false))
@@ -218,7 +220,7 @@ public:
         switch (s.kind)
         {
             case Kind::Drums: return s.drumStep.load();
-            case Kind::Remix: return s.remixPos.load();
+            case Kind::Remix: return 0;   // its grid has a playhead per row
             case Kind::Step:  return s.step->getCurrentStep();
             case Kind::Slice: return s.slice->getCurrentStep();
             default:          return -1;
@@ -351,56 +353,6 @@ public:
     // 0..1: how late the off-beat 16ths come, up to half a 16th.
     void  setDrumSwing (int track, float amount) { if (validTrack (track)) slots[(size_t) track].drumSwing.store (juce::jlimit (0.0f, 1.0f, amount)); }
     float getDrumSwing (int track) const        { return validTrack (track) ? slots[(size_t) track].drumSwing.load() : 0.0f; }
-
-    //==========================================================================
-    // The Remix Lane — message thread. Positions are 16ths into the sample.
-
-    // How long the sample is, in 16ths (it loops after that).
-    void setRemixLength (int track, int sixteenths)
-    {
-        if (validTrack (track)) slots[(size_t) track].remixLength.store (juce::jlimit (1, 128, sixteenths));
-    }
-    int getRemixLength (int track) const { return validTrack (track) ? slots[(size_t) track].remixLength.load() : 16; }
-
-    // Play on from `position` from the next 16th.
-    void remixJump (int track, int position)
-    {
-        if (! validTrack (track)) return;
-        const juce::SpinLock::ScopedLockType sl (lock);
-        auto& s = slots[(size_t) track];
-        s.remixJumpTo = juce::jlimit (0, s.remixLength.load() - 1, position);
-    }
-
-    // Loop the 16ths from a to b (inclusive) from the next 16th; a < 0 ends
-    // the loop and plays on from where it is.
-    void remixLoop (int track, int a, int b)
-    {
-        if (! validTrack (track)) return;
-        const juce::SpinLock::ScopedLockType sl (lock);
-        auto& s = slots[(size_t) track];
-        if (a < 0) { s.remixLoopEnd = true; return; }
-        const int len = s.remixLength.load();
-        s.remixLoopA = juce::jlimit (0, len - 1, juce::jmin (a, b));
-        s.remixLoopB = juce::jlimit (0, len - 1, juce::jmax (a, b));
-        s.remixLoopStartNext = true;
-    }
-
-    // Back in line with the bar: the sample's start on the downbeat.
-    void remixSync (int track)
-    {
-        if (! validTrack (track)) return;
-        const juce::SpinLock::ScopedLockType sl (lock);
-        slots[(size_t) track].remixSyncNext = true;
-    }
-
-    // The loop being played, or {-1, -1}.
-    std::pair<int, int> getRemixLoop (int track) const
-    {
-        const juce::SpinLock::ScopedLockType sl (lock);
-        if (! validTrack (track)) return { -1, -1 };
-        const auto& s = slots[(size_t) track];
-        return s.remixLooping ? std::pair<int, int> { s.remixLoopA, s.remixLoopB } : std::pair<int, int> { -1, -1 };
-    }
 
     //==========================================================================
     // Session launching — message thread.
@@ -670,7 +622,7 @@ private:
 
     static constexpr int NumRibbons  = 2;
     static constexpr int MaxEvents   = 512;
-    static constexpr int DrumChannel = 10, RemixChannel = 9, RemixRoot = 36;
+    static constexpr int DrumChannel = 10;
 
     struct Slot
     {
@@ -691,11 +643,6 @@ private:
         int nextDrumSixteenth = 0;                                              // under lock
         std::atomic<float> drumSwing { 0.0f };
         std::atomic<int> drumStep { -1 };
-
-        // The Remix Lane (its 16ths count in nextDrumSixteenth).
-        std::atomic<int> remixLength { 32 }, remixPos { -1 };
-        int remixOffset = 0, remixJumpTo = -1, remixLoopA = 0, remixLoopB = 0, remixLoopAnchor = 0;   // under lock
-        bool remixLooping = false, remixLoopStartNext = false, remixLoopEnd = false, remixSyncNext = false;
 
         // Breaker.
         int lastSliceBars = -1, lastSliceDivision = 2;   // under lock
@@ -719,9 +666,6 @@ private:
                 if (slots[(size_t) t].kind == Kind::Slice)
                     if (auto* s = sliceSampler (t))
                         s->setSliceMapping ((int) slots[(size_t) t].slice->getRootNote(), stepBeats (t), 60.0 / bpm.load());
-                if (slots[(size_t) t].kind == Kind::Remix)
-                    if (auto* s = sliceSampler (t))
-                        s->setSliceMapping (RemixRoot, 0.25, 60.0 / bpm.load());
             }
 
         for (int i = 0; i < numEvents; ++i)
@@ -794,43 +738,6 @@ private:
         }
     }
 
-    // The Remix Lane's 16ths: jumps, loops and SYNC take effect here, then
-    // the slice for this 16th plays. Slices are one-shots, so no note-offs.
-    void fireDueRemixSteps (int t, double now)
-    {
-        auto& s = slots[(size_t) t];
-        constexpr int tps = SeqPPQN / 4;
-        auto mod = [] (int a, int m) { return ((a % m) + m) % m; };
-
-        while (((double) s.nextDrumSixteenth * tps - now) * samplesPerTick() < 0.5)
-        {
-            if (s.nextDrumSixteenth % launchSixteenths() == 0 && std::exchange (s.pendingStop, false))
-            {
-                s.want.store (false);
-                stopSequencer (t);
-                return;
-            }
-
-            const int len = s.remixLength.load();
-            const int six = s.nextDrumSixteenth;
-
-            if (std::exchange (s.remixSyncNext, false))   { s.remixOffset = 0; s.remixLooping = false; }
-            if (s.remixJumpTo >= 0)                         { s.remixOffset = mod (s.remixJumpTo - six, len); s.remixJumpTo = -1; s.remixLooping = false; }
-            if (std::exchange (s.remixLoopStartNext, false)) { s.remixLooping = true; s.remixLoopAnchor = six; }
-            if (std::exchange (s.remixLoopEnd, false) && s.remixLooping)
-            {
-                s.remixLooping = false;
-                s.remixOffset = mod (s.remixPos.load() + 1 - six, len);   // on from where it is
-            }
-
-            const int pos = s.remixLooping ? s.remixLoopA + mod (six - s.remixLoopAnchor, s.remixLoopB - s.remixLoopA + 1)
-                                           : mod (six + s.remixOffset, len);
-            push ({ t, true, RemixChannel, RemixRoot + pos, 100 });
-            s.remixPos.store (pos);
-            ++s.nextDrumSixteenth;
-        }
-    }
-
     void releaseDrumNotes (int t)
     {
         auto& s = slots[(size_t) t];
@@ -897,13 +804,7 @@ private:
             releaseDrumNotes (t);
             s.drumStep.store (-1);
         }
-        else if (s.kind == Kind::Remix)
-        {
-            if (auto* smp = sliceSampler (t))
-                smp->player().releaseAll();
-            s.remixPos.store (-1);
-        }
-        else if (s.kind != Kind::None)
+        else if (s.kind == Kind::Step || s.kind == Kind::Slice)
         {
             sequencer (t).clockStop();
             if (s.kind == Kind::Slice)
@@ -1175,9 +1076,10 @@ private:
             if (s.kind == Kind::None)
                 continue;
 
-            const bool sampleExact = s.kind == Kind::Drums || s.kind == Kind::Remix;
+            const bool sampleExact = s.kind == Kind::Drums;
+            const bool remix = s.kind == Kind::Remix;   // its grid keeps its own time
 
-            // Launch points for the tick-driven two; the others have their own.
+            // Launch points for all but the Drum Grid, which has its own.
             if (launchPoint && ! sampleExact && s.running.load())
                 atLaunchPoint (t);
 
@@ -1189,6 +1091,11 @@ private:
                     s.running.store (true);
                     continue;
                 }
+                if (remix)
+                {
+                    s.running.store (true);
+                    continue;
+                }
 
                 if (globalTick == 0)
                     sequencer (t).clockStart();
@@ -1197,7 +1104,7 @@ private:
                 s.running.store (true);
             }
 
-            if (s.running.load() && ! sampleExact)
+            if (s.running.load() && ! sampleExact && ! remix)
                 sequencer (t).clockTick();
         }
 

@@ -141,7 +141,9 @@ public:
         v->life = secondsPerBeat > 0.0 && std::abs (wanted - native) > deviceRate * 0.001 ? wanted : -1.0;
         v->warp = v->life >= 0.0 ? (Warp) warp.load() : Beats;
         v->loopLen = juce::jmax (region * 0.5, b->sampleRate * loopFadeSeconds * 2.0);
-        v->rateMul = v->warp == Repitch ? native / wanted : 1.0;
+        // Repitch speeds the slice up or down for the tempo only; TRANSPOSE
+        // and the pitch ribbon still pitch it on top.
+        v->rateMul = v->warp == Repitch ? region * deviceRate / b->sampleRate / wanted : 1.0;
         v->t = 0.0;
         v->hop = hopSamples();
         v->stretch = v->life > 0.0 ? region / v->life : 0.0;   // source samples per output sample
@@ -342,6 +344,9 @@ private:
                 {
                     // Warped: the step is up — fade out where it is.
                     if ((v.life -= 1.0) <= fadeSamples (fadeSeconds))
+                        v.release (fadeSamples (fadeSeconds));
+                    // Repitch, pitched up past the end of its region: done.
+                    else if (v.warp == Repitch && v.pos >= v.end)
                         v.release (fadeSamples (fadeSeconds));
                     // Beats, with time left at the end of the region: loop
                     // its back half, crossfading so the old head ends at `end`.

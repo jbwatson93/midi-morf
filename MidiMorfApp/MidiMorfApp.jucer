@@ -2,7 +2,7 @@
 
 <JUCERPROJECT id="tEiODR" name="MidiMorfApp" projectType="guiapp" useAppConfig="0"
               addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" companyName="Retro Relic"
-              version="3.0.1">
+              version="3.0.3">
   <MAINGROUP id="rL3Kk6" name="MidiMorfApp">
     <GROUP id="{819795D2-B9DA-2740-0AF6-C8F10D4674AA}" name="Source">
       <FILE id="U1w5TJ" name="AboutPage.h" compile="0" resource="0" file="Source/AboutPage.h"/>
@@ -127,7 +127,7 @@
   <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
   <EXPORTFORMATS>
     <XCODE_IPHONE targetFolder="Builds/iOS" microphonePermissionNeeded="1" microphonePermissionsText="Midi-Morf uses the microphone to record samples." UIFileSharingEnabled="1" UIStatusBarHidden="1" extraDefs="JUCE_IOS_AUDIO_EXPLICIT_SAMPLERATES=48000.0"
-                  customPList="&lt;plist&gt;&lt;dict&gt;&#10;  &lt;key&gt;UISupportedInterfaceOrientations&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;UIInterfaceOrientationLandscapeRight&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UIRequiresFullScreen&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;LSSupportsOpeningDocumentsInPlace&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;CFBundleIconName&lt;/key&gt;&#10;  &lt;string&gt;AppIcon&lt;/string&gt;&#10;&lt;/dict&gt;&lt;/plist&gt;"
+                  customPList="&lt;plist&gt;&lt;dict&gt;&#10;  &lt;key&gt;ITSAppUsesNonExemptEncryption&lt;/key&gt;&#10;  &lt;false/&gt;&#10;  &lt;key&gt;UISupportedInterfaceOrientations&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;UIInterfaceOrientationLandscapeRight&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UIRequiresFullScreen&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;LSSupportsOpeningDocumentsInPlace&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;CFBundleIconName&lt;/key&gt;&#10;  &lt;string&gt;AppIcon&lt;/string&gt;&#10;&lt;/dict&gt;&lt;/plist&gt;"
                   iosDevelopmentTeamID="69KM48W4TU" extraCustomFrameworks="CoreMotion"
                   iosScreenOrientation="UIInterfaceOrientationLandscapeRight" iPadScreenOrientation="UIInterfaceOrientationLandscapeRight">
       <CONFIGURATIONS>

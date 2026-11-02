@@ -34,6 +34,8 @@ public:
             rack.addToPool (samplers[(size_t) t].get());
             drums[(size_t) t] = std::make_unique<DrumSource>();
             rack.addToPool (drums[(size_t) t].get());
+            mlrs[(size_t) t] = std::make_unique<MlrSource>();
+            rack.addToPool (mlrs[(size_t) t].get());
         }
         samplers[2]->setBuiltInBreak (0);   // the Amen, for the slicer
 
@@ -63,11 +65,22 @@ public:
             samplers[(size_t) track]->setBuiltInBreak (0);
 
         sounds[(size_t) track] = sound;
-        rack.setSource (track, sound == Sound::Synth   ? (SoundSource*) synths[(size_t) track].get()
-                             : sound == Sound::Sampler ? (SoundSource*) samplers[(size_t) track].get()
-                             : sound == Sound::Drums   ? (SoundSource*) drums[(size_t) track].get()
-                                                       : nullptr);
+        applySource (track);
     }
+
+    // A Remix track plays its grid, whatever its sound is set to; the sound
+    // comes back when the track plays something else.
+    void setTrackRemix (int track, bool remix)
+    {
+        if (! juce::isPositiveAndBelow (track, TrackRack::NumTracks) || remixing[(size_t) track] == remix)
+            return;
+        remixing[(size_t) track] = remix;
+        if (remix && ! mlrs[(size_t) track]->hasSample (0))
+            mlrs[(size_t) track]->setBuiltIn (0, 0);   // starts with the Amen on the first row
+        applySource (track);
+    }
+
+    bool isTrackRemix (int track) const { return juce::isPositiveAndBelow (track, TrackRack::NumTracks) && remixing[(size_t) track]; }
 
     Sound getTrackSound (int track) const
     {
@@ -176,6 +189,9 @@ public:
     // A track's own sampler, whether or not the track is playing it.
     SamplerSource& getTrackSampler (int track) noexcept { return *samplers[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
 
+    // A track's own Remix grid, whether or not the track is playing it.
+    MlrSource& getTrackMlr (int track) noexcept { return *mlrs[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
+
     // A track's own drum synth, whether or not the track is playing it.
     DrumSource& getTrackDrums (int track) noexcept { return *drums[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
 
@@ -203,6 +219,8 @@ public:
     // was loaded from (or saved as).
     juce::String getSoundName (int track) const
     {
+        if (isTrackRemix (track))
+            return "Remix grid";
         switch (getTrackSound (track))
         {
             case Sound::Synth:  return soundNames[(size_t) track];
@@ -234,6 +252,16 @@ public:
     double getCpuUsage() const { return deviceManager.getCpuUsage(); }
 
 private:
+    void applySource (int track)
+    {
+        const auto sound = sounds[(size_t) track];
+        rack.setSource (track, remixing[(size_t) track] ? (SoundSource*) mlrs[(size_t) track].get()
+                             : sound == Sound::Synth   ? (SoundSource*) synths[(size_t) track].get()
+                             : sound == Sound::Sampler ? (SoundSource*) samplers[(size_t) track].get()
+                             : sound == Sound::Drums   ? (SoundSource*) drums[(size_t) track].get()
+                                                       : nullptr);
+    }
+
     // Voice budgets: chords and strums with long releases on T1, 12 elsewhere.
     // Voices cost nothing until they sound.
     std::array<std::unique_ptr<WavetableEngine>, TrackRack::NumTracks> synths;
@@ -242,6 +270,8 @@ private:
     std::array<juce::String, TrackRack::NumTracks> soundNames { "Synth", "Acid Bass", "Init", "Init" };
     std::array<std::unique_ptr<SamplerSource>, TrackRack::NumTracks> samplers;
     std::array<std::unique_ptr<DrumSource>, TrackRack::NumTracks> drums;
+    std::array<std::unique_ptr<MlrSource>, TrackRack::NumTracks> mlrs;
+    std::array<bool, TrackRack::NumTracks> remixing {};
     PunchFx punch;
     TrackRack rack;
     LocalSequencers sequencers { rack };

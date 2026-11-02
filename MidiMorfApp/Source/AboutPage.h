@@ -102,7 +102,7 @@ public:
         auto taglineArea = brandArea.translated (0.0f, 20.0f).withHeight (16.0f);
         g.setColour (MidiMorfColors::textLight.withAlpha (0.55f));
         g.setFont (juce::FontOptions (11.0f, juce::Font::italic));
-        g.drawText ("Expressive MIDI Controllers for iOS",
+        g.drawText ("Groovebox for iOS",
                     taglineArea, juce::Justification::centred);
 
         //======================== Right column: info sections ================
@@ -114,28 +114,19 @@ public:
         const float sectionGap = 16.0f;
 
         drawSection (g, area, "What's Inside",
-            "4 tracks, 7 controllers, synths and breaks.\n"
-            "Play standalone, or send MIDI to a DAW over WiFi.\n"
+            "4 tracks, 7 controllers, sequencers, a sampler,\n"
+            "a drum synth, a wavetable synth and a remix grid.\n"
             "Tap 1-4 on the right to play a track; tap it\n"
             "again for its sound. Set tracks up on Home.");
         area.removeFromTop (sectionGap);
 
-        drawSection (g, area, "Local Play (no setup)",
-            "In Settings choose Local mode, then play any track.\n"
-            "The built-in synths and breaks make the sound;\n"
-            "press Play at the bottom to start the sequencers.");
+        drawSection (g, area, "Getting Started",
+            "Settings > Take the tour makes a beat with you,\n"
+            "step by step. Press Play on the right to start.");
         area.removeFromTop (sectionGap);
 
-        drawSection (g, area, "DAW Setup (WiFi mode)",
-            "1. Download the MidiMorf Server for Mac\n"
-            "2. Run it - a virtual MIDI port appears system-wide\n"
-            "3. Choose \"Midi-Morf\" as a MIDI input in your DAW\n"
-            "4. For Transport, set it as a Mackie Control surface\n"
-            "5. Same WiFi network - the app auto-connects");
-        area.removeFromTop (sectionGap);
-
-        drawSection (g, area, "Server & Support",
-            "retro-relic.com/downloads");
+        drawSection (g, area, "Support",
+            "retro-relic.com");
     }
 
     void resized() override {}

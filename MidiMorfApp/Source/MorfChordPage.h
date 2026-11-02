@@ -145,7 +145,7 @@ class MorfChordLandscapeContent : public juce::Component,
 {
 public:
     MorfChordLandscapeContent (EventRouter& client)
-        : networkClient (client)
+        : router (client)
     {
         // Key selector: piano keys for root note
         pianoKeys.onNoteSelected = [this] (int note) { rootNote = (uint8_t) note; sendKeySelect(); };
@@ -402,11 +402,11 @@ public:
 
         // Release previous chord before selecting new one
         if (activeTouches.size() > 1)
-            networkClient.sendMorfChordRelease();
+            router.sendMorfChordRelease();
 
         heldDegree = idx;
         updateTouchXY (idx, e.position);
-        networkClient.sendMorfChordSelect ((uint8_t) idx, touchX, touchY);
+        router.sendMorfChordSelect ((uint8_t) idx, touchX, touchY);
         updateVoicingLabel();
         repaint();
     }
@@ -429,7 +429,7 @@ public:
             heldDegree = idx;
             activeTouches.back().degree = idx;
             updateTouchXY (idx, e.position);
-            networkClient.sendMorfChordSelect ((uint8_t) idx, touchX, touchY);
+            router.sendMorfChordSelect ((uint8_t) idx, touchX, touchY);
             updateVoicingLabel();
             repaint();
         }
@@ -441,7 +441,7 @@ public:
 
             if (std::abs (touchX - oldX) > 0.01f || std::abs (touchY - oldY) > 0.01f)
             {
-                networkClient.sendMorfChordMove ((uint8_t) idx, touchX, touchY);
+                router.sendMorfChordMove ((uint8_t) idx, touchX, touchY);
                 updateVoicingLabel();
             }
             repaint();
@@ -460,7 +460,7 @@ public:
 
         if (wasActive)
         {
-            networkClient.sendMorfChordRelease();
+            router.sendMorfChordRelease();
 
             if (! activeTouches.empty())
             {
@@ -469,7 +469,7 @@ public:
                 heldDegree = prev.degree;
                 touchX = prev.x;
                 touchY = prev.y;
-                networkClient.sendMorfChordSelect ((uint8_t) prev.degree, touchX, touchY);
+                router.sendMorfChordSelect ((uint8_t) prev.degree, touchX, touchY);
                 updateVoicingLabel();
             }
             else
@@ -484,7 +484,7 @@ public:
     // VerticalStrumPlate::Listener
     void verticalStrumGesture (float position, float velocity) override
     {
-        networkClient.sendMorfChordStrum (position, velocity);
+        router.sendMorfChordStrum (position, velocity);
     }
 
     void saveState (juce::PropertySet& props)
@@ -567,10 +567,10 @@ private:
 
     void sendKeySelect()
     {
-        networkClient.sendMorfChordKeySelect (rootNote, scaleMode);
+        router.sendMorfChordKeySelect (rootNote, scaleMode);
     }
 
-    EventRouter& networkClient;
+    EventRouter& router;
     GlassButtonLookAndFeel glassLnf { morfChordPagePalette, MidiMorfColors::accent, 6.0f };
     PianoKeySelector pianoKeys;
     juce::TextButton modeButton;

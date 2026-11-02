@@ -9,9 +9,8 @@
 
 // Step Sequencer — Creative Sequencer Pack, page 1 of 3.
 //
-// A remote editor, not an instrument: all timing lives on the server, driven by
-// DAW MIDI clock. This page sends state and displays the playhead the server
-// pushes back. There is deliberately no Local mode.
+// An editor for the track's sequencer, which runs on the phone's clock. This
+// page sends it state and shows its playhead.
 //
 // Layout follows JB's wireframe (2026-08-25):
 //   • top strip   — Key / Scale / Base / Range / Len / Swing / Rate dropdowns,
@@ -498,16 +497,6 @@ public:
         setLookAndFeel (nullptr);
     }
 
-    // Server pushes the playhead as it advances; -1 when stopped. With Local
-    // sync the transport bar feeds the local one instead.
-    void setPlayhead (int step)
-    {
-        transport.setRemoteRunning (step >= 0);
-
-        if (! eventRouter.isLocalSync())
-            showPlayhead (step);
-    }
-
     SeqTransportBar& getTransport() { return transport; }
 
     //==========================================================================
@@ -550,15 +539,14 @@ public:
         return r;
     }
 
-    // Shows it and sends it (WiFi mode: the server's sequencer).
+    // Shows it and sends it to the sequencer.
     void loadPattern (const SeqPattern& p)
     {
         showPattern (p);
         pushFullState();
     }
 
-    // Called when the page becomes visible — the server needs the full state,
-    // since it has no idea what the phone was editing while away.
+    // Sends the whole page to the sequencer, e.g. when a clip loads.
     void pushFullState()
     {
         pushConfig();
@@ -954,7 +942,6 @@ public:
         addAndMakeVisible (content);
     }
 
-    void setPlayhead (int step) { content.setPlayhead (step); }
     void pushFullState()        { content.pushFullState(); }
     void setTrack (int t)       { content.track = t; }
     int  getTrack() const       { return content.track; }

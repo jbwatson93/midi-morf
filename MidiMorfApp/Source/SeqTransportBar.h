@@ -8,20 +8,18 @@
 //==============================================================================
 // The strip along the bottom of both sequencer pages.
 //
-// DAW sync: the DAW owns the clock, so it is just a status line.
-// Local sync: PLAY for this page's sequencer, plus (slice page only) the
-// BREAK picker — built-in breaks, a previously imported loop, or
-// "Import audio...". Tempo and the sync source live on the Transport page,
-// the global transport; this strip just shows the tempo.
+// PLAY for this page's sequencer, plus (slice page only) the BREAK picker —
+// built-in breaks, a previously imported loop, or "Import audio...". Tempo
+// lives on the Transport page, the global transport; this strip just shows it.
 //
-// Polls at 30 Hz: that covers the sync source flipping on the Transport page,
-// the local playhead, and the tempo changing when a break is picked.
+// Polls at 30 Hz: that covers the playhead and the tempo changing when a
+// break is picked.
 class SeqTransportBar : public juce::Component, private juce::Timer
 {
 public:
     // trackOf: the track this bar's page plays (pages are per track).
     SeqTransportBar (EventRouter& r, std::function<int()> trackOf, bool withBreakPicker)
-        : router (r), seqs (r.getSequencers()), track (std::move (trackOf)), hasBreaks (withBreakPicker)
+        : seqs (r.getSequencers()), track (std::move (trackOf)), hasBreaks (withBreakPicker)
     {
         playButton.setClickingTogglesState (true);
         playButton.onClick = [this] { seqs.setPlaying (track(), playButton.getToggleState()); refreshPlayText(); };
@@ -44,20 +42,12 @@ public:
         startTimerHz (30);
     }
 
-    // Local mode only: the playhead to draw, -1 when stopped.
+    // The playhead to draw, -1 when stopped.
     std::function<void (int)> onLocalPlayhead;
     // A newly picked break — the slice page re-grids if its length differs.
     std::function<void()> onBreakChanged;
     // Break changed — worth saving.
     std::function<void()> onStateChanged;
-
-    // DAW sync: the server's playhead says whether DAW clock is running.
-    void setRemoteRunning (bool isRunning)
-    {
-        remoteRunning = isRunning;
-        if (! isLocal)
-            statusLabel.setText (isRunning ? "Running" : "Waiting for DAW clock", juce::dontSendNotification);
-    }
 
     void resized() override
     {
@@ -76,29 +66,6 @@ private:
     {
         if (! isShowing())
             return;   // one bar per track's page: only the one on screen polls
-
-        const bool local = router.isLocalSync();
-
-        if (local != isLocal || firstPoll)
-        {
-            isLocal = local;
-            playButton.setVisible (isLocal);
-            breakCombo.setVisible (isLocal && hasBreaks);
-
-            shownBpm = -1.0;   // force the local readout on the next pass
-            if (! isLocal)
-                setRemoteRunning (remoteRunning);
-
-            // Hand the playhead back to whichever side now owns it.
-            lastPlayhead = -2;
-            if (! isLocal && onLocalPlayhead)
-                onLocalPlayhead (-1);
-        }
-
-        firstPoll = false;
-
-        if (! isLocal)
-            return;
 
         const int step = seqs.getPlayhead (track());
         if (step != lastPlayhead)
@@ -124,7 +91,7 @@ private:
         // Only while this track really is a Breaker on a sampler: a sampler
         // used another way must keep its sample.
         const auto kind = seqs.getKind (track());
-        const bool slicing = hasBreaks && (kind == LocalSequencers::Kind::Slice || kind == LocalSequencers::Kind::Remix);
+        const bool slicing = hasBreaks && kind == LocalSequencers::Kind::Slice;
         if (slicing && seqs.sliceSampler (track()) != nullptr && seqs.getBreak (track()) == nullptr)
             seqs.setBuiltInBreak (track(), 0);   // no saved settings to restore from
 
@@ -197,7 +164,6 @@ private:
         BreakImport::launch (chooser, seqs, track(), [safe] { if (safe != nullptr) safe->breakChanged(); });
     }
 
-    EventRouter& router;
     LocalSequencers& seqs;
     const std::function<int()> track;
     const bool hasBreaks;
@@ -207,7 +173,6 @@ private:
     juce::ComboBox breakCombo;
     std::unique_ptr<juce::FileChooser> chooser;
 
-    bool   isLocal = false, firstPoll = true, remoteRunning = false;
     int    lastPlayhead = -2;
     double shownBpm = -1.0;
     const Break* shownBreak = nullptr;

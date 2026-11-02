@@ -20,8 +20,7 @@ static const PagePalette fxPagePalette {
     juce::Colour (0xCC000000)        // edge — translucent black
 };
 
-// Morf FX. In WiFi mode the XY pad, sliders and four buttons send CCs and
-// button messages to the DAW. In Local mode they play the punch-in FX on the
+// Morf FX. The XY pad, sliders and four buttons play the punch-in FX on the
 // master bus: hold a button to punch its effect in, double-tap to latch it,
 // tap a latched one to let it go. The chevron on each button picks its
 // effect, and the sliders say what X and Y do for the effect last touched.
@@ -32,7 +31,7 @@ class FXPunchInPage : public juce::Component,
 {
 public:
     FXPunchInPage (EventRouter& client)
-        : networkClient (client),
+        : router (client),
           ySlider (false, "Y", 21),
           xSlider (true,  "X", 20)
     {
@@ -52,17 +51,6 @@ public:
             btn->setPalette (&fxPagePalette);
             fxButtons.add (btn);
             addAndMakeVisible (btn);
-            wifiLabels.add ("FX " + juce::String (i + 1));
-        }
-    }
-
-    // A slot name from the server, for WiFi mode.
-    void setButtonLabel (int slotIndex, const juce::String& name)
-    {
-        if (slotIndex >= 0 && slotIndex < fxButtons.size())
-        {
-            wifiLabels.set (slotIndex, name);
-            refreshMode();
         }
     }
 
@@ -71,14 +59,14 @@ public:
     // Which effect sits on each button.
     void saveState (juce::PropertySet& props) const
     {
-        if (auto* punch = networkClient.getPunchFx())
+        if (auto* punch = router.getPunchFx())
             for (int i = 0; i < PunchFx::NumSlots; ++i)
                 props.setValue ("punch_slot_" + juce::String (i), punch->getSlotEffect (i));
     }
 
     void restoreState (const juce::PropertySet& props)
     {
-        if (auto* punch = networkClient.getPunchFx())
+        if (auto* punch = router.getPunchFx())
             for (int i = 0; i < PunchFx::NumSlots; ++i)
             {
                 const juce::String key = "punch_slot_" + juce::String (i);
@@ -88,10 +76,7 @@ public:
         refreshMode();
     }
 
-    // Call when the WiFi / Local mode changes.
-    void refreshFromRouter() { refreshMode(); }
-
-    // Labels follow the mode — the page may have been hidden while it changed.
+    // Labels follow the effects — they may have changed while the page was hidden.
     void visibilityChanged() override
     {
         if (isVisible())
@@ -147,7 +132,7 @@ public:
     // XYPad::Listener
     void xyPadUpdated (float x, float y) override
     {
-        networkClient.sendXYUpdate (x, y);
+        router.sendXYUpdate (x, y);
         xSlider.setDisplayValue (x);
         ySlider.setDisplayValue (y);
     }
@@ -160,7 +145,7 @@ public:
 
         if (! local())
         {
-            networkClient.sendButtonDown (slotIndex);
+            router.sendButtonDown (slotIndex);
             return;
         }
 
@@ -171,19 +156,19 @@ public:
         if (fxButtons[slotIndex]->isLatched())
         {
             fxButtons[slotIndex]->setLatched (false);
-            networkClient.sendButtonUp (slotIndex);
+            router.sendButtonUp (slotIndex);
             s.swallowRelease = true;
             return;
         }
 
-        networkClient.sendButtonDown (slotIndex);
+        router.sendButtonDown (slotIndex);
     }
 
     void fxButtonReleased (int slotIndex) override
     {
         if (! local())
         {
-            networkClient.sendButtonUp (slotIndex);
+            router.sendButtonUp (slotIndex);
             moveHighlightFrom (slotIndex);
             return;
         }
@@ -203,13 +188,13 @@ public:
         }
 
         s.lastTapUp = quickTap ? now : 0;
-        networkClient.sendButtonUp (slotIndex);
+        router.sendButtonUp (slotIndex);
         moveHighlightFrom (slotIndex);
     }
 
     void fxButtonMenu (int slotIndex) override
     {
-        auto* punch = networkClient.getPunchFx();
+        auto* punch = router.getPunchFx();
         if (punch == nullptr || ! local())
             return;
 
@@ -223,7 +208,7 @@ public:
             [safe, slotIndex] (int result)
             {
                 if (safe == nullptr || result <= 0) return;
-                if (auto* p = safe->networkClient.getPunchFx())
+                if (auto* p = safe->router.getPunchFx())
                     p->setSlotEffect (slotIndex, result - 1);
                 safe->lastPressedSlot = slotIndex;
                 safe->refreshMode();
@@ -234,35 +219,22 @@ public:
     // AxisSlider::Listener
     void axisSliderUpdated (bool isXAxis, float value) override
     {
-        networkClient.sendAxisUpdate (isXAxis, value);
+        router.sendAxisUpdate (isXAxis, value);
     }
 
 private:
-    bool local() const { return networkClient.isLocal() && networkClient.getPunchFx() != nullptr; }
+    bool local() const { return router.getPunchFx() != nullptr; }
 
     void refreshMode()
     {
-        auto* punch = networkClient.getPunchFx();
-        const bool isLocal = local();
+        auto* punch = router.getPunchFx();
+        if (punch == nullptr)
+            return;
 
         for (int i = 0; i < fxButtons.size(); ++i)
         {
-            fxButtons[i]->setShowsMenu (isLocal);
-            fxButtons[i]->setLabel (isLocal ? PunchFx::effectNames()[punch->getSlotEffect (i)] : wifiLabels[i]);
-            if (! isLocal)
-                fxButtons[i]->setLatched (false);
-        }
-
-        if (isLocal)
-        {
-            const auto axes = PunchFx::axisNames (punch->getSlotEffect (juce::jmax (0, lastPressedSlot)));
-            xSlider.setLocalLabel ("X  " + axes.first);
-            ySlider.setLocalLabel ("Y");
-        }
-        else
-        {
-            xSlider.setLocalLabel ({});
-            ySlider.setLocalLabel ({});
+            fxButtons[i]->setShowsMenu (true);
+            fxButtons[i]->setLabel (PunchFx::effectNames()[punch->getSlotEffect (i)]);
         }
         updateHighlights();
     }
@@ -275,7 +247,7 @@ private:
             if (fxButtons[i]->isLatched())
             {
                 fxButtons[i]->setLatched (false);
-                networkClient.sendButtonUp (i);
+                router.sendButtonUp (i);
             }
     }
 
@@ -300,7 +272,7 @@ private:
 
         if (local())
         {
-            const auto axes = PunchFx::axisNames (networkClient.getPunchFx()->getSlotEffect (juce::jmax (0, lastPressedSlot)));
+            const auto axes = PunchFx::axisNames (router.getPunchFx()->getSlotEffect (juce::jmax (0, lastPressedSlot)));
             xSlider.setLocalLabel ("X  " + axes.first);
             ySlider.setLocalLabel (axes.second);
         }
@@ -308,12 +280,11 @@ private:
 
     struct Touch { juce::uint32 downAt = 0, lastTapUp = 0; bool swallowRelease = false; };
 
-    EventRouter& networkClient;
+    EventRouter& router;
     XYPad xyPad;
     AxisSlider ySlider;
     AxisSlider xSlider;
     juce::OwnedArray<FXButton> fxButtons;
-    juce::StringArray wifiLabels;
     std::array<Touch, MidiMorf::NUM_SLOTS> slotTouch;
     int lastPressedSlot = -1;
 };

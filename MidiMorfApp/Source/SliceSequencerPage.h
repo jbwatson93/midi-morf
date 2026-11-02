@@ -14,10 +14,9 @@
 // there — the identity diagonal (step N → slice N) is the untouched loop, and
 // remixing means dragging cells off that diagonal.
 //
-// With DAW sync this is a remote editor: timing lives on the server, driven by
-// DAW MIDI clock, and the loop sits in Simpler. With Local sync the same engine
-// runs on the phone's clock and cuts up one of the built-in breaks (or an
-// imported loop) itself — picked from the transport strip along the bottom.
+// The engine runs on the phone's clock and cuts up one of the built-in breaks
+// (or an imported loop) itself — picked from the transport strip along the
+// bottom.
 //
 // Layout follows JB's wireframe (IMG_2223, 2026-08-27):
 //   • top         — two assignable ribbons side by side (ribbon 1 defaults to
@@ -377,16 +376,6 @@ public:
         setLookAndFeel (nullptr);
     }
 
-    // Server pushes the playhead as it advances; -1 when stopped. With Local
-    // sync the transport bar feeds the local one instead.
-    void setPlayhead (int step)
-    {
-        transport.setRemoteRunning (step >= 0);
-
-        if (! eventRouter.isLocalSync())
-            showPlayhead (step);
-    }
-
     SeqTransportBar& getTransport() { return transport; }
 
     // For the walkthrough: what's been played with, and where things are.
@@ -425,8 +414,7 @@ public:
         pushAllSteps();
     }
 
-    // Called when the page becomes visible — the server keeps no per-page
-    // memory, so config, pattern, and ribbon routing all go up together.
+    // Sends the whole page to the sequencer: config, pattern and ribbon routing.
     void pushFullState()
     {
         pushConfig();
@@ -800,8 +788,8 @@ private:
             owner.direction = dirCombo.getSelectedId() - 1;
             owner.swing     = (swingCombo.getSelectedId() - 1) * 10;
 
-            // A grid change re-slices and resets to identity (server does the
-            // same); anything else just updates config in place.
+            // A grid change re-slices and resets to identity; anything else
+            // just updates config in place.
             if (gridChanged)
                 owner.applyGrid (true);
             else
@@ -869,7 +857,6 @@ public:
         addAndMakeVisible (content);
     }
 
-    void setPlayhead (int step) { content.setPlayhead (step); }
     void pushFullState()        { content.pushFullState(); }
     void setTrack (int t)       { content.track = t; }
     int  getTrack() const       { return content.track; }

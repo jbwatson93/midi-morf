@@ -1,7 +1,6 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "NetworkClient.h"
 #include "TrackRack.h"
 #include "PunchFx.h"
 #include "MidiSink.h"
@@ -12,31 +11,20 @@
 #include "MidiMorfProtocol.h"
 #include "LocalSequencers.h"
 
-// EventRouter sits between controller pages and the two MIDI backends:
-//   • WiFi mode  → forward semantic events to NetworkClient (existing behaviour).
-//   • Local mode → translate semantic events into MIDI notes via per-controller
-//                  Handlers, which play the track that page is assigned to.
-// Transport is always WiFi. FX Punch-in follows the mode: WiFi sends its
-// CCs and buttons to the DAW, Local plays the punch-in FX on the master bus.
+// EventRouter sits between the controller pages and the sounds: it turns
+// their semantic events into MIDI notes via per-controller Handlers, which
+// play the track that page is assigned to. FX Punch-in plays the punch-in FX
+// on the master bus.
 //
 // Each track has its own router (setFixedTrack), so each track's controller
 // pages have their own handlers — two Morf-Chords on two tracks each keep
 // their own notes — and its sequencer pages' messages reach its own engine.
-// Those follow the main router's mode and sync (followSettingsOf).
 class EventRouter
 {
 public:
-    enum class Mode { WiFi, Local };
-
-    // Where the sequencers get their clock — independent of Mode, which only
-    // says where controllers send notes. Local: the phone's clock, playing the
-    // built-in synth and breaks. DAW: the server, following DAW MIDI clock.
-    enum class SyncSource { Local, DAW };
-
     // Default tracks (0-based): every controller plays T1.
-    EventRouter (NetworkClient& nc, TrackRack& r, LocalSequencers& seqs)
-        : network (nc),
-          rack (r),
+    EventRouter (TrackRack& r, LocalSequencers& seqs)
+        : rack (r),
           sequencers (seqs),
           morfPadSink (r, 0), omnichordSink (r, 0), dualMPadSink (r, 0), morfChordSink (r, 0), roseChordSink (r, 0),
           morfPad (morfPadSink, 3),
@@ -105,13 +93,6 @@ public:
 
     int getFixedTrack() const noexcept { return fixedTrack; }
 
-    // Mode and sync come from `leader` (the main router).
-    void followSettingsOf (EventRouter& leader)
-    {
-        settingsLeader = &leader;
-        leader.followers.push_back (this);
-    }
-
     // Lets go of every controller's notes.
     void silenceControllers()
     {
@@ -123,126 +104,76 @@ public:
         roseChord.allNotesOff();
     }
 
-    void setMode (Mode m)
-    {
-        if (mode.load() == m)
-            return;
-
-        // Silence local synth on every transition so we don't leave hanging notes.
-        silenceControllers();
-        for (auto* f : followers)
-            f->silenceControllers();
-
-        if (punch != nullptr)
-            punch->releaseAll();   // nothing stays punched in across the switch
-
-        mode.store (m);
-    }
-
     // Set once at startup.
     void setPunchFx (PunchFx* p) { punch = p; }
     PunchFx* getPunchFx() const noexcept { return punch; }
-    bool isLocal() const noexcept { return getMode() == Mode::Local; }
-
-    Mode getMode() const noexcept { return settingsLeader != nullptr ? settingsLeader->getMode() : mode.load(); }
-
-    void setSyncSource (SyncSource s)
-    {
-        // The phone's clock has no business running once the DAW drives.
-        if (s == SyncSource::DAW)
-            sequencers.stopAll();
-
-        syncSource.store (s);
-    }
-
-    SyncSource getSyncSource() const noexcept { return settingsLeader != nullptr ? settingsLeader->getSyncSource() : syncSource.load(); }
-    bool isLocalSync() const noexcept         { return getSyncSource() == SyncSource::Local; }
 
     //==========================================================================
-    // FX Punch-in: the DAW over WiFi, or the punch-in FX locally.
+    // FX Punch-in: the punch-in FX on the master bus.
 
     void sendXYUpdate (float x, float y)
     {
-        if (isLocal() && punch != nullptr) punch->setXY (x, y);
-        else                               network.sendXYUpdate (x, y);
+        if (punch != nullptr) punch->setXY (x, y);
     }
 
     void sendAxisUpdate (bool isXAxis, float v)
     {
-        if (isLocal() && punch != nullptr) { if (isXAxis) punch->setX (v); else punch->setY (v); }
-        else                               network.sendAxisUpdate (isXAxis, v);
+        if (punch != nullptr) { if (isXAxis) punch->setX (v); else punch->setY (v); }
     }
 
     void sendButtonDown (int slotIndex)
     {
-        if (isLocal() && punch != nullptr) punch->setActive (slotIndex, true);
-        else                               network.sendButtonDown (slotIndex);
+        if (punch != nullptr) punch->setActive (slotIndex, true);
     }
 
     void sendButtonUp (int slotIndex)
     {
-        if (isLocal() && punch != nullptr) punch->setActive (slotIndex, false);
-        else                               network.sendButtonUp (slotIndex);
+        if (punch != nullptr) punch->setActive (slotIndex, false);
     }
 
-    // Transport / global — always WiFi.
-    void sendTiltUpdate (float tx, float ty)     { network.sendTiltUpdate (tx, ty); }
-    void sendScreenMode (MidiMorf::ControllerMode m) { network.sendScreenMode (m); }
-    void sendTransportButton (uint8_t buttonId)  { network.sendTransportButton (buttonId); }
+    //==========================================================================
+    // The sequencers, on the phone's own clock.
 
-    // Creative Sequencer Pack. With DAW sync the server runs the sequencers on
-    // DAW clock; with Local sync LocalSequencers runs the same engines on the
-    // phone's own clock. Pattern and config edits go to both so either side
-    // is current the moment the source flips; performance gestures go only to
-    // whichever side is playing.
     void sendSeqStepSet (uint8_t step, uint8_t degree, uint8_t velocity, uint8_t gate, uint8_t mod, bool rest)
     {
-        network.sendSeqStepSet (step, degree, velocity, gate, mod, rest);
-        { aim(); sequencers.stepSet (step, degree, velocity, gate, mod, rest); }
+        aim(); sequencers.stepSet (step, degree, velocity, gate, mod, rest);
     }
 
     void sendSeqConfig (uint8_t patternLength, uint8_t rate, uint8_t direction, uint8_t swing,
                         uint8_t scaleIndex, uint8_t rootNote, uint8_t baseOctave, uint8_t octaveRange)
     {
-        network.sendSeqConfig (patternLength, rate, direction, swing, scaleIndex, rootNote, baseOctave, octaveRange);
-        { aim(); sequencers.config (patternLength, rate, direction, swing, scaleIndex, rootNote, baseOctave, octaveRange); }
+        aim(); sequencers.config (patternLength, rate, direction, swing, scaleIndex, rootNote, baseOctave, octaveRange);
     }
 
     void sendSeqTransport (MidiMorf::SeqCommand c)
     {
-        if (! isLocalSync()) network.sendSeqTransport (c);
-        else                           { aim(); sequencers.transport (c); }
+        aim(); sequencers.transport (c);
     }
 
     void sendSeqRatchet (MidiMorf::SeqRatchetDiv d, bool on)
     {
-        if (! isLocalSync()) network.sendSeqRatchet (d, on);
-        else                           { aim(); sequencers.ratchet ((uint8_t) d, on); }
+        aim(); sequencers.ratchet ((uint8_t) d, on);
     }
 
     void sendSeqSliceConfig (uint8_t bars, uint8_t division, uint8_t sliceCount,
                              uint8_t rootNote, uint8_t direction, uint8_t swing)
     {
-        network.sendSeqSliceConfig (bars, division, sliceCount, rootNote, direction, swing);
-        { aim(); sequencers.sliceConfig (bars, division, sliceCount, rootNote, direction, swing); }
+        aim(); sequencers.sliceConfig (bars, division, sliceCount, rootNote, direction, swing);
     }
 
     void sendSeqLooper (uint8_t division, bool active, bool randomOn)
     {
-        if (! isLocalSync()) network.sendSeqLooper (division, active, randomOn);
-        else                           { aim(); sequencers.looper (division, active, randomOn); }
+        aim(); sequencers.looper (division, active, randomOn);
     }
 
     void sendSeqRibbon (uint8_t ribbonIndex, int value14bit)
     {
-        if (! isLocalSync()) network.sendSeqRibbon (ribbonIndex, value14bit);
-        else                           { aim(); sequencers.ribbon (ribbonIndex, value14bit); }
+        aim(); sequencers.ribbon (ribbonIndex, value14bit);
     }
 
     void sendSeqRibbonAssign (uint8_t ribbonIndex, MidiMorf::RibbonTarget target, uint8_t ccNumber)
     {
-        network.sendSeqRibbonAssign (ribbonIndex, target, ccNumber);
-        { aim(); sequencers.ribbonAssign (ribbonIndex, target, ccNumber); }
+        aim(); sequencers.ribbonAssign (ribbonIndex, target, ccNumber);
     }
 
     LocalSequencers& getSequencers() noexcept { return sequencers; }
@@ -250,145 +181,57 @@ public:
     //==========================================================================
     // Morf-Pad
 
-    void sendMorfPadTouchDown (float x, float y)
-    {
-        if (getMode() == Mode::WiFi) network.sendMorfPadTouchDown (x, y);
-        else                            morfPad.touchDown (x, y);
-    }
-
-    void sendMorfPadTouchMove (float x, float y)
-    {
-        if (getMode() == Mode::WiFi) network.sendMorfPadTouchMove (x, y);
-        else                            morfPad.touchMove (x, y);
-    }
-
-    void sendMorfPadTouchUp()
-    {
-        if (getMode() == Mode::WiFi) network.sendMorfPadTouchUp();
-        else                            morfPad.touchUp();
-    }
+    void sendMorfPadTouchDown (float x, float y) { morfPad.touchDown (x, y); }
+    void sendMorfPadTouchMove (float x, float y) { morfPad.touchMove (x, y); }
+    void sendMorfPadTouchUp()                    { morfPad.touchUp(); }
 
     void sendMorfPadScaleSelect (uint8_t scaleIdx, uint8_t root, uint8_t octRange, uint8_t baseOct)
     {
-        // Always send to network so the server stays in sync; also configure local handler.
-        network.sendMorfPadScaleSelect (scaleIdx, root, octRange, baseOct);
         morfPad.setScale (scaleIdx, root, octRange, baseOct);
     }
 
     //==========================================================================
     // Omnichord
 
-    void sendChordSelect (uint8_t rootNote, uint8_t quality)
-    {
-        if (getMode() == Mode::WiFi) network.sendChordSelect (rootNote, quality);
-        else                            omnichord.selectChord (rootNote, quality);
-    }
-
-    void sendChordRelease()
-    {
-        if (getMode() == Mode::WiFi) network.sendChordRelease();
-        else                            omnichord.releaseChord();
-    }
-
-    void sendStrumGesture (float position, float velocity)
-    {
-        if (getMode() == Mode::WiFi) network.sendStrumGesture (position, velocity);
-        else                            omnichord.strum (position, velocity);
-    }
+    void sendChordSelect (uint8_t rootNote, uint8_t quality)  { omnichord.selectChord (rootNote, quality); }
+    void sendChordRelease()                                   { omnichord.releaseChord(); }
+    void sendStrumGesture (float position, float velocity)    { omnichord.strum (position, velocity); }
 
     //==========================================================================
     // Dual M-Pad
 
-    void sendDualMPadTouchDown (uint8_t padIndex, float x, float y)
-    {
-        if (getMode() == Mode::WiFi)
-            network.sendDualMPadTouchDown (padIndex, x, y);
-        else
-            (padIndex == 0 ? dualMPadLeft : dualMPadRight).touchDown (x, y);
-    }
-
-    void sendDualMPadTouchMove (uint8_t padIndex, float x, float y)
-    {
-        if (getMode() == Mode::WiFi)
-            network.sendDualMPadTouchMove (padIndex, x, y);
-        else
-            (padIndex == 0 ? dualMPadLeft : dualMPadRight).touchMove (x, y);
-    }
-
-    void sendDualMPadTouchUp (uint8_t padIndex)
-    {
-        if (getMode() == Mode::WiFi)
-            network.sendDualMPadTouchUp (padIndex);
-        else
-            (padIndex == 0 ? dualMPadLeft : dualMPadRight).touchUp();
-    }
+    void sendDualMPadTouchDown (uint8_t padIndex, float x, float y) { (padIndex == 0 ? dualMPadLeft : dualMPadRight).touchDown (x, y); }
+    void sendDualMPadTouchMove (uint8_t padIndex, float x, float y) { (padIndex == 0 ? dualMPadLeft : dualMPadRight).touchMove (x, y); }
+    void sendDualMPadTouchUp (uint8_t padIndex)                     { (padIndex == 0 ? dualMPadLeft : dualMPadRight).touchUp(); }
 
     void sendDualMPadScaleSelect (uint8_t padIndex, uint8_t scaleIdx, uint8_t root, uint8_t octRange, uint8_t baseOct)
     {
-        network.sendDualMPadScaleSelect (padIndex, scaleIdx, root, octRange, baseOct);
         (padIndex == 0 ? dualMPadLeft : dualMPadRight).setScale (scaleIdx, root, octRange, baseOct);
     }
 
     //==========================================================================
     // Morf-Chord
 
-    void sendMorfChordSelect (uint8_t degreeIndex, float x, float y)
-    {
-        if (getMode() == Mode::WiFi) network.sendMorfChordSelect (degreeIndex, x, y);
-        else                            morfChord.selectDegree (degreeIndex, x, y);
-    }
-
-    void sendMorfChordMove (uint8_t degreeIndex, float x, float y)
-    {
-        if (getMode() == Mode::WiFi) network.sendMorfChordMove (degreeIndex, x, y);
-        else                            morfChord.moveDegree (degreeIndex, x, y);
-    }
-
-    void sendMorfChordRelease()
-    {
-        if (getMode() == Mode::WiFi) network.sendMorfChordRelease();
-        else                            morfChord.releaseDegree();
-    }
-
-    void sendMorfChordStrum (float position, float velocity)
-    {
-        if (getMode() == Mode::WiFi) network.sendMorfChordStrum (position, velocity);
-        else                            morfChord.strum (position, velocity);
-    }
-
-    void sendMorfChordKeySelect (uint8_t rootNote, uint8_t scaleMode)
-    {
-        network.sendMorfChordKeySelect (rootNote, scaleMode);
-        morfChord.setKey (rootNote, scaleMode);
-    }
+    void sendMorfChordSelect (uint8_t degreeIndex, float x, float y) { morfChord.selectDegree (degreeIndex, x, y); }
+    void sendMorfChordMove (uint8_t degreeIndex, float x, float y)   { morfChord.moveDegree (degreeIndex, x, y); }
+    void sendMorfChordRelease()                                      { morfChord.releaseDegree(); }
+    void sendMorfChordStrum (float position, float velocity)         { morfChord.strum (position, velocity); }
+    void sendMorfChordKeySelect (uint8_t rootNote, uint8_t scaleMode) { morfChord.setKey (rootNote, scaleMode); }
 
     //==========================================================================
     // Rose-Chord
 
     void sendRoseChordNoteOn (uint8_t rootIdx, uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset)
     {
-        if (getMode() == Mode::WiFi)
-        {
-            network.sendRoseChordNoteOn (rootIdx, typeBits, modBits, voicingOffset, octaveOffset);
-        }
-        else
-        {
-            roseChord.setConfig (typeBits, modBits, voicingOffset, octaveOffset);
-            roseChord.noteOn (rootIdx);
-        }
+        roseChord.setConfig (typeBits, modBits, voicingOffset, octaveOffset);
+        roseChord.noteOn (rootIdx);
     }
 
-    void sendRoseChordNoteOff()
-    {
-        if (getMode() == Mode::WiFi) network.sendRoseChordNoteOff();
-        else                            roseChord.noteOff();
-    }
+    void sendRoseChordNoteOff() { roseChord.noteOff(); }
 
     void sendRoseChordConfig (uint8_t typeBits, uint8_t modBits, int8_t voicingOffset, int8_t octaveOffset)
     {
-        // Always send config to network so the server stays in sync.
-        network.sendRoseChordConfig (typeBits, modBits, voicingOffset, octaveOffset);
-        // Always apply locally so the handler is configured when the next noteOn arrives.
+        // Configured now so the handler is ready when the next noteOn arrives.
         roseChord.setConfig (typeBits, modBits, voicingOffset, octaveOffset);
     }
 
@@ -412,7 +255,6 @@ private:
         }
     }
 
-    NetworkClient& network;
     TrackRack& rack;
     LocalSequencers& sequencers;
     PhoneMidiSink morfPadSink, omnichordSink, dualMPadSink, morfChordSink, roseChordSink;
@@ -429,8 +271,4 @@ private:
     void aim() { if (fixedTrack >= 0) sequencers.setActiveTrack (fixedTrack); }
 
     int fixedTrack = -1;
-    EventRouter* settingsLeader = nullptr;
-    std::vector<EventRouter*> followers;
-    std::atomic<Mode> mode { Mode::WiFi };
-    std::atomic<SyncSource> syncSource { SyncSource::Local };
 };

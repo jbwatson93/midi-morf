@@ -26,7 +26,7 @@ class OmnichordPortraitContent : public juce::Component,
 {
 public:
     OmnichordPortraitContent (EventRouter& client)
-        : networkClient (client)
+        : router (client)
     {
         chordGrid.setListener (this);
         addAndMakeVisible (chordGrid);
@@ -48,21 +48,21 @@ public:
 
     void chordSelected (uint8_t rootNote, uint8_t quality) override
     {
-        networkClient.sendChordSelect (rootNote, quality);
+        router.sendChordSelect (rootNote, quality);
     }
 
     void chordReleased() override
     {
-        networkClient.sendChordRelease();
+        router.sendChordRelease();
     }
 
     void strumGesture (float position, float velocity) override
     {
-        networkClient.sendStrumGesture (position, velocity);
+        router.sendStrumGesture (position, velocity);
     }
 
 private:
-    EventRouter& networkClient;
+    EventRouter& router;
     ChordGrid chordGrid;
     StrumPlate strumPlate;
 };

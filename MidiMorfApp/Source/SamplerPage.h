@@ -833,7 +833,7 @@ private:
 
     void changed() { if (onChanged) onChanged(); }
 
-    // An edit rebuilds the sample; the slicer and Remix Lane follow it.
+    // An edit rebuilds the sample; the slicer follows it.
     void applyEdit (const SamplerSource::Edit& e)
     {
         if (sampler == nullptr || e == sampler->getEdit()) return;

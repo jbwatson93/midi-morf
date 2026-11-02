@@ -14,9 +14,11 @@
 //                      R1–R4 recall, STOP stops every row, ALT
 //   six rows:          16 pads each over the row's sample. Press one to play
 //                      from there, hold one and press another to loop between
-//                      them. The playhead lights up as it walks the row.
-//   left of each row:  its sample, speed and group; tap for its settings.
-//                      ■ stops it.
+//                      them. The playhead lights up as it walks the row. A
+//                      SLICE row plays just the pressed slice; a GATE row
+//                      plays while a finger is on it.
+//   left of each row:  its sample, mode, speed and group; tap for its
+//                      settings. ■ stops it.
 //
 // ALT, then a pattern or recall key, clears it; ALT, then a row's pad, stops
 // that row. Pressing a pad starts the track if it isn't playing.
@@ -223,7 +225,18 @@ public:
 
     void mouseUp (const juce::MouseEvent& e) override
     {
-        fingers.erase (e.source.getIndex());
+        const auto it = fingers.find (e.source.getIndex());
+        if (it == fingers.end())
+            return;
+        const int gr = it->second.first;
+        fingers.erase (it);
+
+        // The row's last finger is off: a GATE row stops.
+        bool rowHeld = false;
+        for (auto& [id, f] : fingers)
+            rowHeld = rowHeld || f.first == gr;
+        if (gr > 0 && ! rowHeld && mlr.getPlayMode (gr - 1) == Grid::ModeGate)
+            mlr.release (gr - 1);
         repaint();
     }
 
@@ -330,6 +343,7 @@ private:
                           juce::Justification::bottomLeft, 1, 0.8f);
 
         juce::StringArray detail;
+        if (mlr.getPlayMode (r) != Grid::ModeLoop) detail.add (Grid::playModeNames()[mlr.getPlayMode (r)].toUpperCase());
         detail.add (speedText (mlr.getSpeed (r)));
         if (mlr.getReverse (r)) detail.add ("REV");
         if (mlr.getGroup (r) > 0) detail.add ("G" + juce::String (mlr.getGroup (r)));
@@ -429,6 +443,15 @@ private:
             reverse.setClickingTogglesState (true);
             setUp (reverse,    [this, &m] { m.setReverse (row, reverse.getToggleState()); update(); });
 
+            for (int mode = 0; mode < Grid::NumModes; ++mode)
+            {
+                auto* b = modes.add (new juce::TextButton (Grid::playModeNames()[mode].toUpperCase()));
+                b->setClickingTogglesState (true);
+                b->setRadioGroupId (7172);
+                b->onClick = [this, mode, &m] { m.setPlayMode (row, mode); update(); };
+                addAndMakeVisible (b);
+            }
+
             for (int g = 0; g <= Grid::NumGroups; ++g)
             {
                 auto* b = groups.add (new juce::TextButton (g == 0 ? juce::String ("-") : juce::String (g)));
@@ -452,7 +475,7 @@ private:
                 addAndMakeVisible (l);
             }
 
-            setSize (300, 196);
+            setSize (300, 232);
             update();
             ready = true;
         }
@@ -478,6 +501,11 @@ private:
             };
 
             sample.setBounds (line ("SAMPLE"));
+            {
+                auto r = line ("MODE");
+                const int w = r.getWidth() / modes.size();
+                for (auto* b : modes) b->setBounds (r.removeFromLeft (w).reduced (1));
+            }
             {
                 auto r = line ("LENGTH");
                 lengthDown.setBounds (r.removeFromLeft (36).reduced (1));
@@ -515,6 +543,8 @@ private:
             speedLabel.setText (speedText (m.getSpeed (row)), juce::dontSendNotification);
             reverse.setToggleState (m.getReverse (row), juce::dontSendNotification);
             volume.setValue (m.getVolume (row), juce::dontSendNotification);
+            for (int i = 0; i < modes.size(); ++i)
+                modes[i]->setToggleState (m.getPlayMode (row) == i, juce::dontSendNotification);
             for (int g = 0; g < groups.size(); ++g)
                 groups[g]->setToggleState (m.getGroup (row) == g, juce::dontSendNotification);
             page.refresh();
@@ -556,7 +586,7 @@ private:
         juce::TextButton lengthDown { "-" }, lengthUp { "+" }, speedDown { "-" }, speedUp { "+" }, reverse { "REV" };
         juce::Label lengthLabel, speedLabel;
         juce::Slider volume;
-        juce::OwnedArray<juce::TextButton> groups;
+        juce::OwnedArray<juce::TextButton> modes, groups;
         std::vector<std::pair<juce::String, int>> captions;
         bool ready = false;
     };

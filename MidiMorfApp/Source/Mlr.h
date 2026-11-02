@@ -22,6 +22,9 @@
 //   • groups                — rows in the same group (1–4) take turns:
 //                             starting one stops the others. The group's stop
 //                             key stops them all
+//   • play modes            — per row: LOOP plays on from the press (mlr),
+//                             SLICE plays just the pressed slice, GATE plays
+//                             while a finger is on the row
 //   • pattern recorders     — record presses, then loop them in time
 //   • recall                — store every row's state in a slot, bring it
 //                             back later
@@ -42,6 +45,15 @@ public:
     static const juce::StringArray& quantizeNames()
     {
         static const juce::StringArray n { "Off", "1/16", "1/8", "1/4", "Bar" };
+        return n;
+    }
+
+    // What a press does: play on from there, play just that slice, or play
+    // while held (release()).
+    enum PlayMode { ModeLoop = 0, ModeSlice, ModeGate, NumModes };
+    static const juce::StringArray& playModeNames()
+    {
+        static const juce::StringArray n { "Loop", "Slice", "Gate" };
         return n;
     }
 
@@ -137,6 +149,8 @@ public:
     float getVolume (int row) const              { return rowSettings[(size_t) clampRow (row)].volume.load(); }
     void  setGroup (int row, int g)              { rowSettings[(size_t) clampRow (row)].group.store (juce::jlimit (0, NumGroups, g)); }
     int   getGroup (int row) const               { return rowSettings[(size_t) clampRow (row)].group.load(); }
+    void  setPlayMode (int row, int m)           { rowSettings[(size_t) clampRow (row)].mode.store (juce::jlimit (0, NumModes - 1, m)); }
+    int   getPlayMode (int row) const            { return rowSettings[(size_t) clampRow (row)].mode.load(); }
 
     void setQuantize (int q) { quantize.store (juce::jlimit (0, NumQuantize - 1, q)); }
     int  getQuantize() const { return quantize.load(); }
@@ -146,6 +160,9 @@ public:
     void press (int row, int col)            { post ({ Cmd::Jump, row, col, col }); }
     void loop (int row, int a, int b)        { post ({ Cmd::Loop, row, juce::jmin (a, b), juce::jmax (a, b) }); }
     void stopRow (int row)                   { post ({ Cmd::Stop, row, 0, 0 }); }
+    // The last finger left the row: a GATE row stops (now, not quantized).
+    // A press still waiting for its quantize point plays one slice instead.
+    void release (int row)                   { post ({ Cmd::Release, row, 0, 0 }); }
     void stopGroup (int group)               { post ({ Cmd::StopGroup, group, 0, 0 }); }
     void stopAll()                           { post ({ Cmd::StopAll, 0, 0, 0 }); }
 
@@ -243,6 +260,7 @@ public:
             row.setProperty ("reverse", getReverse (r), nullptr);
             row.setProperty ("volume", getVolume (r), nullptr);
             row.setProperty ("group", getGroup (r), nullptr);
+            row.setProperty ("mode", getPlayMode (r), nullptr);
             t.appendChild (row, nullptr);
         }
         return t;
@@ -267,6 +285,7 @@ public:
             setReverse (r, row.getProperty ("reverse", false));
             setVolume (r, (float) (double) row.getProperty ("volume", 1.0));
             setGroup (r, row.getProperty ("group", 0));
+            setPlayMode (r, row.getProperty ("mode", (int) ModeLoop));
         }
     }
 
@@ -277,7 +296,7 @@ private:
     // Commands, message → audio.
     struct Cmd
     {
-        enum Type { Jump, Loop, Stop, StopGroup, StopAll, PatternKey, PatternClear, RecallKey, RecallClear, Panic };
+        enum Type { Jump, Loop, Stop, Release, StopGroup, StopAll, PatternKey, PatternClear, RecallKey, RecallClear, Panic };
         Type type; int a, b, c;
     };
 
@@ -290,10 +309,11 @@ private:
         fifo.finishedWrite (n1 + n2);
     }
 
-    // A row action, as pressed, recorded and recalled.
+    // A row action, as pressed, recorded and recalled. Slice plays one
+    // column and stops.
     struct Action
     {
-        enum Type { None, Jump, Loop, Stop, StopGroup };
+        enum Type { None, Jump, Slice, Loop, Stop, StopGroup };
         Type type = None; int row = 0, a = 0, b = 0;
     };
 
@@ -333,9 +353,12 @@ private:
         const double due = nextQuantTick();
         switch (c.type)
         {
-            case Cmd::Jump:      schedule ({ Action::Jump, clampRow (c.a), juce::jlimit (0, Cols - 1, c.b), 0 }, due); break;
+            case Cmd::Jump:
+                schedule ({ getPlayMode (c.a) == ModeSlice ? Action::Slice : Action::Jump, clampRow (c.a), juce::jlimit (0, Cols - 1, c.b), 0 }, due);
+                break;
             case Cmd::Loop:      schedule ({ Action::Loop, clampRow (c.a), juce::jlimit (0, Cols - 1, c.b), juce::jlimit (0, Cols - 1, c.c) }, due); break;
             case Cmd::Stop:      schedule ({ Action::Stop, clampRow (c.a), 0, 0 }, due); break;
+            case Cmd::Release:   releaseRow (clampRow (c.a)); break;
             case Cmd::StopGroup: schedule ({ Action::StopGroup, 0, juce::jlimit (1, NumGroups, c.a), 0 }, due); break;
             case Cmd::StopAll:
                 for (int r = 0; r < NumRows; ++r) schedule ({ Action::Stop, r, 0, 0 }, due);
@@ -396,6 +419,16 @@ private:
                 rows[(size_t) a.row].looped = false;
                 startHead (a.row, a.a);
                 break;
+            case Action::Slice:
+            {
+                takeTurn (a.row);
+                auto& row = rows[(size_t) a.row];
+                row.looped = false;
+                startHead (a.row, a.a);
+                row.oneShot = true;
+                row.oneShotEnd = getReverse (a.row) ? (double) a.a : a.a + 1.0;
+                break;
+            }
             case Action::Loop:
                 takeTurn (a.row);
                 rows[(size_t) a.row].looped = true;
@@ -414,6 +447,22 @@ private:
         }
     }
 
+    // A GATE row's fingers are off: it stops now. A press still waiting for
+    // its quantize point becomes one slice, so a quick tap is never lost.
+    void releaseRow (int r)
+    {
+        if (getPlayMode (r) != ModeGate)
+            return;
+        auto& p = pendings[(size_t) r];
+        if (p.active && (p.action.type == Action::Jump || p.action.type == Action::Loop))
+        {
+            p.action.type = Action::Slice;   // from the press (a loop's first column)
+            return;
+        }
+        if (rows[(size_t) r].playing)
+            execute ({ Action::Stop, r, 0, 0 }, juce::jmax (0.0, clockTick), true);
+    }
+
     // Starting a row in a group stops the group's other rows.
     void takeTurn (int row)
     {
@@ -428,6 +477,7 @@ private:
     struct Row
     {
         bool playing = false, resume = false, looped = false;
+        bool oneShot = false; double oneShotEnd = 0.0;   // a slice: stops there
         int loopA = 0, loopB = Cols - 1;
         double pos = 0.0;
         float gain = 0.0f, target = 0.0f;   // start/stop ramp
@@ -462,6 +512,7 @@ private:
         }
         row.pos = newPos;
         row.playing = true;
+        row.oneShot = false;
         row.target = 1.0f;
     }
 
@@ -470,6 +521,7 @@ private:
         auto& row = rows[(size_t) r];
         row.playing = false;
         row.resume = false;
+        row.oneShot = false;
         row.target = 0.0f;
     }
 
@@ -480,7 +532,7 @@ private:
         for (int r = 0; r < NumRows; ++r)
         {
             auto& row = rows[(size_t) r];
-            const bool was = row.playing;
+            const bool was = row.playing && ! row.oneShot;   // a slice doesn't come back
             stopHead (r);
             row.resume = was;
         }
@@ -552,6 +604,8 @@ private:
         // On, wrapping in its range; a wrap crossfades like a jump unless the
         // whole sample loops (it's cut to loop).
         row.pos += step;
+        if (row.oneShot && (step >= 0.0 ? row.pos >= row.oneShotEnd : row.pos <= row.oneShotEnd))
+            stopHead (r);   // the slice is done: it ramps out from here
         const auto [lo, hi] = range (r);
         if (row.pos >= hi || row.pos < lo)
         {
@@ -720,7 +774,7 @@ private:
     struct RowSettings
     {
         std::atomic<double> beats { 4.0 };
-        std::atomic<int> speed { 0 }, group { 0 };
+        std::atomic<int> speed { 0 }, group { 0 }, mode { ModeLoop };
         std::atomic<bool> reverse { false };
         std::atomic<float> volume { 1.0f };
     };

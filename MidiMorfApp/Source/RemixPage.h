@@ -61,7 +61,7 @@ public:
     {
         for (int r = 0; r < Grid::NumRows; ++r)
             peaks[(size_t) r] = mlr.getPeaks (r, 128);
-        quantButton.setButtonText ("Q " + Grid::quantizeNames()[mlr.getQuantize()]);
+        quantButton.setButtonText (quantLabel());
         repaint();
     }
 
@@ -400,17 +400,32 @@ private:
         }
     }
 
+    // The button: launch · press, e.g. "Bar · 16".
+    juce::String quantLabel() const
+    {
+        auto shortName = [] (int q) { return q == Grid::QBar ? juce::String ("Bar") : q == Grid::QOff ? juce::String ("Off")
+                                                                                     : Grid::quantizeNames()[q].fromFirstOccurrenceOf ("/", false, false); };
+        return shortName (mlr.getLaunchQuantize()) + juce::String (juce::CharPointer_UTF8 (" \xc2\xb7 ")) + shortName (mlr.getQuantize());
+    }
+
+    // Two quantizes: LAUNCH (a stopped LOOP row starting, PLAY, patterns)
+    // and PRESS (jumps, loops, SLICE and GATE pads). Off is no sync.
     void showQuantizeMenu()
     {
+        enum { LaunchBase = 1, PressBase = 101 };
         juce::PopupMenu menu;
-        menu.addSectionHeader ("Presses land on");
+        menu.addSectionHeader ("Launch: a stopped row starts on");
         for (int q = 0; q < Grid::NumQuantize; ++q)
-            menu.addItem (q + 1, Grid::quantizeNames()[q], true, mlr.getQuantize() == q);
+            menu.addItem (LaunchBase + q, Grid::quantizeNames()[q], true, mlr.getLaunchQuantize() == q);
+        menu.addSectionHeader ("Press: jumps and pads land on");
+        for (int q = 0; q < Grid::NumQuantize; ++q)
+            menu.addItem (PressBase + q, Grid::quantizeNames()[q], true, mlr.getQuantize() == q);
         juce::Component::SafePointer<RemixPage> safe (this);
         menu.showMenuAsync (PopupStyle::attached (menu, quantButton, 34), [safe] (int result)
         {
             if (safe == nullptr || result <= 0) return;
-            safe->mlr.setQuantize (result - 1);
+            if (result >= PressBase) safe->mlr.setQuantize (result - PressBase);
+            else                     safe->mlr.setLaunchQuantize (result - LaunchBase);
             safe->refresh();
             safe->changed();
         });
@@ -641,7 +656,7 @@ private:
     bool alt = false;
 
     SynthLookAndFeel laf;   // declared before the children
-    juce::TextButton playButton { "PLAY" }, quantButton { "Q 1/16" };
+    juce::TextButton playButton { "PLAY" }, quantButton { "Bar 16" };
     std::unique_ptr<juce::FileChooser> chooser;
     juce::Rectangle<int> gridArea, headerArea;
     int padPitch = 30;

@@ -25,7 +25,7 @@ class DualMPadPanel : public juce::Component
 {
 public:
     DualMPadPanel (EventRouter& client, uint8_t padIdx)
-        : networkClient (client), padIndex (padIdx)
+        : router (client), padIndex (padIdx)
     {
         // Scale picker — single ComboBox replaces the old 5-button row.
         for (int i = 0; i < numScales; ++i)
@@ -179,12 +179,12 @@ public:
         activeTouches.push_back (ti);
 
         if (activeTouches.size() > 1)
-            networkClient.sendDualMPadTouchUp (padIndex);
+            router.sendDualMPadTouchUp (padIndex);
 
         touchX = ti.x;
         touchY = ti.y;
         touching = true;
-        networkClient.sendDualMPadTouchDown (padIndex, touchX, touchY);
+        router.sendDualMPadTouchDown (padIndex, touchX, touchY);
         repaint();
     }
 
@@ -205,7 +205,7 @@ public:
         {
             touchX = activeTouches.back().x;
             touchY = activeTouches.back().y;
-            networkClient.sendDualMPadTouchMove (padIndex, touchX, touchY);
+            router.sendDualMPadTouchMove (padIndex, touchX, touchY);
             repaint();
         }
     }
@@ -222,14 +222,14 @@ public:
 
         if (wasActive)
         {
-            networkClient.sendDualMPadTouchUp (padIndex);
+            router.sendDualMPadTouchUp (padIndex);
 
             if (! activeTouches.empty())
             {
                 auto& prev = activeTouches.back();
                 touchX = prev.x;
                 touchY = prev.y;
-                networkClient.sendDualMPadTouchDown (padIndex, touchX, touchY);
+                router.sendDualMPadTouchDown (padIndex, touchX, touchY);
             }
             else
             {
@@ -286,7 +286,7 @@ private:
 
     void sendScaleConfig()
     {
-        networkClient.sendDualMPadScaleSelect (padIndex, scaleIndex, rootNote, octaveRange, baseOctave);
+        router.sendDualMPadScaleSelect (padIndex, scaleIndex, rootNote, octaveRange, baseOctave);
     }
 
     void updateOctaveLabel()
@@ -294,7 +294,7 @@ private:
         octaveLabel.setText ("C" + juce::String ((int) baseOctave), juce::dontSendNotification);
     }
 
-    EventRouter& networkClient;
+    EventRouter& router;
     uint8_t padIndex;
 
     static constexpr int numScales = 5;

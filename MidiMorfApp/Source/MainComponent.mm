@@ -142,9 +142,8 @@ MainComponent::MainComponent()
 
     for (int t = 0; t < TrackRack::NumTracks; ++t)
     {
-        auto& router = *(trackRouters[(size_t) t] = std::make_unique<EventRouter> (networkClient, audioEngine.getRack(), audioEngine.getSequencers()));
+        auto& router = *(trackRouters[(size_t) t] = std::make_unique<EventRouter> (audioEngine.getRack(), audioEngine.getSequencers()));
         router.setFixedTrack (t);
-        router.followSettingsOf (eventRouter);
         morfPadPages[(size_t) t]   = std::make_unique<MorfPadPage> (router);
         omnichordPages[(size_t) t] = std::make_unique<OmnichordPage> (router);
         dualMPadPages[(size_t) t]  = std::make_unique<DualMPadPage> (router);
@@ -330,19 +329,12 @@ MainComponent::MainComponent()
     // that go to the page last shown. With several on screen, the one being
     // touched is the one they mean.
     // Each quarter's page has its own track's router, so touches need no
-    // routing; the server is told which page is in use (WiFi).
-    performView.onTouched    = [this] (int t)
-    {
-        performFocus = t;
-        const int mode = instrumentOf[t];
-        if (juce::isPositiveAndBelow (mode, MidiMorf::NUM_CONTROLLERS))
-            trackRouters[(size_t) t]->sendScreenMode (static_cast<MidiMorf::ControllerMode> (mode));
-    };
+    // routing.
+    performView.onTouched    = [this] (int t) { performFocus = t; };
     pageContainer.setListener (this);
     addAndMakeVisible (pageContainer);
     addAndMakeVisible (header);
 
-    settingsPage.onModeChanged = [this] { fxPage.refreshFromRouter(); saveState(); };
     settingsPage.getAudioLoad  = [this] { return audioEngine.getCpuUsage(); };
     settingsPage.onTour        = [this] { startWalkthrough(); };
 
@@ -438,10 +430,6 @@ MainComponent::MainComponent()
     fxPage.onStateChanged = [this] { saveState(); };
     transportPage.onStateChanged = [this] { saveState(); };
 
-    // Network
-    networkClient.setListener (this);
-    networkClient.startSearching();
-
     // Accelerometer
     accelerometer.setListener (this);
     accelerometer.start();
@@ -473,8 +461,6 @@ MainComponent::~MainComponent()
     saveNow();
     stopTimer();
     accelerometer.stop();
-    networkClient.setListener (nullptr);
-    networkClient.stopSearching();
     audioEngine.stop();
     pageContainer.setListener (nullptr);
 }
@@ -857,7 +843,6 @@ void MainComponent::launchClip (int track, int scene)
     captureClip (track);
     const auto& pattern = session.clip (track, scene)->pattern;
     auto& seqs = audioEngine.getSequencers();
-    if (w == KindDrums || eventRouter.isLocalSync())
     {
         const bool wasRunning = seqs.getPlayhead (track) >= 0;
         seqs.queuePattern (track, pattern.toEngine());   // a Step-Seq clip's range, from 0
@@ -872,13 +857,6 @@ void MainComponent::launchClip (int track, int scene)
             shownLaunches[track] = seqs.getLaunchCount (track);
         }
         seqs.setPlaying (track, true);
-    }
-    else
-    {
-        seqs.setActiveTrack (track);
-        if (w == KindStep) stepPage (track).loadPattern (pattern);
-        else               slicePage (track).loadPattern (pattern);
-        session.setPlaying (track, scene);
     }
     saveState();
 }
@@ -1215,18 +1193,11 @@ void MainComponent::saveProjectAs (const juce::String& name)
     homePage->refresh();
 }
 
-// The project New starts from: T1 Morf-Chord on a synth, T2 Step-Seq on Acid
-// Bass, T3 Slice-Seq on the Amen, T4 Drum Grid on the 808 kit, each
-// sequencer with one clip.
-//
-// The walkthrough's (tour) starts with every track empty, for the player to
-// set up: the synths on Init, track 2's sampler already holding the Amen.
-static juce::ValueTree starterProject (int drumGridMode, bool tour = false)
+// The project New and the walkthrough start from: every track empty, for the
+// player to set up. The synths are on Init, and track 2's sampler already
+// holds the Amen (the walkthrough glitches it there).
+static juce::ValueTree starterProject()
 {
-    using CM = MidiMorf::ControllerMode;
-    const int inst[TrackRack::NumTracks]  = { (int) CM::MorfChord, (int) CM::StepSequencer, (int) CM::SliceSequencer, drumGridMode };
-    const int sound[TrackRack::NumTracks] = { 1, 1, 2, 3 };
-
     juce::ValueTree project ("MidiMorfProject");
     project.setProperty ("version", 1, nullptr);
     project.setProperty ("name", "Untitled", nullptr);
@@ -1235,15 +1206,13 @@ static juce::ValueTree starterProject (int drumGridMode, bool tour = false)
     {
         juce::ValueTree track ("Track");
         track.setProperty ("index", t, nullptr);
-        track.setProperty ("instrument", tour ? -1 : inst[t], nullptr);
-        track.setProperty ("sound", tour ? 0 : sound[t], nullptr);
+        track.setProperty ("instrument", -1, nullptr);
+        track.setProperty ("sound", 0, nullptr);
         track.setProperty ("volume", 1.0, nullptr);
-        const juce::String presetName = t == 1 && ! tour ? "Acid Bass" : "";
-        const auto* preset = presetName.isNotEmpty() ? WavetablePresets::findFactory (presetName) : nullptr;
-        track.setProperty ("soundName", preset != nullptr ? presetName : juce::String ("Init"), nullptr);
-        track.appendChild ((preset != nullptr ? preset->state : WavetablePresets::init().state).createCopy(), nullptr);
+        track.setProperty ("soundName", "Init", nullptr);
+        track.appendChild (WavetablePresets::init().state.createCopy(), nullptr);
         juce::ValueTree sampler (SamplerSource::stateType);
-        if (t == (tour ? 1 : 2))
+        if (t == 1)
             sampler.setProperty ("break", BreakLibrary::builtInNames()[0], nullptr);
         track.appendChild (sampler, nullptr);
         juce::ValueTree drums (DrumSource::stateType);
@@ -1252,29 +1221,7 @@ static juce::ValueTree starterProject (int drumGridMode, bool tour = false)
         project.appendChild (track, nullptr);
     }
 
-    SessionModel s;
-    SeqPattern step, slice, beat;
-    static const int degrees[16] = { 0, 2, 4, 2, 7, 4, 2, 4, 0, 2, 4, 7, 9, 7, 4, 2 };
-    for (int i = 0; i < 16; ++i)
-    {
-        step.steps[(size_t) i]  = { (uint8_t) degrees[i], (uint8_t) (i % 4 == 0 ? 112 : 80), 50, 64, false };
-        slice.steps[(size_t) i] = { (uint8_t) i, 100, 95, 64, false };
-    }
-    const auto& boomBap = BreakLibrary::styles()[1];
-    const char* lanes[3] = { boomBap.kick, boomBap.snare, boomBap.hat };
-    const int laneOf[3] = { Drums::Kick, Drums::Snare, Drums::ClosedHat };
-    for (int l = 0; l < 3; ++l)
-        for (int i = 0; i < 16 && i < (int) std::strlen (lanes[l]); ++i)
-            beat.drums[(size_t) laneOf[l]][(size_t) i] = (uint8_t) juce::roundToInt (BreakLibrary::detail::velocityFor (lanes[l][i]) * 127.0f);
-    if (! tour)   // the tour's tracks get their clips as the player sets them up
-    {
-        s.setClip (1, 0, { "Pattern 1", step, KindStep });
-        s.setClip (2, 0, { "Pattern 1", slice, KindSlice });
-        s.setClip (3, 0, { "Pattern 1", beat, KindDrums });
-        for (int t = 1; t < 4; ++t)
-            s.setPlaying (t, 0);
-    }
-    project.appendChild (s.toValueTree(), nullptr);
+    project.appendChild (SessionModel().toValueTree(), nullptr);
     return project;
 }
 
@@ -1293,7 +1240,7 @@ void MainComponent::openProject (const juce::File& file)
             loadProjectTree ({});
         return;
     }
-    loadProjectTree (starterProject (drumGridPageIdx));
+    loadProjectTree (starterProject());
 }
 
 // Makes `project` the working copy (or, if invalid, reloads the working copy
@@ -1325,7 +1272,7 @@ void MainComponent::startWalkthrough()
     saveNow();
     if (projectName == "Untitled" && session.hasClip (1, 0))
         projectFile().copyFileTo (ProjectBrowser::folder().getChildFile ("Before the tour.midimorf"));
-    loadProjectTree (starterProject (drumGridPageIdx, true));
+    loadProjectTree (starterProject());
 
     auto& seqs = audioEngine.getSequencers();
     seqs.setBpm (140.0);   // the Amen's own tempo
@@ -1536,19 +1483,11 @@ void MainComponent::updateRail()
     header.set (current, headerText (page));
 }
 
-// Local sync: Play starts every sequencer that's some track's instrument;
-// Stop stops them all. DAW sync: Play/Stop go to the DAW's transport.
+// Play starts every sequencer that's some track's instrument; Stop stops
+// them all.
 void MainComponent::togglePlay()
 {
     auto& seqs = audioEngine.getSequencers();
-
-    if (! eventRouter.isLocalSync())
-    {
-        dawPlaying = ! dawPlaying;
-        eventRouter.sendTransportButton ((uint8_t) (dawPlaying ? 0 : 1));   // 0 Play, 1 Stop
-        playButton.setLit (dawPlaying);
-        return;
-    }
 
     if (seqs.isAnyPlaying())
     {
@@ -1565,75 +1504,24 @@ void MainComponent::togglePlay()
     }
 }
 
-//==============================================================================
-// NetworkClient::Listener
-void MainComponent::connectedToPlugin (const juce::String& hostName)
-{
-    juce::MessageManager::callAsync ([this, hostName]()
-    {
-        connected = true;
-        connectedHost = hostName;
-        settingsPage.setConnectionStatus (connected, connectedHost);
-    });
-}
-
-void MainComponent::disconnectedFromPlugin()
-{
-    juce::MessageManager::callAsync ([this]()
-    {
-        connected = false;
-        connectedHost.clear();
-        settingsPage.setConnectionStatus (connected, connectedHost);
-    });
-}
-
-void MainComponent::slotConfigReceived (int slotIndex, const juce::String& name)
-{
-    juce::MessageManager::callAsync ([this, slotIndex, name]()
-    {
-        fxPage.setButtonLabel (slotIndex, name);
-    });
-}
-
 // AccelerometerManager::Listener
 void MainComponent::tiltUpdated (float tiltX, float tiltY)
 {
-    eventRouter.sendTiltUpdate (tiltX, tiltY);
-    // Local modulation: accel feeds the routing matrix's AccelX/AccelY sources.
+    // Accel feeds the routing matrix's AccelX/AccelY sources.
     audioEngine.setTilt (tiltX, tiltY);
 }
 
 // PageContainer::Listener
 void MainComponent::pageChanged (int newPageIndex)
 {
-    if (newPageIndex < MidiMorf::NUM_CONTROLLERS)
-    {
-        auto mode = static_cast<MidiMorf::ControllerMode> (newPageIndex);
-        eventRouter.sendScreenMode (mode);
-
-    }
-
-    // A track's sequencer page: its messages go to that track's engine, and
-    // the server (which keeps no per-page memory) gets its whole state.
+    // A track's sequencer page: its messages go to that track's engine, which
+    // gets the page's whole state.
     if (isSeqPage (newPageIndex))
     {
         const int t = pageTrack (newPageIndex), kind = pageKind (newPageIndex);
-        auto& router = *trackRouters[(size_t) t];
         audioEngine.getSequencers().setActiveTrack (t);
-        if (kind == KindStep)
-        {
-            router.sendScreenMode (MidiMorf::ControllerMode::StepSequencer);
-            stepPage (t).pushFullState();
-        }
-        else if (kind == KindSlice)
-        {
-            router.sendScreenMode (MidiMorf::ControllerMode::SliceSequencer);
-            slicePage (t).pushFullState();
-        }
-        else if (kind >= 3)
-        {
-            router.sendScreenMode (controllerKinds[kind - 3]);
-        }
+        if (kind == KindStep)       stepPage (t).pushFullState();
+        else if (kind == KindSlice) slicePage (t).pushFullState();
     }
 
     updateRail();
@@ -1645,11 +1533,7 @@ void MainComponent::pageChanged (int newPageIndex)
 // Timer
 void MainComponent::timerCallback()
 {
-    if (eventRouter.isLocalSync())
-    {
-        auto& seqs = audioEngine.getSequencers();
-        playButton.setLit (seqs.isAnyPlaying());
-    }
+    playButton.setLit (audioEngine.getSequencers().isAnyPlaying());
     pollLaunches();
 
     // Write the project once things have been still for half a second, so
@@ -1770,8 +1654,6 @@ void MainComponent::saveNow()
     if (auto* props = appProperties.getUserSettings())
     {
         props->setValue ("lastPage", pageContainer.getCurrentPage());
-        props->setValue ("mode", eventRouter.getMode() == EventRouter::Mode::Local ? 1 : 0);
-        props->setValue ("seq_sync", eventRouter.isLocalSync() ? 0 : 1);
         props->setValue ("sound_track", soundTrack);
 
         // Once the project is safely on disk, everything else in the settings
@@ -1835,16 +1717,6 @@ void MainComponent::restoreState()
     recBars      = juce::jlimit (1, 8, pages.getIntValue ("rec_bars", 2));
     recQuantize  = pages.getBoolValue ("rec_quantize", false);
     recMetronome = pages.getBoolValue ("rec_metronome", true);
-    eventRouter.setSyncSource (settings->getIntValue ("seq_sync", 0) == 1 ? EventRouter::SyncSource::DAW
-                                                                          : EventRouter::SyncSource::Local);
-
-    // First-launch default: Local mode. New users hear the built-in
-    // synth immediately when they tap a controller — no server setup
-    // needed for a satisfying first-play. Existing users' saved mode
-    // still wins because it's read from the same key.
-    eventRouter.setMode (settings->getIntValue ("mode", 1) == 1 ? EventRouter::Mode::Local : EventRouter::Mode::WiFi);
-    settingsPage.refreshFromRouter();
-    fxPage.refreshFromRouter();
 
     // Tracks. Defaults: T1 Morf-Chord on a synth, T2 Step-Seq on the bass
     // synth, T3 Slice-Seq on the breaks, T4 Drum Grid on the drum synth.
@@ -1970,11 +1842,3 @@ void MainComponent::restoreState()
     saveNow();
 }
 
-void MainComponent::seqPlayheadChanged (int step)
-{
-    // The server only streams the playhead for the page it thinks the phone
-    // is on; applying it to both pages is harmless and keeps this simple.
-    const int t = audioEngine.getSequencers().getActiveTrack();
-    stepPage (t).setPlayhead (step);
-    slicePage (t).setPlayhead (step);
-}

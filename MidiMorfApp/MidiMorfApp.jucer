@@ -17,9 +17,6 @@
             file="Source/MainComponent.mm"/>
       <FILE id="lvgSTU" name="MidiMorfProtocol.h" compile="0" resource="0"
             file="Source/MidiMorfProtocol.h"/>
-      <FILE id="W9JVTH" name="NetworkClient.h" compile="0" resource="0" file="Source/NetworkClient.h"/>
-      <FILE id="KKcyAO" name="NetworkClient.cpp" compile="1" resource="0"
-            file="Source/NetworkClient.cpp"/>
       <FILE id="w3d2iE" name="XYPad.h" compile="0" resource="0" file="Source/XYPad.h"/>
       <FILE id="aSldr1" name="AxisSlider.h" compile="0" resource="0" file="Source/AxisSlider.h"/>
       <FILE id="aMmClr" name="MidiMorfColors.h" compile="0" resource="0"
@@ -129,8 +126,8 @@
   </MODULES>
   <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
   <EXPORTFORMATS>
-    <XCODE_IPHONE targetFolder="Builds/iOS" microphonePermissionNeeded="1" microphonePermissionsText="Midi-Morf uses the microphone to record samples." UIFileSharingEnabled="1" UIStatusBarHidden="1" extraDefs="JUCE_IOS_AUDIO_EXPLICIT_SAMPLERATES=48000.0" localNetworkPermissionNeeded="1" localNetworkPermissionText="Midi-Morf needs local network access to connect to your DAW&lt;"
-                  customPList="&lt;plist&gt;&lt;dict&gt;&#10;  &lt;key&gt;NSLocalNetworkUsageDescription&lt;/key&gt;&#10;  &lt;string&gt;Midi-Morf needs local network access to connect to your DAW&lt;/string&gt;&#10;  &lt;key&gt;NSBonjourServices&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;_midimorf._tcp&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UISupportedInterfaceOrientations&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;UIInterfaceOrientationLandscapeRight&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UIRequiresFullScreen&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;LSSupportsOpeningDocumentsInPlace&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;CFBundleIconName&lt;/key&gt;&#10;  &lt;string&gt;AppIcon&lt;/string&gt;&#10;&lt;/dict&gt;&lt;/plist&gt;"
+    <XCODE_IPHONE targetFolder="Builds/iOS" microphonePermissionNeeded="1" microphonePermissionsText="Midi-Morf uses the microphone to record samples." UIFileSharingEnabled="1" UIStatusBarHidden="1" extraDefs="JUCE_IOS_AUDIO_EXPLICIT_SAMPLERATES=48000.0"
+                  customPList="&lt;plist&gt;&lt;dict&gt;&#10;  &lt;key&gt;UISupportedInterfaceOrientations&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;UIInterfaceOrientationLandscapeRight&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UIRequiresFullScreen&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;LSSupportsOpeningDocumentsInPlace&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;CFBundleIconName&lt;/key&gt;&#10;  &lt;string&gt;AppIcon&lt;/string&gt;&#10;&lt;/dict&gt;&lt;/plist&gt;"
                   iosDevelopmentTeamID="69KM48W4TU" extraCustomFrameworks="CoreMotion"
                   iosScreenOrientation="UIInterfaceOrientationLandscapeRight" iPadScreenOrientation="UIInterfaceOrientationLandscapeRight">
       <CONFIGURATIONS>

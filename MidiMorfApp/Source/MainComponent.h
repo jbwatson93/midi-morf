@@ -23,7 +23,6 @@
 #include "DrumGridPage.h"
 #include "DrumKitPage.h"
 #include "PerformView.h"
-#include "NetworkClient.h"
 #include "AccelerometerManager.h"
 #include "MidiMorfProtocol.h"
 #include "MidiMorfColors.h"
@@ -38,7 +37,6 @@
 // tracks and holds the pages that belong to none (Transport, Morf FX,
 // Settings, About).
 class MainComponent : public juce::Component,
-                      public NetworkClient::Listener,
                       public AccelerometerManager::Listener,
                       public PageContainer::Listener,
                       public juce::Timer
@@ -49,12 +47,6 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
-
-    // NetworkClient::Listener
-    void connectedToPlugin (const juce::String& hostName) override;
-    void disconnectedFromPlugin() override;
-    void slotConfigReceived (int slotIndex, const juce::String& name) override;
-    void seqPlayheadChanged (int step) override;
 
     // AccelerometerManager::Listener
     void tiltUpdated (float tiltX, float tiltY) override;
@@ -68,8 +60,7 @@ public:
 private:
     AppLookAndFeel appLookAndFeel;   // the default for everything without its own (PopupStyle)
     AudioEngine audioEngine;
-    NetworkClient networkClient;
-    EventRouter eventRouter { networkClient, audioEngine.getRack(), audioEngine.getSequencers() };
+    EventRouter eventRouter { audioEngine.getRack(), audioEngine.getSequencers() };
     AccelerometerManager accelerometer;
 
 public:
@@ -100,7 +91,6 @@ private:
 
     int instrumentOf[TrackRack::NumTracks] { -1, -1, -1, -1 };
     int soundTrack = 0;     // whose synth the Sound page is editing
-    bool dawPlaying = false;
     void populatePerform();
     std::array<bool, TrackRack::NumTracks> performShowsSound {};   // iPad Perform: a quarter on its sound
     int performFocus = 0;                                           // the quarter touched last
@@ -178,7 +168,7 @@ private:
     juce::Component stepPlaceholder, slicePlaceholder, drumPlaceholder;
     WavetableSynthPage synthPage { audioEngine.getSynth() };
     AboutPage aboutPage;
-    SettingsPage settingsPage { eventRouter };
+    SettingsPage settingsPage;
     SessionModel session;
     std::unique_ptr<SessionPage> homePage;   // the Session page; Home before it
     SamplerPage samplerPage;
@@ -193,9 +183,6 @@ private:
     RailIconButton playButton { RailIconButton::Kind::PlayStop };
     RailIconButton recordButton { RailIconButton::Kind::Record };
     juce::OwnedArray<RailTrackButton> trackButtons;
-
-    bool connected { false };
-    juce::String connectedHost;
 
     juce::ApplicationProperties appProperties;
 

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "EventRouter.h"
 #include "MidiMorfColors.h"
 #include "Glassmorphism.h"
 
@@ -15,50 +14,12 @@ static const PagePalette settingsPagePalette {
 };
 
 //==============================================================================
-// App-level settings: connection status + WiFi/Local output mode toggle.
-// MainComponent owns the network/router state and pushes updates here via
-// setConnectionStatus / refreshFromRouter.
+// App-level settings: the walkthrough and the audio load.
 class SettingsPage : public juce::Component, private juce::Timer
 {
 public:
-    SettingsPage (EventRouter& r) : router (r)
+    SettingsPage()
     {
-        wifiBtn.setButtonText ("WiFi");
-        wifiBtn.setClickingTogglesState (true);
-        wifiBtn.setRadioGroupId (1);
-        wifiBtn.setColour (juce::TextButton::buttonColourId,  juce::Colour (0xff3A434E));
-        wifiBtn.setColour (juce::TextButton::textColourOffId, MidiMorfColors::textLight);
-        wifiBtn.setColour (juce::TextButton::textColourOnId,  MidiMorfColors::textLight);
-        wifiBtn.setLookAndFeel (&glassLnf);
-        wifiBtn.onClick = [this]
-        {
-            if (wifiBtn.getToggleState())
-            {
-                router.setMode (EventRouter::Mode::WiFi);
-                if (onModeChanged) onModeChanged();
-            }
-        };
-        addAndMakeVisible (wifiBtn);
-
-        localBtn.setButtonText ("Local");
-        localBtn.setClickingTogglesState (true);
-        localBtn.setRadioGroupId (1);
-        localBtn.setColour (juce::TextButton::buttonColourId,  juce::Colour (0xff3A434E));
-        localBtn.setColour (juce::TextButton::textColourOffId, MidiMorfColors::textLight);
-        localBtn.setColour (juce::TextButton::textColourOnId,  MidiMorfColors::textLight);
-        localBtn.setLookAndFeel (&glassLnf);
-        localBtn.onClick = [this]
-        {
-            if (localBtn.getToggleState())
-            {
-                router.setMode (EventRouter::Mode::Local);
-                if (onModeChanged) onModeChanged();
-            }
-        };
-        addAndMakeVisible (localBtn);
-
-        refreshFromRouter();
-
         tourBtn.setLookAndFeel (&glassLnf);
         tourBtn.setColour (juce::TextButton::textColourOffId, MidiMorfColors::textLight);
         tourBtn.onClick = [this] { if (onTour) onTour(); };
@@ -67,34 +28,10 @@ public:
 
     ~SettingsPage() override
     {
-        wifiBtn.setLookAndFeel  (nullptr);
-        localBtn.setLookAndFeel (nullptr);
-        tourBtn.setLookAndFeel  (nullptr);
-    }
-
-    // Called by MainComponent on connect / disconnect / searching changes.
-    void setConnectionStatus (bool isConnected, const juce::String& host)
-    {
-        connected     = isConnected;
-        connectedHost = host;
-        repaint();
-    }
-
-    // Called when the mode is changed elsewhere (e.g. the floating menu) so
-    // the toggle buttons stay in sync.
-    void refreshFromRouter()
-    {
-        const bool isLocal = (router.getMode() == EventRouter::Mode::Local);
-        localBtn.setToggleState (isLocal,  juce::dontSendNotification);
-        wifiBtn .setToggleState (! isLocal, juce::dontSendNotification);
-        repaint();
+        tourBtn.setLookAndFeel (nullptr);
     }
 
     std::function<void()> onTour;   // replay the walkthrough
-
-    // MainComponent sets this so it can saveState() when the user toggles
-    // mode from the settings page.
-    std::function<void()> onModeChanged;
 
     // Share of the audio callback's time budget in use, 0..1 — MainComponent
     // points this at the audio device. Shown while the page is visible.
@@ -113,53 +50,9 @@ public:
         g.drawText ("SETTINGS", titleArea, juce::Justification::centredLeft);
         area.removeFromTop (12);
 
-        // Status row — dot + message
-        auto statusRow = area.removeFromTop (44);
-        const float dotSize = 16.0f;
-        auto dotArea = statusRow.removeFromLeft ((int) dotSize + 12);
-        const float dotX = dotArea.getX() + 4.0f;
-        const float dotY = dotArea.getCentreY() - dotSize * 0.5f;
-
-        const juce::Colour dotCol = connected ? MidiMorfColors::statusGreen
-                                              : MidiMorfColors::statusAmber;
-        // Soft glow around the dot
-        g.setColour (dotCol.withAlpha (0.25f));
-        g.fillEllipse (dotX - 4.0f, dotY - 4.0f, dotSize + 8.0f, dotSize + 8.0f);
-        g.setColour (dotCol);
-        g.fillEllipse (dotX, dotY, dotSize, dotSize);
-
-        const juce::String statusText = connected
-            ? juce::String ("Connected") + (connectedHost.isNotEmpty()
-                                                ? " to " + connectedHost
-                                                : juce::String())
-            : juce::String ("Searching for a host...");
-        g.setColour (MidiMorfColors::textLight);
-        g.setFont (juce::FontOptions (18.0f));
-        g.drawText (statusText, statusRow, juce::Justification::centredLeft);
-
-        area.removeFromTop (28);
-
-        // Section label
-        g.setColour (MidiMorfColors::textLight.withAlpha (0.6f));
-        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-        auto labelArea = area.removeFromTop (22);
-        g.drawText ("OUTPUT MODE", labelArea, juce::Justification::centredLeft);
-        area.removeFromTop (4);
-
-        // (Mode-toggle button bounds set in resized().)
-
-        // Helper text under the mode toggle
         auto helperArea = area;
-        helperArea.removeFromTop (56);                  // skip past the buttons
-        g.setColour (MidiMorfColors::textLight.withAlpha (0.45f));
-        g.setFont (juce::FontOptions (12.0f));
-        const juce::String help = (router.getMode() == EventRouter::Mode::Local)
-            ? "Local: the phone's built-in synth produces audio. WiFi server is ignored for synth-capable controllers."
-            : "WiFi: notes + CCs are sent over WiFi to the macOS server, which routes MIDI to your DAW.";
-        g.drawFittedText (help, helperArea.removeFromTop (44), juce::Justification::topLeft, 2);
 
         // Audio load: now, and the recent peak (what matters for dropouts).
-        helperArea.removeFromTop (12);
         g.setColour (MidiMorfColors::textLight.withAlpha (0.6f));
         g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
         g.drawText ("AUDIO LOAD", helperArea.removeFromTop (22), juce::Justification::centredLeft);
@@ -184,18 +77,7 @@ public:
 
     void resized() override
     {
-        auto area = getLocalBounds().reduced (24);
-        tourBtn.setBounds (area.withHeight (40).removeFromRight (200));
-        area.removeFromTop (44 + 12);            // title + gap
-        area.removeFromTop (44 + 28);            // status row + gap
-        area.removeFromTop (22 + 4);             // section label + gap
-
-        // Mode toggle: two buttons side-by-side
-        auto toggleRow = area.removeFromTop (48);
-        const int half = (toggleRow.getWidth() - 8) / 2;
-        wifiBtn .setBounds (toggleRow.removeFromLeft (half));
-        toggleRow.removeFromLeft (8);
-        localBtn.setBounds (toggleRow.removeFromLeft (half));
+        tourBtn.setBounds (getLocalBounds().reduced (24).withHeight (40).removeFromRight (200));
     }
 
 private:
@@ -215,11 +97,8 @@ private:
         repaint();
     }
 
-    EventRouter& router;
     double load = 0.0, peakLoad = 0.0;
     GlassButtonLookAndFeel glassLnf { settingsPagePalette, MidiMorfColors::accent, 8.0f };
 
-    juce::TextButton wifiBtn, localBtn, tourBtn { "Take the tour" };
-    bool connected = false;
-    juce::String connectedHost;
+    juce::TextButton tourBtn { "Take the tour" };
 };

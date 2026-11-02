@@ -5,13 +5,11 @@
 #include "MidiMorfColors.h"
 #include "Glassmorphism.h"
 
-// The global transport. The header strip picks the sequencers' sync source
-// (LOCAL: the phone's own clock; DAW: the server following DAW clock) and,
-// for LOCAL, sets the tempo. With LOCAL sync Play/Stop start and stop every
-// sequencer together; with DAW sync they drive the DAW as before.
+// The global transport. The header strip sets the tempo; Play/Stop start and
+// stop every sequencer together.
 //
 // Deep slate — utility hardware feel. Restrained enough that the candy-bright
-// Play / Stop / Record buttons stay the visual focus.
+// Play / Stop buttons stay the visual focus.
 static const PagePalette transportPagePalette {
     juce::Colour (0xff1A1E26),       // substrate top — deep slate
     juce::Colour (0xff080A0D),       // substrate bottom — near-black
@@ -26,12 +24,9 @@ class TransportPortraitContent : public juce::Component
 {
 public:
     TransportPortraitContent (EventRouter& client)
-        : networkClient (client)
+        : router (client)
     {
     }
-
-    // TAP while the sync source is LOCAL — the page taps the phone's tempo.
-    std::function<void()> onLocalTap;
 
     // Lights Play while the phone's clock is running.
     void setLocalRunning (bool shouldShow)
@@ -47,42 +42,11 @@ public:
     {
         auto area = getLocalBounds().reduced (8);
 
-        // Left column: utility buttons
-        auto leftCol = area.removeFromLeft (70);
-        int utilGap = 6;
-        int utilH = (leftCol.getHeight() - (numUtils - 1) * utilGap) / numUtils;
-
-        for (int i = 0; i < numUtils; ++i)
-        {
-            auto b = juce::Rectangle<float> (
-                (float) leftCol.getX(),
-                (float) (leftCol.getY() + i * (utilH + utilGap)),
-                (float) leftCol.getWidth(),
-                (float) utilH);
-            utilBounds[i] = b;
-
-            bool isPressed = (pressedUtil == i);
-            Glassmorphism::paintButton (g, b, transportPagePalette,
-                                         MidiMorfColors::accent,
-                                         isPressed, false, 6.0f);
-
-            // Rotated text for sideways use
-            g.setColour (isPressed ? MidiMorfColors::textDark : MidiMorfColors::textLight);
-            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-
-            juce::Graphics::ScopedSaveState ss (g);
-            g.addTransform (juce::AffineTransform::rotation (
-                juce::MathConstants<float>::halfPi, b.getCentreX(), b.getCentreY()));
-            g.drawText (utilLabels[i], b, juce::Justification::centred, false);
-        }
-
-        area.removeFromLeft (8);
-
-        // Right area: 3 big transport buttons
+        // Two big transport buttons
         int bigGap = 10;
-        int bigH = (area.getHeight() - 2 * bigGap) / 3;
+        int bigH = (area.getHeight() - bigGap) / 2;
 
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < 2; ++i)
         {
             auto b = juce::Rectangle<float> (
                 (float) area.getX(),
@@ -99,7 +63,6 @@ public:
             {
                 case 0: baseCol = juce::Colour (0xFF00CC55); glowCol = juce::Colour (0xFF55FFaa); break;  // Play - vivid green
                 case 1: baseCol = juce::Colour (0xFFFF8800); glowCol = juce::Colour (0xFFFFCC44); break;  // Stop - bright orange
-                case 2: baseCol = juce::Colour (0xFFEE2233); glowCol = juce::Colour (0xFFFF6677); break;  // Record - hot red
                 default: baseCol = MidiMorfColors::buttonFace; glowCol = MidiMorfColors::accent; break;
             }
 
@@ -180,52 +143,27 @@ public:
                     g.fillRoundedRectangle (cx - s * 0.5f, cy - s * 0.5f, s, s, 4.0f);
                     break;
                 }
-                case 2: // Record — circle
-                {
-                    g.setColour (juce::Colours::black.withAlpha (0.25f));
-                    g.fillEllipse (cx - iconSize * 0.5f + 3.0f, cy - iconSize * 0.5f + 3.0f, iconSize, iconSize);
-                    g.setColour (isPressed ? juce::Colours::white : juce::Colours::white.withAlpha (0.9f));
-                    g.fillEllipse (cx - iconSize * 0.5f, cy - iconSize * 0.5f, iconSize, iconSize);
-                    break;
-                }
             }
         }
     }
 
     void mouseDown (const juce::MouseEvent& e) override
     {
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < 2; ++i)
         {
             if (bigBounds[i].contains (e.position))
             {
                 pressedBig = i;
 
-                auto& seqs = networkClient.getSequencers();
-                if (networkClient.isLocalSync() && i == 0)
+                auto& seqs = router.getSequencers();
+                if (i == 0)
                 {
                     for (int t = 0; t < LocalSequencers::NumTracks; ++t)
                         seqs.setPlaying (t, true);   // tracks without a sequencer ignore it
                 }
-                else if (networkClient.isLocalSync() && i == 1)
+                else
                     seqs.stopAll();
-                else
-                    networkClient.sendTransportButton ((uint8_t) i);
 
-                repaint();
-                return;
-            }
-        }
-
-        for (int i = 0; i < numUtils; ++i)
-        {
-            if (utilBounds[i].contains (e.position))
-            {
-                pressedUtil = i;
-
-                if (utilIds[i] == tapId && networkClient.isLocalSync() && onLocalTap)
-                    onLocalTap();
-                else
-                    networkClient.sendTransportButton (utilIds[i]);
                 repaint();
                 return;
             }
@@ -234,88 +172,39 @@ public:
 
     void mouseUp (const juce::MouseEvent&) override
     {
-        if (pressedBig >= 0 || pressedUtil >= 0)
+        if (pressedBig >= 0)
         {
             pressedBig = -1;
-            pressedUtil = -1;
             repaint();
         }
     }
 
 private:
-    void drawY2KButton (juce::Graphics& g, juce::Rectangle<float> b,
-                        bool isPressed, juce::Colour baseCol, float radius)
-    {
-        // Gradient body
-        juce::ColourGradient grad (
-            baseCol.brighter (isPressed ? 0.5f : 0.3f), b.getX(), b.getY(),
-            baseCol.darker (0.2f), b.getX(), b.getBottom(), false);
-        g.setGradientFill (grad);
-        g.fillRoundedRectangle (b, radius);
+    EventRouter& router;
 
-        // Glassy top highlight
-        auto highlight = b.withHeight (b.getHeight() * 0.4f);
-        juce::ColourGradient sheen (
-            juce::Colours::white.withAlpha (isPressed ? 0.08f : 0.18f),
-            highlight.getX(), highlight.getY(),
-            juce::Colours::white.withAlpha (0.0f),
-            highlight.getX(), highlight.getBottom(), false);
-        g.setGradientFill (sheen);
-        g.fillRoundedRectangle (highlight.reduced (1.0f, 0.0f), radius);
-
-        // Border
-        g.setColour (juce::Colours::white.withAlpha (0.12f));
-        g.drawRoundedRectangle (b.reduced (0.5f), radius, 1.0f);
-    }
-
-    EventRouter& networkClient;
-
-    // Big transport: Play, Stop, Record
-    juce::Rectangle<float> bigBounds[3];
+    // Big transport: Play, Stop
+    juce::Rectangle<float> bigBounds[2];
     int pressedBig = -1;
     bool localRunning = false;
-
-    // Utility buttons
-    static constexpr int numUtils = 5;
-    juce::Rectangle<float> utilBounds[5];
-    int pressedUtil = -1;
-
-    const juce::String utilLabels[5] = { "TAP", "LOOP", "CLIP/DEV", "MIX/SCENE", "METRO" };
-    const uint8_t utilIds[5] = { 7, 5, 8, 9, 10 };
-    static constexpr uint8_t tapId = 7;
 };
 
 //==============================================================================
 // Outer page — landscape container. The header strip is plain landscape
-// components; below it the portrait content is rotated 90° CCW. Inside that
-// content the utility-button text is already +90°-rotated; the net rotation
-// cancels out so the text reads normally in landscape.
+// components; below it the portrait content is rotated 90° CCW, so Play
+// and Stop sit side by side.
 class TransportPage : public juce::Component, private juce::Timer
 {
 public:
     TransportPage (EventRouter& client)
-        : router (client), seqs (client.getSequencers()), content (client)
+        : seqs (client.getSequencers()), content (client)
     {
         setLookAndFeel (&glassLaf);
 
-        syncLabel.setText ("SYNC", juce::dontSendNotification);
         bpmTitle.setText ("BPM", juce::dontSendNotification);
-        for (auto* l : { &syncLabel, &bpmTitle })
-        {
-            l->setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.55f));
-            l->setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));
-            l->setJustificationType (juce::Justification::centredRight);
-            addAndMakeVisible (l);
-        }
-
-        for (auto* b : { &localButton, &dawButton })
-        {
-            b->setClickingTogglesState (true);
-            b->setRadioGroupId (7301);
-            addAndMakeVisible (b);
-        }
-        localButton.onClick = [this] { setSync (EventRouter::SyncSource::Local); };
-        dawButton.onClick   = [this] { setSync (EventRouter::SyncSource::DAW); };
+        bpmTitle.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.55f));
+        bpmTitle.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));
+        bpmTitle.setJustificationType (juce::Justification::centredRight);
+        addAndMakeVisible (bpmTitle);
 
         for (auto* b : { &slowerButton, &fasterButton })
         {
@@ -333,12 +222,12 @@ public:
         bpmLabel.addMouseListener (this, false);
         addAndMakeVisible (bpmLabel);
 
+        hintLabel.setText ("Play / Stop run every sequencer", juce::dontSendNotification);
         hintLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.45f));
         hintLabel.setFont (juce::Font (juce::FontOptions (12.0f)));
         hintLabel.setJustificationType (juce::Justification::centredRight);
         addAndMakeVisible (hintLabel);
 
-        content.onLocalTap = [this] { tap(); };
         addAndMakeVisible (content);
 
         timerCallback();
@@ -347,7 +236,7 @@ public:
 
     ~TransportPage() override { setLookAndFeel (nullptr); }
 
-    // Sync source or tempo changed — worth saving.
+    // Tempo changed — worth saving.
     std::function<void()> onStateChanged;
 
     void paint (juce::Graphics& g) override
@@ -363,12 +252,6 @@ public:
         if (landW <= 0 || landH <= 0) return;
 
         auto header = getLocalBounds().removeFromTop (headerH).reduced (10, 8);
-        syncLabel.setBounds (header.removeFromLeft (44));
-        header.removeFromLeft (6);
-        localButton.setBounds (header.removeFromLeft (70));
-        header.removeFromLeft (4);
-        dawButton.setBounds (header.removeFromLeft (70));
-        header.removeFromLeft (20);
         bpmTitle.setBounds (header.removeFromLeft (36));
         header.removeFromLeft (6);
         slowerButton.setBounds (header.removeFromLeft (38));
@@ -395,7 +278,7 @@ public:
 
     void mouseDrag (const juce::MouseEvent& e) override
     {
-        if (e.eventComponent == &bpmLabel && router.isLocalSync())
+        if (e.eventComponent == &bpmLabel)
             setBpm (std::round (dragStartBpm - e.getDistanceFromDragStartY() / 4.0));
     }
 
@@ -404,30 +287,8 @@ private:
 
     void timerCallback() override
     {
-        const bool local = router.isLocalSync();
-
-        localButton.setToggleState (local, juce::dontSendNotification);
-        dawButton.setToggleState (! local, juce::dontSendNotification);
-
-        for (auto* c : { (juce::Component*) &slowerButton, (juce::Component*) &fasterButton,
-                         (juce::Component*) &tapButton, (juce::Component*) &bpmLabel })
-            c->setEnabled (local);
-        bpmLabel.setAlpha (local ? 1.0f : 0.35f);
-
         bpmLabel.setText (juce::String (juce::roundToInt (seqs.getBpm())), juce::dontSendNotification);
-        hintLabel.setText (local ? "Play / Stop run both sequencers" : "Following DAW clock",
-                           juce::dontSendNotification);
-
-        content.setLocalRunning (local && seqs.isAnyPlaying());
-    }
-
-    void setSync (EventRouter::SyncSource src)
-    {
-        if (router.getSyncSource() == src)
-            return;
-        router.setSyncSource (src);
-        timerCallback();
-        if (onStateChanged) onStateChanged();
+        content.setLocalRunning (seqs.isAnyPlaying());
     }
 
     void setBpm (double b)
@@ -453,12 +314,10 @@ private:
             setBpm (std::round (60000.0 * (double) (taps.size() - 1) / (taps.back() - taps.front())));
     }
 
-    EventRouter& router;
     LocalSequencers& seqs;
     GlassButtonLookAndFeel glassLaf { transportPagePalette, MidiMorfColors::accent };
 
-    juce::Label syncLabel, bpmTitle, bpmLabel, hintLabel;
-    juce::TextButton localButton { "LOCAL" }, dawButton { "DAW" };
+    juce::Label bpmTitle, bpmLabel, hintLabel;
     juce::TextButton slowerButton { "-" }, fasterButton { "+" }, tapButton { "TAP" };
 
     TransportPortraitContent content;

@@ -201,7 +201,7 @@ private:
 class MorfPadPage : public juce::Component
 {
 public:
-    MorfPadPage (EventRouter& client) : networkClient (client)
+    MorfPadPage (EventRouter& client) : router (client)
     {
         addAndMakeVisible (controlsStrip);
         controlsStrip.onConfigChanged =
@@ -276,12 +276,12 @@ public:
         activeTouches.push_back (ti);
 
         if (activeTouches.size() > 1)
-            networkClient.sendMorfPadTouchUp();
+            router.sendMorfPadTouchUp();
 
         touchX = ti.x;
         touchY = ti.y;
         touching = true;
-        networkClient.sendMorfPadTouchDown (touchX, touchY);
+        router.sendMorfPadTouchDown (touchX, touchY);
         repaint();
     }
 
@@ -302,7 +302,7 @@ public:
         {
             touchX = activeTouches.back().x;
             touchY = activeTouches.back().y;
-            networkClient.sendMorfPadTouchMove (touchX, touchY);
+            router.sendMorfPadTouchMove (touchX, touchY);
             repaint();
         }
     }
@@ -319,14 +319,14 @@ public:
 
         if (wasActive)
         {
-            networkClient.sendMorfPadTouchUp();
+            router.sendMorfPadTouchUp();
 
             if (! activeTouches.empty())
             {
                 auto& prev = activeTouches.back();
                 touchX = prev.x;
                 touchY = prev.y;
-                networkClient.sendMorfPadTouchDown (touchX, touchY);
+                router.sendMorfPadTouchDown (touchX, touchY);
             }
             else
             {
@@ -370,10 +370,10 @@ private:
 
     void sendScaleConfig()
     {
-        networkClient.sendMorfPadScaleSelect (scaleIndex, rootNote, octaveRange, baseOctave);
+        router.sendMorfPadScaleSelect (scaleIndex, rootNote, octaveRange, baseOctave);
     }
 
-    EventRouter& networkClient;
+    EventRouter& router;
     MorfPadControlsStrip controlsStrip;
 
     uint8_t scaleIndex = 0;

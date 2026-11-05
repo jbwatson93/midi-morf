@@ -159,7 +159,7 @@
       </MODULEPATHS>
     </XCODE_IPHONE>
     <ANDROIDSTUDIO targetFolder="Builds/Android" androidPushNotifications="0" microphonePermissionNeeded="1"
-                   androidScreenOrientation="landscape" androidMinimumSDK="26"
+                   androidScreenOrientation="landscape" androidMinimumSDK="26" androidTargetSDK="36"
                    androidInternetNeeded="0" androidExternalWriteNeeded="0"
                    androidReadMediaAudioPermission="0" androidReadMediaImagesPermission="0"
                    androidReadMediaVideoPermission="0" bigIcon="aAppIc">

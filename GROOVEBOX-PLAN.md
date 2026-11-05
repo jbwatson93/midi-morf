@@ -291,7 +291,10 @@ JUCE builds for Android (Projucer's Android exporter plus Android Studio, with O
 - [ ] **Import formats:** WAV, AIFF, FLAC and OGG only, because Core Audio is what reads MP3 and M4A on iOS. Decide whether to add them through Android's decoder.
 - [ ] **Recordings aren't visible outside the app** on Android (iOS shows them in Files). Decide whether to add sharing or export.
 - [ ] **Haptics:** nothing calls them on either platform today.
-- [ ] Release signing, app icon and home-screen name (currently "MidiMorfApp").
+- [x] **Target API 36 and release signing:** `scripts/android-release.sh` builds the Play bundle and signs it with the upload key in `~/.midimorf`, outside the repo.
+- [ ] **Large screens on Android 16:** at API 36 the system ignores the landscape lock at 600 dp and up, so a tablet held upright gets a stretched portrait layout with buttons collapsed to "...". Seen on the emulator. Decide between a portrait layout and leaving tablets out of the Play release.
+- [ ] **Back button:** Back quits the app straight away, and unlike iOS every Android phone has one. Decide what it should do, and check nothing unsaved is lost.
+- [ ] App icon and home-screen name (currently "MidiMorfApp"). Bump `androidVersionCode` in the `.jucer` for each Play upload.
 - [ ] Google Play Console: developer account (one-time $25), paid app at $4.99, store listing.
 
 ## Open questions

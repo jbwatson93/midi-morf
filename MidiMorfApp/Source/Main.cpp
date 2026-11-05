@@ -43,6 +43,10 @@ public:
         quit();
     }
 
+    // Android only. An edge swipe counts as Back, and the rail runs down that edge,
+    // so by default a stray drag would quit the app mid-session.
+    bool backButtonPressed() override { return true; }
+
     void anotherInstanceStarted (const juce::String& commandLine) override
     {
         // When another instance of the app is launched while this one is running,

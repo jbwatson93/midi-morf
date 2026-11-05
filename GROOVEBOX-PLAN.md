@@ -293,7 +293,8 @@ JUCE builds for Android (Projucer's Android exporter plus Android Studio, with O
 - [ ] **Haptics:** nothing calls them on either platform today.
 - [x] **Target API 36 and release signing:** `scripts/android-release.sh` builds the Play bundle and signs it with the upload key in `~/.midimorf`, outside the repo.
 - [ ] **Large screens on Android 16:** at API 36 the system ignores the landscape lock at 600 dp and up, so a tablet held upright gets a stretched portrait layout with buttons collapsed to "...". Seen on the emulator. Decide between a portrait layout and leaving tablets out of the Play release.
-- [ ] **Back button:** Back quits the app straight away, and unlike iOS every Android phone has one. Decide what it should do, and check nothing unsaved is lost.
+- [x] **Back button:** Back now does nothing. An edge swipe counts as Back and the rail runs down that edge, so a stray drag used to quit the app. Real edge swipes confirmed on an Android 15 tablet; on Android 16, only the Back key and simulated swipes on the emulator. Swiping up still goes Home.
+- [ ] **Saving on the way out:** the app saves when it goes to the background, but no test has shown nothing is lost when it's left that way or killed.
 - [ ] App icon and home-screen name (currently "MidiMorfApp"). Bump `androidVersionCode` in the `.jucer` for each Play upload.
 - [ ] Google Play Console: developer account (one-time $25), paid app at $4.99, store listing.
 

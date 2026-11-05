@@ -134,6 +134,7 @@
     <XCODE_IPHONE targetFolder="Builds/iOS" microphonePermissionNeeded="1" microphonePermissionsText="Midi-Morf uses the microphone to record samples." UIFileSharingEnabled="1" UIStatusBarHidden="1" extraDefs="JUCE_IOS_AUDIO_EXPLICIT_SAMPLERATES=48000.0"
                   customPList="&lt;plist&gt;&lt;dict&gt;&#10;  &lt;key&gt;UISupportedInterfaceOrientations&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;UIInterfaceOrientationLandscapeRight&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UIRequiresFullScreen&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;LSSupportsOpeningDocumentsInPlace&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;CFBundleIconName&lt;/key&gt;&#10;  &lt;string&gt;AppIcon&lt;/string&gt;&#10;&lt;/dict&gt;&lt;/plist&gt;"
                   iosDevelopmentTeamID="69KM48W4TU" extraCustomFrameworks="CoreMotion"
+                  customXcassetsFolder="Resources/iOS/Images.xcassets"
                   iosScreenOrientation="UIInterfaceOrientationLandscapeRight" iPadScreenOrientation="UIInterfaceOrientationLandscapeRight">
       <CONFIGURATIONS>
         <CONFIGURATION isDebug="1" name="Debug" iosDeploymentTarget="17.5" iosCompatibility="17.5"/>

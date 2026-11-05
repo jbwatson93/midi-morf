@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform.h"
+
 #include <JuceHeader.h>
 #include "MidiMorfColors.h"
 #include "SynthLookAndFeel.h"
@@ -19,7 +21,7 @@ public:
 
     static juce::File folder()
     {
-        return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Projects");
+        return Platform::documentsDirectory().getChildFile ("Projects");
     }
 
     ProjectBrowser()

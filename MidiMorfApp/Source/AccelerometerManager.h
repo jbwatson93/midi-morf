@@ -1,11 +1,10 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <memory>
 
-#if JUCE_IOS
-#import <CoreMotion/CoreMotion.h>
-#endif
-
+// Reports the device's tilt on the message thread, about 60 times a second.
+// Written once per platform, in Platform_ios.mm and Platform_android.cpp.
 class AccelerometerManager
 {
 public:
@@ -15,64 +14,16 @@ public:
         virtual void tiltUpdated (float tiltX, float tiltY) = 0;
     };
 
-    AccelerometerManager() {}
-    ~AccelerometerManager() { stop(); }
+    AccelerometerManager();
+    ~AccelerometerManager();
 
     void setListener (Listener* l) { listener = l; }
 
-    void start()
-    {
-       #if JUCE_IOS
-        if (motionManager != nil)
-            return;
-
-        motionManager = [[CMMotionManager alloc] init];
-
-        if (! motionManager.deviceMotionAvailable)
-        {
-            DBG ("AccelerometerManager: device motion not available");
-            motionManager = nil;
-            return;
-        }
-
-        motionManager.deviceMotionUpdateInterval = 1.0 / 60.0;
-
-        [motionManager startDeviceMotionUpdatesToQueue:[NSOperationQueue mainQueue]
-            withHandler:^(CMDeviceMotion* motion, NSError* error)
-            {
-                if (error != nil || motion == nil)
-                    return;
-
-                // gravity gives us a nice filtered tilt vector
-                // x: left/right tilt (-1 to 1)
-                // y: forward/back tilt (-1 to 1)
-                float tiltX = (float) motion.gravity.x;
-                float tiltY = (float) motion.gravity.y;
-
-                if (listener != nullptr)
-                    listener->tiltUpdated (tiltX, tiltY);
-            }];
-
-        DBG ("AccelerometerManager: started");
-       #endif
-    }
-
-    void stop()
-    {
-       #if JUCE_IOS
-        if (motionManager != nil)
-        {
-            [motionManager stopDeviceMotionUpdates];
-            motionManager = nil;
-            DBG ("AccelerometerManager: stopped");
-        }
-       #endif
-    }
+    void start();
+    void stop();
 
 private:
+    struct Impl;
+    std::unique_ptr<Impl> impl;
     Listener* listener = nullptr;
-
-   #if JUCE_IOS
-    CMMotionManager* motionManager = nil;
-   #endif
 };

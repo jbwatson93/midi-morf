@@ -96,7 +96,7 @@ public:
 
             setVisible (true);
 
-           #if JUCE_IOS
+           #if JUCE_IOS || JUCE_ANDROID
             // Kiosk mode is how JUCE hides the status bar (the iPad keeps it in
             // landscape, over the header) and lets the home indicator fade.
             juce::Desktop::getInstance().setKioskModeComponent (this, false);

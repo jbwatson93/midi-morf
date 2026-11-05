@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform.h"
+
 #include <JuceHeader.h>
 #include "WavetableEngine.h"
 #include <vector>
@@ -311,7 +313,7 @@ namespace WavetablePresets
     // User presets.
     inline juce::File userFolder()
     {
-        return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+        return Platform::documentsDirectory()
                    .getChildFile ("Presets").getChildFile ("Wavetable");
     }
 

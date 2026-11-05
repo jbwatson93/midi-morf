@@ -8,13 +8,17 @@
       <FILE id="U1w5TJ" name="AboutPage.h" compile="0" resource="0" file="Source/AboutPage.h"/>
       <FILE id="ZZLLRg" name="MorfChordPage.h" compile="0" resource="0" file="Source/MorfChordPage.h"/>
       <FILE id="NCsSfq" name="DualMPadPage.h" compile="0" resource="0" file="Source/DualMPadPage.h"/>
-      <FILE id="yvwwxI" name="Main.mm" compile="1" resource="0" file="Source/Main.mm"/>
+      <FILE id="yvwwxI" name="Main.cpp" compile="1" resource="0" file="Source/Main.cpp"/>
       <FILE id="c7KyM7" name="MainComponent.h" compile="0" resource="0" file="Source/MainComponent.h"/>
       <FILE id="FcSmCZ" name="AccelerometerManager.h" compile="0" resource="0"
             file="Source/AccelerometerManager.h"/>
       <FILE id="vF6joQ" name="FXButton.h" compile="0" resource="0" file="Source/FXButton.h"/>
-      <FILE id="iIzcBt" name="MainComponent.mm" compile="1" resource="0"
-            file="Source/MainComponent.mm"/>
+      <FILE id="iIzcBt" name="MainComponent.cpp" compile="1" resource="0"
+            file="Source/MainComponent.cpp"/>
+      <FILE id="plt000" name="Platform.h" compile="0" resource="0" file="Source/Platform.h"/>
+      <FILE id="plt001" name="Platform_ios.mm" compile="1" resource="0" file="Source/Platform_ios.mm"/>
+      <FILE id="plt002" name="Platform_android.cpp" compile="1" resource="0"
+            file="Source/Platform_android.cpp"/>
       <FILE id="lvgSTU" name="MidiMorfProtocol.h" compile="0" resource="0"
             file="Source/MidiMorfProtocol.h"/>
       <FILE id="w3d2iE" name="XYPad.h" compile="0" resource="0" file="Source/XYPad.h"/>
@@ -122,6 +126,7 @@
     <MODULE id="juce_graphics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_gui_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_gui_extra" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_opengl" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_osc" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
   </MODULES>
   <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
@@ -148,8 +153,20 @@
         <MODULEPATH id="juce_gui_basics" path="../../juce"/>
         <MODULEPATH id="juce_osc" path="../../juce"/>
         <MODULEPATH id="juce_gui_extra" path="../../../../../../../Applications/JUCE/modules"/>
+        <MODULEPATH id="juce_opengl" path="../../../../../../../Applications/JUCE/modules"/>
         <MODULEPATH id="juce_audio_processors_headless" path="../../../../../../../Applications/JUCE/modules"/>
       </MODULEPATHS>
     </XCODE_IPHONE>
+    <ANDROIDSTUDIO targetFolder="Builds/Android" androidPushNotifications="0" microphonePermissionNeeded="1"
+                   androidScreenOrientation="landscape" androidMinimumSDK="26"
+                   androidInternetNeeded="0" androidExternalWriteNeeded="0"
+                   androidReadMediaAudioPermission="0" androidReadMediaImagesPermission="0"
+                   androidReadMediaVideoPermission="0" bigIcon="aAppIc">
+      <CONFIGURATIONS>
+        <CONFIGURATION isDebug="1" name="Debug" androidArchitectures="arm64-v8a"/>
+        <CONFIGURATION isDebug="0" name="Release" androidArchitectures="arm64-v8a armeabi-v7a"/>
+      </CONFIGURATIONS>
+      <MODULEPATHS/>
+    </ANDROIDSTUDIO>
   </EXPORTFORMATS>
 </JUCERPROJECT>

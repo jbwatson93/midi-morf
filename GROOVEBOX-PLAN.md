@@ -274,15 +274,24 @@ JB (2026-10-30): "rethink our server plugin, maybe this is a whole separate app"
 
 ### Phase 9 — Android ($4.99 on Google Play)
 
-JUCE builds for Android (Projucer's Android exporter plus Android Studio, with Oboe for low-latency audio), and most of the app is plain C++ already. What needs doing:
+JUCE builds for Android (Projucer's Android exporter plus Android Studio, with Oboe for low-latency audio), and most of the app is plain C++ already. Everything that differs by platform lives in `Platform.h`, written once in `Platform_ios.mm` and once in `Platform_android.cpp`, so shared code has no platform checks of its own. To build: resave with Projucer, then run `./gradlew assembleDebug` in `Builds/Android` with `JAVA_HOME` set to Android Studio's `jbr`. `Builds/Android` is generated and stays out of git.
 
-- [ ] **Android exporter** in the `.jucer`: landscape only, minimum SDK, microphone permission, and the same resources.
-- [ ] **The Objective-C++ files:** `Main.mm`, `MainComponent.mm` and `Haptics.mm` only compile on Apple. Move the iOS parts (UIKit, AVAudioSession mic permission, kiosk/status bar) behind small platform files and keep the shared code in `.cpp`.
-- [ ] **Tilt:** `AccelerometerManager.h` uses CoreMotion. Android needs its own sensor reader, or tilt is off at first.
-- [ ] **Haptics:** Android vibration, or none at first.
-- [ ] **Files:** Documents/Projects, Recordings and Presets map to app storage. Importing audio goes through Android's file picker.
-- [ ] **WiFi mode:** server discovery already uses JUCE's cross-platform `NetworkServiceDiscovery`, so it should just work. Check it on a real device.
-- [ ] **Audio latency on test phones:** Android varies a lot by device. Test on at least one cheap phone and one recent Pixel or Samsung.
+- [x] **Android exporter** in the `.jucer`: landscape, minimum SDK 26, microphone as the only permission, same resources, package `com.retrorelic.midimorfapp`.
+- [x] **The Objective-C++ files:** `Main` and `MainComponent` are `.cpp` now and the iOS parts moved to `Platform_ios.mm`. `Haptics.mm` has no callers and isn't built on Android.
+- [x] **Tilt:** `AccelerometerManager` has an NDK sensor reader on Android. Written but untested on a real phone: check the direction matches iOS in both landscapes.
+- [x] **Files:** Projects, Recordings, Presets and imports live in app-private storage. Importing goes through Android's file picker, using the file's real name.
+- [x] **Mic:** Android's runtime permission. Tested on the emulator only.
+- [x] **Audio lifecycle:** 48 kHz when the device offers it; the device closes when backgrounded.
+- [x] **Layout:** the page keeps clear of the rail on phones with no notch. Perform view shows at 600 dp and up, untested on a tablet.
+- [ ] **Audio latency on test phones:** Android varies a lot by device. Test on at least one cheap phone and one recent Pixel or Samsung. The emulator's numbers mean nothing.
+- [x] **Drawing:** the CPU renderer took about 110 ms a frame on a Note 10+ even in Release, because any repaint redraws the whole screen, so Android attaches an `OpenGLContext` (`Platform::attachRenderer`). iOS stays on CoreGraphics.
+- [ ] **Frame rate and CPU under real use**, on a cheap phone too. Check Debug isn't the build being judged: it's about 20 times slower to draw.
+- [x] **Window fit:** opening a menu made Android squeeze the app clear of the camera cutout, showing a white strip. `Platform::configureWindow` turns that off (API 30 and up; JUCE handles older versions) and backs the window with black. Confirmed on Android 12; older versions untested.
+- [x] **Audio buffer:** JUCE defaults to 40 ms on low-latency phones, so those now ask for about 10 ms (480 frames at 48k, confirmed on a Note 10+). Phones without the low-latency path keep 100 ms. Still to judge by ear: feel and crackles, including on a cheap phone.
+- [ ] **Import formats:** WAV, AIFF, FLAC and OGG only, because Core Audio is what reads MP3 and M4A on iOS. Decide whether to add them through Android's decoder.
+- [ ] **Recordings aren't visible outside the app** on Android (iOS shows them in Files). Decide whether to add sharing or export.
+- [ ] **Haptics:** nothing calls them on either platform today.
+- [ ] Release signing, app icon and home-screen name (currently "MidiMorfApp").
 - [ ] Google Play Console: developer account (one-time $25), paid app at $4.99, store listing.
 
 ## Open questions

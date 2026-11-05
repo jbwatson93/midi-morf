@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform.h"
+
 #include <JuceHeader.h>
 #include "WavetableEngine.h"
 #include "PresetBrowser.h"
@@ -229,11 +231,12 @@ private:
                 auto url = fc.getURLResult();
                 if (url.isEmpty()) return;
 
-                auto dir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+                auto dir = Platform::documentsDirectory()
                                .getChildFile ("Wavetables");
                 dir.createDirectory();
-                auto name = url.getFileName().isNotEmpty() ? url.getFileName() : juce::String ("Imported.wav");
-                auto dest = dir.getChildFile (juce::URL::removeEscapeChars (name));
+                auto name = Platform::importedFileName (url);
+                if (name.isEmpty()) name = "Imported.wav";
+                auto dest = dir.getChildFile (name);
 
                 bool copied = false;
                 if (auto in = url.createInputStream (juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)))

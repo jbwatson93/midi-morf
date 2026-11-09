@@ -49,6 +49,28 @@ public:
 };
 
 //==============================================================================
+// Hears every note each track plays, wherever it came from, as it reaches the
+// track — MIDI out. Muted and un-soloed tracks send no note-ons (their
+// note-offs still go, so nothing hangs).
+//
+// Audio thread, except controllerFromMessageThread. beginBlock() comes at the
+// top of each device callback and setBlockPosition() before each sub-block,
+// so the tap can time what follows to the sample.
+class MidiTap
+{
+public:
+    enum class Clock { Start, Tick, Stop };
+
+    virtual ~MidiTap() = default;
+    virtual void beginBlock (double sampleRate) = 0;
+    virtual void setBlockPosition (int samplesFromBlockStart) = 0;
+    virtual void note (int track, bool on, int note, int velocity127) = 0;
+    virtual void allNotesOff (int track) = 0;
+    virtual void clock (Clock) = 0;
+    virtual void controllerFromMessageThread (int track, int cc, int value) = 0;
+};
+
+//==============================================================================
 // Whatever processes the summed tracks before the limiter — the punch-in FX.
 // Audio thread, in place.
 class MasterProcessor
@@ -103,6 +125,8 @@ public:
     // Set once, before audio starts.
     void setMasterProcessor (MasterProcessor* m) { master = m; }
     void setLiveEventObserver (LiveEventObserver* o) { observer = o; }
+    void setMidiTap (MidiTap* t) { tap = t; }
+    MidiTap* getMidiTap() const noexcept { return tap; }
 
     // Track volume, 0..MaxVolume linear (1 = unity). Any thread; the audio
     // thread ramps to it over 20 ms so a fader move never clicks.
@@ -191,12 +215,14 @@ public:
     {
         if (auto* s = getSource (track))
             s->noteOnAudio (channel, note, velocity127);
+        tapNote (track, true, note, velocity127);
     }
 
     void noteOff (int track, int channel, int note)
     {
         if (auto* s = getSource (track))
             s->noteOffAudio (channel, note);
+        tapNote (track, false, note, 0);
     }
 
     void render (juce::AudioBuffer<float>& out, int start, int num)
@@ -275,12 +301,24 @@ private:
                     else if (e.type == Event::Off) s->noteOffAudio (e.channel, e.note);
                     else                           s->allNotesOff();
                 }
+                if (e.type == Event::AllOff) { if (tap != nullptr) tap->allNotesOff (e.track); }
+                else tapNote (e.track, e.type == Event::On, e.note, e.velocity);
                 if (observer != nullptr && e.type != Event::AllOff)
                     observer->liveEvent (e.track, e.type == Event::On, e.channel, e.note, e.velocity);
             }
         };
         handle (scope.startIndex1, scope.blockSize1);
         handle (scope.startIndex2, scope.blockSize2);
+    }
+
+    // Note-ons only from a track that can be heard; note-offs always.
+    void tapNote (int t, bool on, int note, int velocity)
+    {
+        if (tap == nullptr || ! validTrack (t))
+            return;
+        if (on && (muted[(size_t) t].load() || (! solo[(size_t) t].load() && std::any_of (solo.begin(), solo.end(), [] (const auto& s) { return s.load(); }))))
+            return;
+        tap->note (t, on, note, velocity);
     }
 
     // Volume x balance for one side (0 left, 1 right).
@@ -404,6 +442,7 @@ private:
     std::vector<SoundSource*> pool;   // message thread
     MasterProcessor* master = nullptr;
     LiveEventObserver* observer = nullptr;
+    MidiTap* tap = nullptr;
     std::array<std::atomic<float>, NumTracks> volumes { 1.0f, 1.0f, 1.0f, 1.0f };
     std::array<std::atomic<float>, NumTracks> pans {};
     std::array<std::atomic<bool>, NumTracks> muted {}, solo {};

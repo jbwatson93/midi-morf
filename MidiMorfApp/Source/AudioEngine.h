@@ -7,6 +7,7 @@
 #include "WavetablePresets.h"
 #include "SampleRecorder.h"
 #include "DrumSynth.h"
+#include "MidiOut.h"
 
 //==============================================================================
 // Owns the iOS audio device, the track sources and the track rack. The device
@@ -41,6 +42,7 @@ public:
 
         punch.setTempoSource ([this] { return sequencers.getBpm(); });
         rack.setMasterProcessor (&punch);
+        rack.setMidiTap (&midiOut);
         rack.setTempoSource ([this] { return sequencers.getBpm(); });
 
         if (auto* acid = WavetablePresets::findFactory ("Acid Bass"))
@@ -115,6 +117,13 @@ public:
         sourcePlayer.setSource (&sequencers);
         deviceManager.addAudioCallback (&sourcePlayer);
         running = true;
+
+        // MIDI out is timed to when the phone's audio is heard.
+        if (auto* device = deviceManager.getCurrentAudioDevice())
+        {
+            const double sr = juce::jmax (1.0, device->getCurrentSampleRate());
+            midiOut.setAudioLatencyMs (1000.0 * (device->getCurrentBufferSizeSamples() + device->getOutputLatencyInSamples()) / sr);
+        }
     }
 
     // Detach the audio callback but keep the iOS audio session alive. Avoids
@@ -214,6 +223,7 @@ public:
     LocalSequencers& getSequencers() noexcept { return sequencers; }
     TrackRack& getRack() noexcept             { return rack; }
     PunchFx& getPunchFx() noexcept            { return punch; }
+    MidiOutRouter& getMidiOut() noexcept      { return midiOut; }
 
     // What a track's sound is called in the UI: for a synth, the preset it
     // was loaded from (or saved as).
@@ -273,6 +283,7 @@ private:
     std::array<std::unique_ptr<MlrSource>, TrackRack::NumTracks> mlrs;
     std::array<bool, TrackRack::NumTracks> remixing {};
     PunchFx punch;
+    MidiOutRouter midiOut;   // before the rack, which taps into it
     TrackRack rack;
     LocalSequencers sequencers { rack };
     juce::AudioDeviceManager deviceManager;

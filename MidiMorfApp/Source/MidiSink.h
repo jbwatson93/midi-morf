@@ -34,6 +34,8 @@ public:
     {
         if (auto* s = rack.getSource (track.load()))
             s->controller (cc, value);
+        if (auto* tap = rack.getMidiTap())
+            tap->controllerFromMessageThread (track.load(), cc, value);
     }
 
 private:

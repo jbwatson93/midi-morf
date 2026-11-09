@@ -136,6 +136,7 @@ private:
     // Projects: the working one autosaves to Current.midimorf, and a named
     // one also to <name>.midimorf beside it.
     void showProjects();
+    void showMidiOutMenu (int track, juce::Component& opener);
     void openProject (const juce::File& file);   // a named project file, or {} for a new one
     void saveProjectAs (const juce::String& name);
     void loadProjectTree (const juce::ValueTree& project);

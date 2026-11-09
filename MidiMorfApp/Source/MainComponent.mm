@@ -4,7 +4,28 @@
 #if JUCE_IOS
  #import <UIKit/UIKit.h>
  #import <AVFoundation/AVFoundation.h>
+ #import <CoreMIDI/MIDINetworkSession.h>
 #endif
+
+// The phone's own network MIDI session (see MidiOut.h). Anyone on the Wi-Fi
+// may connect, as with a Mac's session; the Mac's side chooses what to play.
+void enableNetworkMidiSession()
+{
+   #if JUCE_IOS
+    auto* session = [MIDINetworkSession defaultSession];
+    session.enabled = YES;
+    session.connectionPolicy = MIDINetworkConnectionPolicy_Anyone;
+   #endif
+}
+
+bool isNetworkMidiSessionEnabled()
+{
+   #if JUCE_IOS
+    return [MIDINetworkSession defaultSession].isEnabled;
+   #else
+    return true;   // nothing to turn on
+   #endif
+}
 
 // Asks for the microphone (iOS shows its prompt the first time) and calls
 // back on the message thread with the answer.
@@ -277,6 +298,13 @@ MainComponent::MainComponent()
         }
     };
     cb.getMuted      = [this] (int t) { return audioEngine.getRack().isMuted (t); };
+    cb.midiOutState  = [this] (int t)
+    {
+        auto& m = audioEngine.getMidiOut();
+        return ! m.isTrackSending (t) ? 0 : m.isTrackMissing (t) ? 2 : 1;
+    };
+    cb.midiOutActive = [this] (int t) { return audioEngine.getMidiOut().recentlyActive (t); };
+    cb.midiOutMenu   = [this] (int t, juce::Component& opener) { showMidiOutMenu (t, opener); };
     cb.setMuted      = [this] (int t, bool m) { audioEngine.getRack().setMuted (t, m); };
     cb.openPage      = [this] (int page) { pageContainer.setPage (page); };
     cb.openProjects  = [this] { showProjects(); };
@@ -1172,6 +1200,96 @@ void MainComponent::applySessionToSequencers()
 //==============================================================================
 // Projects
 
+//==============================================================================
+// A track's MIDI out: where it sends, on which channel, and the gear's clock
+// and timing. Anything picked applies at once and is saved.
+void MainComponent::showMidiOutMenu (int track, juce::Component& opener)
+{
+    auto& midi = audioEngine.getMidiOut();
+    const auto current = midi.getTrackDestination (track);
+    const auto destinations = midi.available();
+    juce::Component::SafePointer<juce::Component> safeOpener (&opener);
+
+    juce::PopupMenu m;
+    m.addSectionHeader ("T" + juce::String (track + 1) + " MIDI OUT");
+    m.addItem ("Off", true, current.isEmpty(), [this, track]
+    {
+        audioEngine.getMidiOut().setTrackDestination (track, {}, {});
+        homePage->refresh();
+        saveState();
+    });
+
+    bool currentListed = false;
+    for (const auto& d : destinations)
+    {
+        currentListed |= d.id == current;
+        m.addItem (d.name, true, d.id == current, [this, track, d]
+        {
+            audioEngine.getMidiOut().setTrackDestination (track, d.id, d.name);
+            homePage->refresh();
+            saveState();
+        });
+    }
+    if (current.isNotEmpty() && ! currentListed)
+        m.addItem (midi.getTrackDestinationName (track) + " (not connected)", false, true, nullptr);
+    if (destinations.empty())
+        m.addItem ("Nothing connected yet", false, false, nullptr);
+
+    m.addSeparator();
+    if (! isNetworkMidiSessionEnabled())
+        m.addItem ("Turn on Wi-Fi MIDI", [this]
+        {
+            enableNetworkMidiSession();
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Wi-Fi MIDI is on",
+                "On your Mac, open Audio MIDI Setup, then Window > Show MIDI Studio > Network. "
+                "Select this phone under Directory and press Connect.\n\n"
+                "Then pick \"Network Session 1\" here as the track's MIDI out.");
+        });
+   #if JUCE_IOS || JUCE_ANDROID
+    if (juce::BluetoothMidiDevicePairingDialogue::isAvailable())
+        m.addItem (juce::String::fromUTF8 ("Pair Bluetooth MIDI\xe2\x80\xa6"), [] { juce::BluetoothMidiDevicePairingDialogue::open(); });
+   #endif
+    m.addItem ("Add a port for other apps", [this]
+    {
+        if (! audioEngine.getMidiOut().tryCreateVirtualPort())
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Not available",
+                "iOS didn't allow a MIDI port for other apps. USB, Bluetooth and Wi-Fi MIDI still work.");
+    });
+
+    if (current.isNotEmpty())
+    {
+        m.addSeparator();
+        juce::PopupMenu channels;
+        for (int ch = 1; ch <= 16; ++ch)
+            channels.addItem ("Channel " + juce::String (ch), true, midi.getTrackChannel (track) == ch, [this, track, ch]
+            {
+                audioEngine.getMidiOut().setTrackChannel (track, ch);
+                saveState();
+            });
+        m.addSubMenu ("Channel " + juce::String (midi.getTrackChannel (track)), channels);
+
+        const bool clock = midi.sendsClock (current);
+        m.addItem ("Send clock to " + midi.getTrackDestinationName (track), true, clock, [this, current, clock]
+        {
+            audioEngine.getMidiOut().setSendsClock (current, ! clock);
+            saveState();
+        });
+    }
+
+    juce::PopupMenu timing;
+    const double offset = midi.getOffsetMs();
+    for (int ms : { -20, -10, -5, 0, 5, 10, 20, 40, 80 })
+        timing.addItem ((ms > 0 ? "+" : "") + juce::String (ms) + " ms" + (ms == 0 ? " (in time with the phone)" : ""),
+                        true, juce::roundToInt (offset) == ms, [this, ms]
+                        {
+                            audioEngine.getMidiOut().setOffsetMs (ms);
+                            saveState();
+                        });
+    m.addSubMenu ("Timing " + juce::String ((offset > 0 ? "+" : "") + juce::String (juce::roundToInt (offset))) + " ms", timing);
+
+    m.showMenuAsync (PopupStyle::attached (m, opener), [safeOpener] (int) {});
+}
+
 void MainComponent::showProjects()
 {
     if (projectBrowser == nullptr)
@@ -1550,7 +1668,7 @@ void MainComponent::timerCallback()
 // Documents/Projects/Current.midimorf. The settings file keeps only app
 // preferences: WiFi/Local, sync source, last page, the edited sound.
 
-static const juce::StringArray appSettingKeys { "lastPage", "mode", "seq_sync", "sound_track", "tour_done" };
+static const juce::StringArray appSettingKeys { "lastPage", "mode", "seq_sync", "sound_track", "tour_done", "midi_clock_to", "midi_offset_ms" };
 
 static juce::File projectFile()
 {
@@ -1629,6 +1747,7 @@ void MainComponent::saveNow()
         track.appendChild (audioEngine.getTrackSampler (t).getState(), nullptr);   // the track plays
         track.appendChild (audioEngine.getTrackDrums (t).getState(), nullptr);
         track.appendChild (audioEngine.getTrackMlr (t).getState(), nullptr);
+        audioEngine.getMidiOut().saveTrack (t, track);
         project.appendChild (track, nullptr);
     }
     if (auto xml = pageState.createXml ("PageState"))
@@ -1655,6 +1774,7 @@ void MainComponent::saveNow()
     {
         props->setValue ("lastPage", pageContainer.getCurrentPage());
         props->setValue ("sound_track", soundTrack);
+        audioEngine.getMidiOut().saveSettings (*props);
 
         // Once the project is safely on disk, everything else in the settings
         // file is from before it existed.
@@ -1674,6 +1794,8 @@ void MainComponent::restoreState()
     auto* settings = appProperties.getUserSettings();
     if (settings == nullptr)
         return;
+
+    audioEngine.getMidiOut().loadSettings (*settings);
 
     // The project, if there is one. Without it (first launch of this
     // version) everything comes from the settings file, as it used to.
@@ -1740,6 +1862,7 @@ void MainComponent::restoreState()
                 audioEngine.getTrackDrums (t).setState (kit);
             if (auto grid = track.getChildWithName (MlrSource::stateType); grid.isValid())
                 audioEngine.getTrackMlr (t).setState (grid);
+            audioEngine.getMidiOut().loadTrack (t, track);
             setInstrument (t, track.getProperty ("instrument", defaultInst[t]));
             audioEngine.getRack().setVolume (t, (float) (double) track.getProperty ("volume", 1.0));
             audioEngine.setSoundName (t, track["soundName"].toString());

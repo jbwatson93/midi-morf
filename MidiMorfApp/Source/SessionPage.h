@@ -80,6 +80,11 @@ public:
         std::function<bool (int track)> getMuted;
         std::function<void (int track, bool muted)> setMuted;
 
+        // MIDI out: 0 off, 1 sending, 2 set but not connected.
+        std::function<int (int track)> midiOutState;
+        std::function<bool (int track)> midiOutActive;           // a note just went out
+        std::function<void (int track, juce::Component& opener)> midiOutMenu;
+
         std::function<void (int pageIndex)> openPage;
         std::function<void()> openProjects;
         std::function<juce::String()> projectName;
@@ -711,6 +716,25 @@ private:
 
             stop.onClick = [this] { if (owner.callbacks.stopTrack) owner.callbacks.stopTrack (track); owner.grid.repaint(); };
             addAndMakeVisible (stop);
+
+            midi.setClickingTogglesState (false);
+            midi.setColour (juce::TextButton::buttonOnColourId, TrackColours::get (track).withAlpha (0.85f));
+            midi.onClick = [this] { if (owner.callbacks.midiOutMenu) owner.callbacks.midiOutMenu (track, midi); };
+            addAndMakeVisible (midi);
+        }
+
+        // Lit while sending, red while its device is missing, brighter for a
+        // moment as notes go out.
+        void refreshMidi()
+        {
+            const int state = owner.callbacks.midiOutState ? owner.callbacks.midiOutState (track) : 0;
+            const bool active = state == 1 && owner.callbacks.midiOutActive && owner.callbacks.midiOutActive (track);
+            const auto on = state == 2 ? juce::Colour (0xffB03A2E) : TrackColours::get (track).withAlpha (active ? 1.0f : 0.7f);
+            if (midi.getToggleState() != (state != 0) || midi.findColour (juce::TextButton::buttonOnColourId) != on)
+            {
+                midi.setColour (juce::TextButton::buttonOnColourId, on);
+                midi.setToggleState (state != 0, juce::dontSendNotification);
+            }
         }
 
         void refresh()
@@ -720,6 +744,7 @@ private:
             sound.setSelectedId ((owner.callbacks.getSound ? owner.callbacks.getSound (track) : 0) + 1, juce::dontSendNotification);
             const float gain = owner.callbacks.getVolume ? owner.callbacks.getVolume (track) : 1.0f;
             volume.setValue (juce::Decibels::gainToDecibels (gain, -40.0f), juce::dontSendNotification);
+            refreshMidi();
         }
 
         void paint (juce::Graphics& g) override
@@ -745,6 +770,7 @@ private:
             instrument.setBounds (top.removeFromLeft (w / 2).reduced (2, 1));
             sound.setBounds (top.reduced (2, 1));
             stop.setBounds (r.removeFromRight (34).reduced (2, 1));
+            midi.setBounds (r.removeFromRight (44).reduced (2, 1));
             volume.setBounds (r.reduced (2, 0));
         }
 
@@ -753,12 +779,17 @@ private:
         juce::ComboBox instrument, sound;
         juce::Slider volume;
         juce::TextButton stop { juce::String::fromUTF8 ("\xe2\x96\xa0") };
+        juce::TextButton midi { "MIDI" };
     };
 
     void timerCallback() override
     {
         if (isShowing())
+        {
             grid.repaint();
+            for (auto* r : rows)
+                r->refreshMidi();
+        }
     }
 
     SessionModel& model;

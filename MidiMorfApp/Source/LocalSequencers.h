@@ -75,6 +75,12 @@ public:
     {
         auto* buf = info.buffer;
         int pos = info.startSample, remaining = info.numSamples;
+        auto* tap = rack.getMidiTap();
+        if (tap != nullptr)
+        {
+            tap->beginBlock (sampleRate);
+            tap->setBlockPosition (0);
+        }
 
         {
             const juce::SpinLock::ScopedLockType sl (lock);
@@ -84,6 +90,8 @@ public:
         while (remaining > 0)
         {
             int n = remaining;
+            if (tap != nullptr)
+                tap->setBlockPosition (pos - info.startSample);
             {
                 const juce::SpinLock::ScopedLockType sl (lock);
 
@@ -839,10 +847,12 @@ private:
             clockRunning  = true;
             globalTick    = 0;
             samplesToTick = 0.0;
+            if (auto* tap = rack.getMidiTap()) tap->clock (MidiTap::Clock::Start);
         }
         else if (! anyWanted && clockRunning)
         {
             clockRunning = false;
+            if (auto* tap = rack.getMidiTap()) tap->clock (MidiTap::Clock::Stop);
         }
     }
 
@@ -1055,6 +1065,9 @@ private:
     // Audio thread, under lock.
     void tick()
     {
+        if (auto* tap = rack.getMidiTap())
+            tap->clock (MidiTap::Clock::Tick);
+
         if (globalTick % (4 * SeqPPQN) == 0 && recording != RecIdle)
             recordingAtBar();
 

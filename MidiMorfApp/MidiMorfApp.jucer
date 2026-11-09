@@ -90,6 +90,7 @@
       <FILE id="wlk000" name="Walkthrough.h" compile="0" resource="0" file="Source/Walkthrough.h"/>
       <FILE id="rmx000" name="RemixPage.h" compile="0" resource="0" file="Source/RemixPage.h"/>
       <FILE id="mlr000" name="Mlr.h" compile="0" resource="0" file="Source/Mlr.h"/>
+      <FILE id="midiout0" name="MidiOut.h" compile="0" resource="0" file="Source/MidiOut.h"/>
       <FILE id="pop000" name="PopupStyle.h" compile="0" resource="0" file="Source/PopupStyle.h"/>
       <FILE id="nte001" name="NoteEditorPage.h" compile="0" resource="0" file="Source/NoteEditorPage.h"/>
       <FILE id="ses002" name="ProjectBrowser.h" compile="0" resource="0" file="Source/ProjectBrowser.h"/>
@@ -127,7 +128,7 @@
   <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
   <EXPORTFORMATS>
     <XCODE_IPHONE targetFolder="Builds/iOS" microphonePermissionNeeded="1" microphonePermissionsText="Midi-Morf uses the microphone to record samples." UIFileSharingEnabled="1" UIStatusBarHidden="1" extraDefs="JUCE_IOS_AUDIO_EXPLICIT_SAMPLERATES=48000.0"
-                  customPList="&lt;plist&gt;&lt;dict&gt;&#10;  &lt;key&gt;ITSAppUsesNonExemptEncryption&lt;/key&gt;&#10;  &lt;false/&gt;&#10;  &lt;key&gt;UISupportedInterfaceOrientations&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;UIInterfaceOrientationLandscapeRight&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UIRequiresFullScreen&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;LSSupportsOpeningDocumentsInPlace&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;CFBundleIconName&lt;/key&gt;&#10;  &lt;string&gt;AppIcon&lt;/string&gt;&#10;&lt;/dict&gt;&lt;/plist&gt;"
+                  customPList="&lt;plist&gt;&lt;dict&gt;&#10;  &lt;key&gt;ITSAppUsesNonExemptEncryption&lt;/key&gt;&#10;  &lt;false/&gt;&#10;  &lt;key&gt;UISupportedInterfaceOrientations&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;UIInterfaceOrientationLandscapeRight&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UIRequiresFullScreen&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;LSSupportsOpeningDocumentsInPlace&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;CFBundleIconName&lt;/key&gt;&#10;  &lt;string&gt;AppIcon&lt;/string&gt;&#10;  &lt;key&gt;NSBluetoothAlwaysUsageDescription&lt;/key&gt;&#10;  &lt;string&gt;Midi-Morf uses Bluetooth to send MIDI to your synths and drum machines.&lt;/string&gt;&#10;  &lt;key&gt;NSLocalNetworkUsageDescription&lt;/key&gt;&#10;  &lt;string&gt;Midi-Morf uses the local network to send MIDI to your computer over Wi-Fi.&lt;/string&gt;&#10;  &lt;key&gt;NSBonjourServices&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;_apple-midi._udp&lt;/string&gt;&#10;  &lt;/array&gt;&#10;&lt;/dict&gt;&lt;/plist&gt;"
                   iosDevelopmentTeamID="69KM48W4TU" extraCustomFrameworks="CoreMotion"
                   iosScreenOrientation="UIInterfaceOrientationLandscapeRight" iPadScreenOrientation="UIInterfaceOrientationLandscapeRight">
       <CONFIGURATIONS>

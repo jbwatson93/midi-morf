@@ -23,7 +23,7 @@
 #include "DrumGridPage.h"
 #include "DrumKitPage.h"
 #include "HaloPage.h"
-#include "RipplePage.h"
+#include "HarpejjiPage.h"
 #include "PerformView.h"
 #include "AccelerometerManager.h"
 #include "MidiMorfProtocol.h"
@@ -161,7 +161,7 @@ private:
     std::array<std::unique_ptr<MorfChordPage>, TrackRack::NumTracks> morfChordPages;
     std::array<std::unique_ptr<RoseChordPage>, TrackRack::NumTracks> roseChordPages;
     std::array<std::unique_ptr<RemixPage>, TrackRack::NumTracks> remixPages;
-    std::array<std::unique_ptr<RipplePage>, TrackRack::NumTracks> ripplePages;
+    std::array<std::unique_ptr<HarpejjiPage>, TrackRack::NumTracks> harpejjiPages;
     juce::Component morfPadPlaceholder, omnichordPlaceholder, dualMPadPlaceholder, morfChordPlaceholder, roseChordPlaceholder;
     TransportPage transportPage;
     // Every track has its own sequencer pages; the one-of-each slots they

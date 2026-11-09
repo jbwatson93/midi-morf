@@ -345,16 +345,18 @@ JB (2026-11-09): "a grain synth where you sample … you could be touching the w
 
 **Order:** MIDI out M1 first (small, and External MIDI was already high priority), then grain G1 → G2.
 
-### Phase 12 — Halo and Ripple (2026-11-09)
+### Phase 12 — Halo and Harpejji (2026-11-09)
 
 JB (2026-11-09) asked for "a new sound source and a new midi instrument … something that hasn't been done before". Built on branch `halo-and-ripple`, on top of `grain-mode`.
 
 **Halo — a sound.** Sympathetic strings for the whole band. Each held note tunes a bank of 8 resonators at its harmonics, and **the other tracks are the bow**: the rack renders listening sources after the rest and hands them what each track just played, before its fader. Hold a chord and the drums ring in it. **Mute the drums and they still drive it**, so the groove plays the chord unheard. LISTEN picks all the other tracks or one; PLUCK and BOW let it sound on its own; DECAY/DAMP; BRIGHT; METAL stretches the harmonics from string to bell to gong; WIDTH; LATCH keeps a chord tuned until the next one. `Halo.h`, `HaloPage.h`; the sound list has "Halo".
 
-**Ripple — an instrument.** A pond of notes where **distance is time**. The stones are a Tonnetz (right = a fifth, up-right = a major third, up-left = a minor third), so every small triangle is a triad. A touch sends a ring out at the tempo, one stone per step (SPEED), and each in-key stone plays as the ring reaches it, softer further out, until REACH. On a stone: that note now, then its neighbours together one step later. In a triangle's middle: the triad as a chord. A held finger PULSEs new rings; dragging morphs the figure. When two rings reach a stone together it **chimes an octave up**. KEY, SCALE, GATE, OCT. Notes are worked out ahead and posted with their time (`TrackRack::postNoteOnAt`), so figures sit on the tempo; STOP cancels what's still to come. Like any controller, it records into note clips and goes out over MIDI. `RipplePage.h`; the instrument list has "Ripple".
+**Ripple — an instrument (removed 2026-11-09).** JB tried it on the phone: "the ripple thing isnt useful". Replaced by the Harpejji below.
 
-- [ ] On device: both pages' layouts on the iPhone (the Ripple bar is tight), Halo levels with real material, Ripple feel at different tempos, the Perform view with either in a quarter.
-- [ ] Later ideas: Halo LISTEN to the mic; Ripple rings that bounce off the pond's edges; Ripple snapping the first ring to the clock's 16th.
+**Harpejji — an instrument (2026-11-09, JB's idea).** A tapped fretboard like the harpejji: strings side by side a whole step apart (low at the bottom), frets a semitone apart left to right, fret cells coloured like piano keys, every C named. Any finger on a fret sounds straight away. Each string sounds one note, its highest held fret, so a higher fret hammers on and letting go pulls off (softer); dragging slides fret by fret or moves across strings. RING keeps a string sounding after you lift until it's played again or you tap the nut (the × column). LOW (C1–C5), TUNING (whole steps, minor/major thirds, fourths, fifths), VEL. Each string plays on its own channel so the same pitch on two strings doesn't cut itself off. The board sizes itself to about a finger per fret (8 strings × 15 frets on an iPhone). `HarpejjiPage.h`; the instrument list has "Harpejji" (it takes Ripple's id, 201).
+
+- [ ] On device: both pages' layouts on the iPhone, Halo levels with real material, Harpejji feel (fret size, RING with the synth's release), the Perform view with either in a quarter.
+- [ ] Later ideas: Halo LISTEN to the mic; Harpejji per-string pitch bend (bend by sliding up/down within a fret).
 
 ## Open questions
 

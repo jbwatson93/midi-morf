@@ -83,7 +83,7 @@ static constexpr int noteEditorPageIdx = MidiMorf::NUM_CONTROLLERS + 8;
 // Then every track's own instrument pages: 4 of each kind, kind-major.
 // Kinds 0-2 are the sequencers (as LocalSequencers::Kind), 3-7 the live
 // controllers.
-static constexpr int NumKinds         = 10;   // ... 8, the Remix Lane, and 9, Ripple
+static constexpr int NumKinds         = 10;   // ... 8, the Remix Lane, and 9, Harpejji
 static constexpr int seqPageBase      = MidiMorf::NUM_CONTROLLERS + 9;
 static constexpr int seqPageEnd       = seqPageBase + NumKinds * TrackRack::NumTracks;
 // Then pages added since, after all the tracks' pages so no index moves.
@@ -110,10 +110,10 @@ static bool isIPad()
    #endif
 }
 
-// The Remix Lane's and Ripple's instrument ids: not page indices (their
+// The Remix Lane's and Harpejji's instrument ids: not page indices (their
 // pages are per track).
-static constexpr int RemixId = 200, RippleId = 201;
-static constexpr int KindRemix = 8, KindRipple = 9;
+static constexpr int RemixId = 200, HarpejjiId = 201;
+static constexpr int KindRemix = 8, KindHarpejji = 9;
 
 static bool isSequencer (int mode)
 {
@@ -142,8 +142,8 @@ static int kindOf (int mode)
 {
     if (mode == RemixId)
         return KindRemix;
-    if (mode == RippleId)
-        return KindRipple;
+    if (mode == HarpejjiId)
+        return KindHarpejji;
     if (isSequencer (mode))
         return whichSequencer (mode);
     for (int k = 0; k < 5; ++k)
@@ -157,8 +157,8 @@ static juce::String instrumentShortName (int mode)
 {
     if (mode == RemixId)
         return "Remix";
-    if (mode == RippleId)
-        return "Ripple";
+    if (mode == HarpejjiId)
+        return "Harpejji";
     if (mode == drumGridPageIdx)
         return "Drums";
     return juce::isPositiveAndBelow (mode, MidiMorf::NUM_CONTROLLERS) ? controllerShortNames[mode] : juce::String();
@@ -181,8 +181,8 @@ MainComponent::MainComponent()
         roseChordPages[(size_t) t] = std::make_unique<RoseChordPage> (router);
         remixPages[(size_t) t]     = std::make_unique<RemixPage> (audioEngine.getTrackMlr (t), audioEngine.getSequencers(), t);
         remixPages[(size_t) t]->onChanged = [this] { saveState(); };
-        ripplePages[(size_t) t]    = std::make_unique<RipplePage> (audioEngine.getRack(), t, [this] { return audioEngine.getSequencers().getBpm(); });
-        ripplePages[(size_t) t]->onStateChanged = [this] { saveState(); };
+        harpejjiPages[(size_t) t]  = std::make_unique<HarpejjiPage> (audioEngine.getRack(), t);
+        harpejjiPages[(size_t) t]->onStateChanged = [this] { saveState(); };
 
         stepPages[(size_t) t] = std::make_unique<StepSequencerPage> (router);
         stepPages[(size_t) t]->setTrack (t);
@@ -323,7 +323,7 @@ MainComponent::MainComponent()
     cb.changed       = [this] { saveState(); };
     homePage = std::make_unique<SessionPage> (session, cb, SessionPage::Pages { (int) MidiMorf::ControllerMode::Transport,
                                                                                 (int) MidiMorf::ControllerMode::FXPunchIn,
-                                                                                settingsPageIdx, aboutPageIdx, drumGridPageIdx, RemixId, RippleId });
+                                                                                settingsPageIdx, aboutPageIdx, drumGridPageIdx, RemixId, HarpejjiId });
 
     // Page container — controllers, then Sound, About, Settings, Home, Breaks.
     // The order is the page indices above.
@@ -354,7 +354,7 @@ MainComponent::MainComponent()
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (morfChordPages[(size_t) t].get());
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (roseChordPages[(size_t) t].get());
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (remixPages[(size_t) t].get());
-    for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (ripplePages[(size_t) t].get());
+    for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (harpejjiPages[(size_t) t].get());
     pageContainer.addPage (&haloPage);
 
     // Perform borrows the tracks' instrument pages and hands them back.
@@ -622,7 +622,7 @@ juce::String MainComponent::getPageDisplayName (int pageIndex) const
         const int kind = pageKind (pageIndex);
         static const char* names[3] = { "Step-Seq", "Breaker", "Drum Grid" };
         if (kind == KindRemix) return "Remix Lane";
-        if (kind == KindRipple) return "Ripple";
+        if (kind == KindHarpejji) return "Harpejji";
         return kind < 3 ? juce::String (names[kind]) : controllerNames[(int) controllerKinds[kind - 3]];
     }
     if (pageIndex == drumKitPageIdx)   return "Drums";
@@ -645,7 +645,7 @@ void MainComponent::setInstrument (int track, int mode)
     // damaged settings file) means no instrument.
     using CM = MidiMorf::ControllerMode;
     const bool isInstrument = mode == (int) CM::MorfPad || mode == (int) CM::Omnichord || mode == (int) CM::DualMPad
-                           || mode == (int) CM::MorfChord || mode == (int) CM::RoseChord || mode == RippleId
+                           || mode == (int) CM::MorfChord || mode == (int) CM::RoseChord || mode == HarpejjiId
                            || isSequencer (mode);   // incl. Drum Grid
     if (! isInstrument)
         mode = -1;
@@ -1725,7 +1725,7 @@ void MainComponent::saveNow()
         dualMPadPages[(size_t) t]->saveState (ps);
         morfChordPages[(size_t) t]->saveState (ps);
         roseChordPages[(size_t) t]->saveState (ps);
-        ripplePages[(size_t) t]->saveState (ps);
+        harpejjiPages[(size_t) t]->saveState (ps);
         if (auto xml = ps.createXml ("TrackPages"))
             pageState.setValue ("track_pages_" + juce::String (t), xml.get());
     }
@@ -1860,7 +1860,7 @@ void MainComponent::restoreState()
         dualMPadPages[(size_t) t]->restoreState (ps);
         morfChordPages[(size_t) t]->restoreState (ps);
         roseChordPages[(size_t) t]->restoreState (ps);
-        ripplePages[(size_t) t]->restoreState (ps);
+        harpejjiPages[(size_t) t]->restoreState (ps);
     }
     fxPage.restoreState (pages);
     audioEngine.getSequencers().restoreState (pages);

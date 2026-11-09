@@ -214,7 +214,7 @@ public:
 
     // Notes to play at a time to come (Time::getMillisecondCounterHiRes), to
     // the audio block — for instruments that work out their timing ahead
-    // (Ripple). Posted in time order per track; at most 512 waiting. An
+    // (none at the moment). Posted in time order per track; at most 512 waiting. An
     // all-notes-off on the track cancels its waiting ones.
     void postNoteOnAt (double dueMs, int track, int channel, int note, int velocity127) { post ({ Event::On, track, channel, note, velocity127, dueMs }); }
     void postNoteOffAt (double dueMs, int track, int channel, int note)                 { post ({ Event::Off, track, channel, note, 0, dueMs }); }

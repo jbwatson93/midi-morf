@@ -295,7 +295,8 @@ JUCE builds for Android (Projucer's Android exporter plus Android Studio, with O
 - [ ] **Large screens on Android 16:** at API 36 the system ignores the landscape lock at 600 dp and up, so a tablet held upright gets a stretched portrait layout with buttons collapsed to "...". Seen on the emulator. Decide between a portrait layout and leaving tablets out of the Play release.
 - [x] **Back button:** Back now does nothing. An edge swipe counts as Back and the rail runs down that edge, so a stray drag used to quit the app. Real edge swipes confirmed on an Android 15 tablet; on Android 16, only the Back key and simulated swipes on the emulator. Swiping up still goes Home.
 - [ ] **Saving on the way out:** the app saves when it goes to the background, but no test has shown nothing is lost when it's left that way or killed.
-- [ ] App icon and home-screen name (currently "MidiMorfApp"). Bump `androidVersionCode` in the `.jucer` for each Play upload.
+- [x] App icon and home-screen name: "Midi-Morf", with an adaptive icon made from the iOS art by `Tools/make_android_icon.py` (in `Resources/Android/res`), so launchers can mask it to any shape. Confirmed on the Android 15 tablet.
+- [ ] Bump `androidVersionCode` in the `.jucer` for each Play upload after the first.
 - [ ] Google Play Console: developer account (one-time $25), paid app at $4.99, store listing.
 
 ## Open questions

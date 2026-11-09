@@ -260,7 +260,7 @@ Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit
 
 JB (2026-10-30): "rethink our server plugin, maybe this is a whole separate app". Recommendation:
 
-- **Retire the server for the groovebox.** Add an **External MIDI** sound source per track that sends the track's notes out on its own channel through CoreMIDI: network MIDI (built into macOS and iOS — Audio MIDI Setup → Network, no server), USB and Bluetooth MIDI. Send MIDI clock (and later Ableton Link) so the DAW follows the phone.
+- **Retire the server for the groovebox.** Add an **External MIDI** sound source per track (superseded 2026-11-09: a per-track MIDI Out setting beside the sound, see Phase 10) that sends the track's notes out on its own channel through CoreMIDI: network MIDI (built into macOS and iOS — Audio MIDI Setup → Network, no server), USB and Bluetooth MIDI. Send MIDI clock (and later Ableton Link) so the DAW follows the phone.
 - The phone is always the clock; the DAW-sync mode and the server-side copies of the sequencers go away. That also lifts the "extra Step-Seqs only play locally in WiFi mode" limit.
 - **Android** has no built-in network MIDI, so a tiny free **bridge** app (receive and pass MIDI to the DAW) may still be worth it there — but it would be a dumb pipe, not a second engine.
 - The current server keeps working for v2 users until then.
@@ -284,6 +284,63 @@ JUCE builds for Android (Projucer's Android exporter plus Android Studio, with O
 - [ ] **WiFi mode:** server discovery already uses JUCE's cross-platform `NetworkServiceDiscovery`, so it should just work. Check it on a real device.
 - [ ] **Audio latency on test phones:** Android varies a lot by device. Test on at least one cheap phone and one recent Pixel or Samsung.
 - [ ] Google Play Console: developer account (one-time $25), paid app at $4.99, store listing.
+
+### Phase 10 — MIDI out per track (2026-11-09)
+
+JB (2026-11-09): "send midi wirelessly and or send midi from a usb to midi adapter per track". This replaces the **External MIDI sound source** in *Decision needed — the Mac server*: MIDI out is a **per-track setting beside the sound**, not a sound that replaces it. So a track can layer the phone's sound with hardware, setting the sound to Empty gives MIDI only, and drum and step tracks can drive a hardware drum machine without losing their pages.
+
+**One tap point.** Every note already passes through `TrackRack` (the message-thread FIFO drained in `render()`, and the audio-thread `noteOn`/`noteOff`). A `MidiOutRouter` hooks in there, so every controller, sequencer, Remix row and clip sends MIDI with no page changes.
+
+- **Threads:** the audio thread pushes `{track, status, data, sampleOffset}` into a lock-free FIFO and never calls CoreMIDI. A small high-priority MIDI thread drains it and sends. v1 sends straight away; v2 time-stamps each message (callback host time + sample offset + a per-device latency offset) so hardware lines up with the phone's audio.
+- **Per track:** destination device, channel 1–16, and a note map for drum tracks (pad → GM drum notes, editable). Saved in the project. Devices are matched by identifier, then name, and show "not connected" when missing.
+- **Stuck notes:** each track keeps a table of the notes it is holding. Changing device, channel or track, or stopping, sends note-offs for exactly those.
+- **CC and pitch bend:** `PhoneMidiSink::sendCC` (mod wheel, XY pads) goes out too.
+- **Clock:** the sequencers already run at 24 PPQN, MIDI clock's rate. Add Start/Stop/Song Position, with clock switched on per destination. Ableton Link later (LinkKit tempo only, see the Link Audio decision).
+
+| Transport | What's needed |
+|---|---|
+| USB-MIDI adapter / class-compliant gear (USB-C or Lightning camera adapter) | Nothing extra: it appears in `MidiOutput::getAvailableDevices()`. `MidiDeviceListConnection` keeps the list live as gear is plugged in and out. |
+| Network MIDI (Wi-Fi → Mac DAW) | A few lines of Objective-C++ in the iOS platform file to enable `MIDINetworkSession` (JUCE doesn't). The Mac connects in Audio MIDI Setup → Network. No server. |
+| Bluetooth MIDI | JUCE's `BluetoothMidiDevicePairingDialogue` (Apple's pairing sheet) and the Bluetooth usage string in the plist. |
+| Other iOS apps (AUM etc.) | A virtual output, `MidiOutput::createNewDevice ("MidiMorf")`. Probably needs background audio, which the `.jucer` doesn't set yet. |
+
+**UI:** track rail → track menu → **MIDI Out**: device picker (with "Pair Bluetooth…" and a Network status line), channel, latency in ms, and "send clock" per device. A small activity light on the track while notes go out.
+
+- [ ] **M1:** USB and network out, per-track device and channel, held-note cleanup.
+- [ ] **M2:** Bluetooth pairing, drum note map, CC and pitch bend.
+- [ ] **M3:** clock, transport messages, latency offset with timestamps.
+- [ ] Later: Android (`android.media.midi` covers USB; network still needs the bridge), MIDI in.
+
+Test on a device only: a USB adapter and a synth, plus a Mac network session.
+
+### Phase 11 — Grain mode on the Sampler (2026-11-09)
+
+JB (2026-11-09): "a grain synth where you sample … you could be touching the wave form making one loop and drag another finger across it". It's a 4th **Sampler mode, `Grain`**, next to Slice / Keys / OneShot, not a new sound type: loading, mic recording (`SampleRecorder`), trimming, the built-in breaks and project saving all come for free. It only adds a grain engine and a new way to touch the waveform.
+
+**Touch model**
+
+- **Each finger on the waveform is a grain cloud**: a looping grain stream at that spot. x is the position in the sample, and dragging moves the cloud live, so one finger holds a loop while another sweeps across.
+- **y** controls one setting you pick: grain size (default), pitch or spray.
+- Up to 5 clouds, each with its own colour ring. Grains flash as dots where they play.
+- Lifting a finger fades its cloud over Release. **Hold** keeps clouds playing after lifting (tap one to stop it). **Freeze** locks every cloud in place.
+- **Notes still play it:** a step-sequencer or keyboard note fires a cloud at the current position (the last touch or a Position knob), pitched to the note, so a grain track sequences like any other.
+
+**Engine (`GrainEngine`, inside `SamplerSource`)**
+
+- A fixed pool of ~64 grains, allocated up front: nothing allocates on the audio thread. Each grain has start, length, rate, window, pan and a reverse flag.
+- Each cloud runs a scheduler: **Density** 1–100 grains/s, **Size** 5–500 ms, **Spray** (position jitter), **Pitch** ±24 st plus jitter, **Spread**, **Window** Hann ↔ Tukey, **Reverse** chance.
+- Cubic interpolation over the sample the Sampler already holds, swapped safely like `breaks`.
+- Fingers → audio: 5 cloud slots of atomic `active / x / y`; the audio thread smooths x so drags don't zipper. Audio → screen: a lock-free snapshot of live grains, drawn at 30–60 fps.
+- CPU: 64 grains × 4 tracks should be fine; measure with `getCpuUsage()` on the oldest test device.
+
+**UI:** in Grain mode the `SampleEditor` waveform switches from trim/pan/pinch to **play**; zoom moves to the buttons or an edge strip so it doesn't fight playing. Knob row: Density, Size, Spray, Pitch, Spread, Window, Release, Y→. Hold and Freeze buttons. Record and the library picker stay, so you can record from the mic and play it straight away.
+
+- [ ] **G1:** grain engine, and Grain mode playable from notes with a Position knob. Proves the sound.
+- [ ] **G2:** multi-finger clouds on the waveform with x/y and grain drawing (the main feature).
+- [ ] **G3:** Hold and Freeze, saved per project, presets.
+- [ ] Later: **gesture recording** (record finger moves into a clip so a scrub loop plays back), **resample another track** into the grain buffer.
+
+**Order:** MIDI out M1 first (small, and External MIDI was already high priority), then grain G1 → G2.
 
 ## Open questions
 

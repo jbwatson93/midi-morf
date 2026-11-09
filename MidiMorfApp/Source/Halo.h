@@ -103,8 +103,18 @@ public:
         if (R != nullptr) juce::FloatVectorOperations::clear (R, num);
 
         if (releasePending.exchange (false))
+        {
             for (auto& v : voices)
                 letGo (v);
+            held = 0;   // STOP sends no note-offs
+        }
+
+        // LATCH turned off: what it was holding lets go.
+        const bool latch = getParam (Latch) >= 0.5f;
+        if (wasLatched && ! latch)
+            for (auto& v : voices)
+                letGo (v);
+        wasLatched = latch;
 
         if (std::none_of (voices.begin(), voices.end(), [] (const Voice& v) { return v.active; }))
         {
@@ -357,6 +367,7 @@ private:
     std::array<Voice, NumVoices> voices {};
     std::array<float, 4096> excite {};
     int heardSamples = 0, held = 0;
+    bool wasLatched = false;
     juce::uint32 ages = 0, rng = 0x2545F491u;
     float dcIn = 0.0f, dcOut = 0.0f, lastSignature = -1.0f;
 

@@ -1988,6 +1988,8 @@ void MainComponent::restoreState()
     // Last page, if it still belongs somewhere; otherwise T1's
     // instrument (Morf-Chord on first launch), or Home.
     int lastPage = settings->getIntValue ("lastPage", -1);
+    if (lastPage == haloPageIdx && audioEngine.getTrackSound (haloPage.getTrack()) != AudioEngine::Sound::Halo)
+        lastPage = -1;   // no track plays Halo any more
     const bool reachable = lastPage >= 0 && lastPage < numPages
                            && ((lastPage >= MidiMorf::NUM_CONTROLLERS && lastPage < seqPageBase && lastPage != drumGridPageIdx && lastPage != noteEditorPageIdx)
                                || lastPage == (int) CM::Transport || lastPage == (int) CM::FXPunchIn

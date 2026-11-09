@@ -419,10 +419,15 @@ private:
     {
         const double now = juce::Time::getMillisecondCounterHiRes();
 
-        // STOP or panic on this track: the pond goes still.
+        // STOP or panic on this track: the pond goes still. A note-on posted
+        // after the all-notes-off still plays, so it gets its note-off now.
         if (const int n = rack.getAllOffCount (track); n != seenAllOffs)
         {
             seenAllOffs = n;
+            for (int note = 0; note < 128; ++note)
+                if (sounding[(size_t) note] > 0)
+                    rack.postNoteOffAt (lastOnAt[(size_t) note] + 1.0, track, Channel, note);
+            sounding.fill (0);
             pending.clear();
             ripples.clear();
             postedOffAt.fill (0.0);
@@ -460,11 +465,17 @@ private:
         {
             const auto p = pending.front();
             pending.pop_front();
-            if (p.on) rack.postNoteOnAt (p.due, track, Channel, p.note, p.velocity);
+            if (p.on)
+            {
+                rack.postNoteOnAt (p.due, track, Channel, p.note, p.velocity);
+                ++sounding[(size_t) p.note];
+                lastOnAt[(size_t) p.note] = p.due;
+            }
             else
             {
                 rack.postNoteOffAt (p.due, track, Channel, p.note);
                 postedOffAt[(size_t) p.note] = p.due;
+                sounding[(size_t) p.note] = juce::jmax (0, sounding[(size_t) p.note] - 1);
             }
         }
     }
@@ -506,7 +517,8 @@ private:
     std::vector<Stone> stones;
     std::vector<Ripple> ripples;
     std::deque<Pending> pending;
-    std::array<double, 128> postedOffAt {};
+    std::array<double, 128> postedOffAt {}, lastOnAt {};
+    std::array<int, 128> sounding {};   // note-ons handed to the rack whose note-off hasn't been
     std::array<Finger, 10> fingers {};
     float spacing = 64.0f;
     int rippleIds = 0, seenAllOffs = 0, frame = 0;

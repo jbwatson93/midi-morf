@@ -340,8 +340,12 @@ private:
                 if (e.due > now && e.type != Event::AllOff)
                 {
                     if (numLater < (int) later.size())
+                    {
                         later[(size_t) numLater++] = e;
-                    continue;
+                        continue;
+                    }
+                    if (e.type == Event::On)
+                        continue;   // full: drop a note-on, but never a note-off
                 }
                 handleEvent (e);
             }

@@ -91,6 +91,7 @@
       <FILE id="rmx000" name="RemixPage.h" compile="0" resource="0" file="Source/RemixPage.h"/>
       <FILE id="mlr000" name="Mlr.h" compile="0" resource="0" file="Source/Mlr.h"/>
       <FILE id="midiout0" name="MidiOut.h" compile="0" resource="0" file="Source/MidiOut.h"/>
+      <FILE id="grainen0" name="GrainEngine.h" compile="0" resource="0" file="Source/GrainEngine.h"/>
       <FILE id="pop000" name="PopupStyle.h" compile="0" resource="0" file="Source/PopupStyle.h"/>
       <FILE id="nte001" name="NoteEditorPage.h" compile="0" resource="0" file="Source/NoteEditorPage.h"/>
       <FILE id="ses002" name="ProjectBrowser.h" compile="0" resource="0" file="Source/ProjectBrowser.h"/>

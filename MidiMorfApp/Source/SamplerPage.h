@@ -38,6 +38,7 @@ public:
     {
         colour = c;
         beats = gridBeats;
+        reversed = edit.reverse;
         if (src != source)
         {
             source = src;
@@ -50,6 +51,50 @@ public:
             selStart = juce::jlimit (0.0, total(), edit.start * source->sampleRate);
             selEnd = edit.end < 0.0 ? total() : juce::jlimit (selStart, total(), edit.end * source->sampleRate);
         }
+        repaint();
+    }
+
+    //==========================================================================
+    // GRAIN mode: the waveform is played, not edited. Each finger is a cloud
+    // (GrainEngine); `x` is 0..1 through the trimmed sample as it plays (so
+    // right to left when reversed), `y` 0..1 up the waveform. With HOLD a
+    // lifted finger's cloud keeps playing; tapping it stops it, dragging it
+    // moves it.
+    std::function<void (int cloud, bool down, float x, float y)> onCloud;
+
+    // nullptr leaves play mode. The clouds' slots start empty either way:
+    // held clouds of another sampler stay with it.
+    void setPlayMode (GrainEngine* g)
+    {
+        if (g == grains)
+            return;
+        grains = g;
+        slots = {};
+        touches.clear();
+        grabbed = None;
+        dragging = false;
+        repaint();
+    }
+
+    bool isPlayMode() const noexcept { return grains != nullptr; }
+
+    void setHold (bool h)
+    {
+        hold = h;
+        if (! hold)
+            for (int i = 0; i < (int) slots.size(); ++i)
+                if (slots[(size_t) i].held && slots[(size_t) i].finger < 0)
+                    letGo (i);
+    }
+
+    // Timer: forget held clouds the engine let go of (STOP), and redraw.
+    void tickClouds()
+    {
+        if (grains == nullptr)
+            return;
+        for (int i = 0; i < (int) slots.size(); ++i)
+            if (slots[(size_t) i].held && slots[(size_t) i].finger < 0 && ! grains->isTouchHeld (i))
+                slots[(size_t) i].held = false;
         repaint();
     }
 
@@ -109,6 +154,13 @@ public:
         if (xs > wave.getX()) g.fillRect (wave.withRight (juce::jmin (xs, wave.getRight())));
         if (xe < wave.getRight()) g.fillRect (wave.withLeft (juce::jmax (xe, wave.getX())));
 
+        if (grains != nullptr)
+        {
+            paintClouds (g, wave);
+            paintOverlay (g);
+            return;
+        }
+
         // The handles: a yellow line along the bottom of the selection, with
         // a triangle hanging from each end.
         g.setColour (handleColour);
@@ -139,6 +191,7 @@ public:
     void mouseDown (const juce::MouseEvent& e) override
     {
         if (source == nullptr) return;
+        if (grains != nullptr) { playDown (e); return; }
         const int id = e.source.getIndex();
         touches[id] = e.position;
 
@@ -168,6 +221,7 @@ public:
     void mouseDrag (const juce::MouseEvent& e) override
     {
         if (source == nullptr) return;
+        if (grains != nullptr) { playDrag (e); return; }
         touches[e.source.getIndex()] = e.position;
 
         if (touches.size() >= 2)
@@ -196,6 +250,7 @@ public:
 
     void mouseUp (const juce::MouseEvent& e) override
     {
+        if (grains != nullptr) { playUp (e); return; }
         touches.erase (e.source.getIndex());
         if (! dragging || source == nullptr)
         {
@@ -214,6 +269,182 @@ public:
 
 private:
     enum Grab { None, Start, End, Pan };
+
+    //==========================================================================
+    // Play mode.
+
+    struct Slot
+    {
+        int finger = -1;            // the touch playing it, or -1
+        bool held = false;          // playing with no finger (HOLD)
+        bool tookOver = false;      // the finger picked up a held cloud
+        float x = 0.0f, y = 0.5f;   // as sent
+        juce::Point<float> down;
+    };
+
+    // 0..1 through the sample as it plays ↔ a position in the source.
+    double sourceAt (float u) const
+    {
+        const double span = selEnd - selStart;
+        return reversed ? selEnd - u * span : selStart + u * span;
+    }
+
+    float playedAt (double sample) const
+    {
+        const double span = juce::jmax (1.0, selEnd - selStart);
+        const double u = reversed ? (selEnd - sample) / span : (sample - selStart) / span;
+        return (float) juce::jlimit (0.0, 1.0, u);
+    }
+
+    float heightAt (float y) const
+    {
+        const auto w = waveArea().toFloat();
+        return juce::jlimit (0.0f, 1.0f, (w.getBottom() - y) / juce::jmax (1.0f, w.getHeight()));
+    }
+
+    int slotOf (int finger) const
+    {
+        for (int i = 0; i < (int) slots.size(); ++i)
+            if (slots[(size_t) i].finger == finger)
+                return i;
+        return -1;
+    }
+
+    void send (int i, bool down)
+    {
+        if (onCloud)
+            onCloud (i, down, slots[(size_t) i].x, slots[(size_t) i].y);
+    }
+
+    void letGo (int i)
+    {
+        auto& s = slots[(size_t) i];
+        s.held = false;
+        s.finger = -1;
+        send (i, false);
+    }
+
+    // A finger on a held cloud picks it up; anywhere else it starts a new one
+    // (taking the oldest held one's place when all five are busy).
+    void playDown (const juce::MouseEvent& e)
+    {
+        const int finger = e.source.getIndex();
+        const float u = playedAt (sampleAt (e.position.x)), v = heightAt (e.position.y);
+
+        int pick = -1;
+        bool tookOver = false;
+        for (int i = 0; i < (int) slots.size() && pick < 0; ++i)
+        {
+            const auto& s = slots[(size_t) i];
+            if (s.held && s.finger < 0 && std::abs (xOf (sourceAt (s.x)) - e.position.x) < 28.0f)
+            {
+                pick = i;
+                tookOver = true;
+            }
+        }
+        for (int i = 0; i < (int) slots.size() && pick < 0; ++i)
+            if (slots[(size_t) i].finger < 0 && ! slots[(size_t) i].held)
+                pick = i;
+        for (int i = 0; i < (int) slots.size() && pick < 0; ++i)
+            if (slots[(size_t) i].finger < 0)
+                pick = i;
+        if (pick < 0)
+            return;
+
+        auto& s = slots[(size_t) pick];
+        s.finger = finger;
+        s.tookOver = tookOver;
+        s.down = e.position;
+        if (! tookOver)
+            s.held = false;
+        s.x = u;
+        s.y = v;
+        send (pick, true);
+        repaint();
+    }
+
+    void playDrag (const juce::MouseEvent& e)
+    {
+        const int i = slotOf (e.source.getIndex());
+        if (i < 0)
+            return;
+        auto& s = slots[(size_t) i];
+        if (s.tookOver && e.position.getDistanceFrom (s.down) < 10.0f)
+            return;   // a tap, so far
+        s.x = playedAt (sampleAt (e.position.x));
+        s.y = heightAt (e.position.y);
+        send (i, true);
+    }
+
+    void playUp (const juce::MouseEvent& e)
+    {
+        const int i = slotOf (e.source.getIndex());
+        if (i < 0)
+            return;
+        auto& s = slots[(size_t) i];
+        const bool tap = s.tookOver && e.position.getDistanceFrom (s.down) < 10.0f;
+        if (tap || ! hold)
+        {
+            letGo (i);
+        }
+        else
+        {
+            s.held = true;
+            s.finger = -1;
+        }
+        repaint();
+    }
+
+    // Each cloud: its loop as a band from where it starts, the read point as
+    // a line, and a ring where the finger is (or was). Grains are sparks
+    // scattered up the waveform, brighter while loud.
+    void paintClouds (juce::Graphics& g, juce::Rectangle<float> wave)
+    {
+        static const juce::Colour cloudColours[GrainEngine::NumTouch] = {
+            juce::Colour (0xffFFD23F), juce::Colour (0xff5EE0FF), juce::Colour (0xffFF6BCB), juce::Colour (0xff8CFF6B), juce::Colour (0xffFF9F43)
+        };
+
+        for (int i = 0; i < GrainEngine::NumGrains; ++i)
+        {
+            const float p = grains->grainPosition (i);
+            if (p < 0.0f) continue;
+            const float level = juce::jlimit (0.0f, 1.0f, grains->grainLevel (i) * 2.0f);
+            const float x = xOf (sourceAt (p));
+            const float y = wave.getY() + wave.getHeight() * (0.1f + 0.8f * (float) ((i * 37) % 97) / 97.0f);
+            const float r = 2.0f + 3.0f * level;
+            g.setColour (juce::Colours::white.withAlpha (0.25f + 0.6f * level));
+            g.fillEllipse (x - r, y - r, 2.0f * r, 2.0f * r);
+        }
+
+        for (int i = 0; i < GrainEngine::NumClouds; ++i)
+        {
+            const float at = grains->cloudPosition (i);
+            if (at < 0.0f) continue;
+            const float level = grains->cloudLevel (i);
+            const auto c = i < GrainEngine::NumTouch ? cloudColours[i] : colour.brighter (0.4f);
+
+            const float a = xOf (sourceAt (grains->cloudAnchor (i))), b = xOf (sourceAt (grains->cloudLoopEnd (i)));
+            g.setColour (c.withAlpha (0.16f * level));
+            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (juce::jmin (a, b), wave.getY(), juce::jmax (a, b) + 1.0f, wave.getBottom()));
+
+            g.setColour (c.withAlpha (0.4f + 0.6f * level));
+            g.fillRect (xOf (sourceAt (at)) - 1.0f, wave.getY(), 2.0f, wave.getHeight());
+        }
+
+        for (int i = 0; i < (int) slots.size(); ++i)
+        {
+            const auto& s = slots[(size_t) i];
+            if (s.finger < 0 && ! s.held) continue;
+            const float x = xOf (sourceAt (s.x)), y = wave.getBottom() - s.y * wave.getHeight();
+            g.setColour (cloudColours[i].withAlpha (s.held && s.finger < 0 ? 0.6f : 0.95f));
+            g.drawEllipse (x - 22.0f, y - 22.0f, 44.0f, 44.0f, s.held && s.finger < 0 ? 2.0f : 3.0f);
+            if (s.held && s.finger < 0)
+            {
+                g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+                g.drawText ("HOLD", juce::Rectangle<float> (x - 22.0f, y + 22.0f, 44.0f, 14.0f), juce::Justification::centred);
+            }
+        }
+    }
 
     juce::Rectangle<int> waveArea() const { return getLocalBounds().reduced (6, 0).withTrimmedTop (6).withTrimmedBottom (20); }
 
@@ -333,6 +564,10 @@ private:
     bool overlayAlarm = false;
 
     juce::TextButton zoomOut { "-" }, zoomIn { "+" }, zoomFit { "FIT" };
+
+    GrainEngine* grains = nullptr;   // in play mode
+    std::array<Slot, GrainEngine::NumTouch> slots {};
+    bool hold = false, reversed = false;
 };
 
 //==============================================================================
@@ -389,7 +624,7 @@ public:
     {
         setLookAndFeel (&laf);
 
-        for (int m = 0; m < 3; ++m)
+        for (int m = 0; m < 4; ++m)
         {
             auto* b = modeButtons.add (new juce::TextButton (SamplerSource::modeNames()[m]));
             b->setClickingTogglesState (true);
@@ -478,11 +713,56 @@ public:
         setUpKnob (transposeKnob, SamplerSource::Transpose, 1.0, [] (double v) { return (v > 0 ? "+" : "") + juce::String ((int) v) + " st"; });
         setUpKnob (detuneKnob, SamplerSource::Detune, 1.0, [] (double v) { return (v > 0 ? "+" : "") + juce::String ((int) v) + " ct"; });
         setUpKnob (speedKnob, SamplerSource::Speed, 0.01, [] (double v) { return juce::String (v, 2) + "x"; }, 1.0);
-        setUpKnob (grainKnob, SamplerSource::Grain, 1.0, [] (double v) { return juce::String ((int) v) + " ms"; }, 40.0);
+        setUpKnob (grainKnob, SamplerSource::GrainMs, 1.0, [] (double v) { return juce::String ((int) v) + " ms"; }, 40.0);
         setUpKnob (gainKnob, SamplerSource::Gain, 0.1, [] (double v) { return (v > 0 ? "+" : "") + juce::String (v, 1) + " dB"; });
         setUpKnob (velKnob, SamplerSource::VelSense, 0.01, [] (double v) { return juce::String (juce::roundToInt (v * 100)) + "%"; });
         setUpKnob (cutoffKnob, SamplerSource::Cutoff, 1.0, [] (double v) { return v >= 1000 ? juce::String (v / 1000.0, 1) + " k" : juce::String ((int) v) + " Hz"; }, 1000.0);
         setUpKnob (resKnob, SamplerSource::Resonance, 0.01, [] (double v) { return juce::String (juce::roundToInt (v * 100)) + "%"; });
+
+        // GRAIN mode.
+        auto percent = [] (double v) { return juce::String (juce::roundToInt (v * 100)) + "%"; };
+        setUpKnob (densityKnob, SamplerSource::GDensity, 0.1, [] (double v) { return juce::String (v, v < 10 ? 1 : 0) + " /s"; }, 20.0);
+        setUpKnob (sizeKnob, SamplerSource::GSize, 1.0, [] (double v) { return juce::String ((int) v) + " ms"; }, 80.0);
+        setUpKnob (sprayKnob, SamplerSource::GSpray, 0.01, percent);
+        setUpKnob (scanKnob, SamplerSource::GScan, 0.01, [] (double v) { return std::abs (v) < 0.005 ? juce::String ("still") : juce::String (v, 2) + "x"; });
+        setUpKnob (loopLenKnob, SamplerSource::GLoop, 1.0, [] (double v) { return v >= 1000 ? juce::String (v / 1000.0, 2) + " s" : juce::String ((int) v) + " ms"; }, 300.0);
+        setUpKnob (jitterKnob, SamplerSource::GJitter, 0.1, [] (double v) { return juce::String (v, 1) + " st"; });
+        setUpKnob (spreadKnob, SamplerSource::GSpread, 0.01, percent);
+        setUpKnob (windowKnob, SamplerSource::GWindow, 0.01, [] (double v) { return v < 0.02 ? juce::String ("smooth") : v > 0.98 ? juce::String ("hard") : juce::String (juce::roundToInt (v * 100)) + "%"; });
+        setUpKnob (grainReverseKnob, SamplerSource::GReverse, 0.01, percent);
+        setUpKnob (releaseKnob, SamplerSource::GRelease, 1.0, [] (double v) { return v >= 1000 ? juce::String (v / 1000.0, 2) + " s" : juce::String ((int) v) + " ms"; }, 400.0);
+
+        yCombo.addItemList (SamplerSource::yAxisNames(), 1);
+        yCombo.onChange = [this] { setParam (SamplerSource::GYAxis, (float) (yCombo.getSelectedId() - 1)); changed(); };
+        yLabel.setText ("FINGER UP", juce::dontSendNotification);
+        yLabel.setJustificationType (juce::Justification::centred);
+        yLabel.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        yLabel.setColour (juce::Label::textColourId, MidiMorfColors::textLight);
+
+        for (auto* b : { &holdButton, &freezeButton })
+        {
+            b->setClickingTogglesState (true);
+            addChildComponent (b);
+        }
+        holdButton.onClick = [this]
+        {
+            setParam (SamplerSource::GHold, holdButton.getToggleState() ? 1.0f : 0.0f);
+            editor.setHold (holdButton.getToggleState());
+            changed();
+        };
+        freezeButton.onClick = [this] { setParam (SamplerSource::GFreeze, freezeButton.getToggleState() ? 1.0f : 0.0f); changed(); };
+
+        // A finger on the waveform plays its cloud; notes play where the
+        // last one went down.
+        editor.onCloud = [this] (int cloud, bool down, float x, float y)
+        {
+            if (sampler == nullptr) return;
+            sampler->grains().touch (cloud, down, x, y);
+            if (down)
+                sampler->setParam (SamplerSource::GPosition, x);
+            else
+                changed();
+        };
 
         // Fades are edits: they rebuild the sample, so only on release.
         for (auto* k : { &fadeInKnob, &fadeOutKnob })
@@ -585,6 +865,13 @@ public:
         for (int i = 0; i < 4; ++i)
             envSliders[i]->setValue (v[i], juce::dontSendNotification);
 
+        holdButton.setToggleState (sampler->getParam (SamplerSource::GHold) >= 0.5f, juce::dontSendNotification);
+        freezeButton.setToggleState (sampler->getParam (SamplerSource::GFreeze) >= 0.5f, juce::dontSendNotification);
+        yCombo.setSelectedId (juce::roundToInt (sampler->getParam (SamplerSource::GYAxis)) + 1, juce::dontSendNotification);
+        editor.setPlayMode (mode == SamplerSource::Grain ? &sampler->grains() : nullptr);
+        editor.setHold (holdButton.getToggleState());
+        updateTimer();
+
         const auto* b = sampler->getBreak();
         barsLabel.setText (b != nullptr ? beatsText (b->beats) : juce::String(), juce::dontSendNotification);
         editor.setSample (sampler->getSource(), e, mode == SamplerSource::Slice && b != nullptr ? b->beats : 0.0, TrackColours::get (track));
@@ -604,6 +891,7 @@ public:
 
         // Leaving the page keeps what was recorded and closes the mic.
         closeRecorder();
+        updateTimer();
     }
 
     void paint (juce::Graphics& g) override
@@ -617,6 +905,8 @@ public:
         if (const auto* b = sampler->getBreak())
             detail = sampler->getMode() == SamplerSource::Slice
                          ? juce::String (b->bpm(), 1) + " BPM, " + juce::String (b->lengthSeconds(), 2) + " s"
+                         : sampler->getMode() == SamplerSource::Grain
+                         ? juce::String (b->lengthSeconds(), 2) + " s. Touch the wave to play"
                          : juce::String (b->lengthSeconds(), 2) + " s";
         g.setColour (MidiMorfColors::textLight.withAlpha (0.8f));
         g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
@@ -637,7 +927,7 @@ public:
         // What plays and where it comes from.
         auto top = area.removeFromTop (34);
         for (auto* b : modeButtons)
-            b->setBounds (top.removeFromLeft (78).reduced (2));
+            b->setBounds (top.removeFromLeft (70).reduced (2));
         top.removeFromLeft (6);
         importButton.setBounds (top.removeFromRight (110).reduced (2));
         top.removeFromRight (4);
@@ -675,6 +965,8 @@ public:
         playTab.setBounds (row.removeFromRight (70).reduced (2));
         row.removeFromRight (8);
         auto bars = row.removeFromRight (150);
+        holdButton.setBounds (bars.withWidth (bars.getWidth() / 2).reduced (2));
+        freezeButton.setBounds (bars.withTrimmedLeft (bars.getWidth() / 2).reduced (2));
         barsDown.setBounds (bars.removeFromLeft (34).reduced (2));
         barsUp.setBounds (bars.removeFromRight (34).reduced (2));
         barsLabel.setBounds (bars);
@@ -706,7 +998,8 @@ private:
     std::vector<juce::Component*> allControls()
     {
         std::vector<juce::Component*> c { &warpCombo, &warpLabel, &filterCombo, &filterLabel, &loopButton,
-                                          &rootDown, &rootUp, &rootLabel, &rootCaption, &fadeInKnob, &fadeOutKnob };
+                                          &rootDown, &rootUp, &rootLabel, &rootCaption, &fadeInKnob, &fadeOutKnob,
+                                          &yCombo, &yLabel };
         for (auto& [knob, param] : paramKnobs) c.push_back (knob);
         for (auto* s : envSliders) c.push_back (s);
         for (auto* l : envLabels) c.push_back (l);
@@ -722,17 +1015,32 @@ private:
             return;
 
         const auto mode = sampler->getMode();
-        const bool slice = mode == SamplerSource::Slice, keys = mode == SamplerSource::Keys;
+        const bool slice = mode == SamplerSource::Slice, keys = mode == SamplerSource::Keys, grain = mode == SamplerSource::Grain;
         const bool slicing = slice && sampler->getBreak() != nullptr;
         for (auto* c : std::initializer_list<juce::Component*> { &barsDown, &barsUp, &barsLabel })
             c->setVisible (slicing && ! micOpen);
+        for (auto* c : std::initializer_list<juce::Component*> { &holdButton, &freezeButton })
+            c->setVisible (grain && ! micOpen);
 
         // Each item: a component (or a pair stacked label-over-control) and
         // its share of the row.
         struct Item { juce::Component* c; juce::Component* label = nullptr; float weight = 1.0f; };
         std::vector<Item> items;
 
-        if (playTab.getToggleState())
+        if (grain && playTab.getToggleState())
+        {
+            for (auto* k : { &densityKnob, &sizeKnob, &sprayKnob, &scanKnob, &loopLenKnob, &transposeKnob, &jitterKnob })
+                items.push_back ({ k });
+            items.push_back ({ &yCombo, &yLabel, 1.3f });
+            items.push_back ({ &gainKnob });
+        }
+        else if (grain)
+        {
+            items.push_back ({ &filterCombo, &filterLabel, 1.5f });
+            for (auto* k : { &cutoffKnob, &resKnob, &spreadKnob, &windowKnob, &grainReverseKnob, &releaseKnob, &velKnob })
+                items.push_back ({ k });
+        }
+        else if (playTab.getToggleState())
         {
             if (slice) items.push_back ({ &warpCombo, &warpLabel, 1.5f });
             if (keys)  items.push_back ({ &rootLabel, nullptr, 1.1f });
@@ -967,7 +1275,7 @@ private:
         if (! micOpen)
             return;
         micOpen = false;
-        stopTimer();
+        updateTimer();
         meter = 0.0f;
         editor.setOverlay ({}, 0.0f, false);
         if (onMicDone) onMicDone();
@@ -1020,8 +1328,19 @@ private:
             changed();
     }
 
+    // The timer runs for the mic's meter and to draw the grain clouds.
+    void updateTimer()
+    {
+        const bool clouds = isVisible() && sampler != nullptr && sampler->getMode() == SamplerSource::Grain;
+        if (micOpen || clouds) startTimerHz (30);
+        else                   stopTimer();
+    }
+
     void timerCallback() override
     {
+        editor.tickClouds();
+        if (! micOpen || recorder == nullptr)
+            return;
         meter = juce::jmax (recorder->takeLevel(), meter * 0.85f);
         if (isRecording() && ! recorder->isRecording())
             finishRecording();   // hit the time limit
@@ -1112,7 +1431,14 @@ private:
     Knob transposeKnob { "TRANSPOSE", -24, 24, 0 }, detuneKnob { "DETUNE", -50, 50, 0 }, speedKnob { "SPEED", 0.25f, 4, 1 },
          grainKnob { "GRAIN", 5, 250, 40 }, gainKnob { "GAIN", -24, 12, 0 }, velKnob { "VEL", 0, 1, 1 },
          cutoffKnob { "CUTOFF", 20, 20000, 20000 }, resKnob { "RES", 0, 1, 0.2f },
-         fadeInKnob { "FADE IN", 0, 2000, 0 }, fadeOutKnob { "FADE OUT", 0, 2000, 0 };
+         fadeInKnob { "FADE IN", 0, 2000, 0 }, fadeOutKnob { "FADE OUT", 0, 2000, 0 },
+         densityKnob { "DENSITY", 1, 100, 30 }, sizeKnob { "SIZE", 5, 500, 80 }, sprayKnob { "SPRAY", 0, 1, 0.1f },
+         scanKnob { "SCAN", -2, 2, 1 }, loopLenKnob { "LOOP", 10, 2000, 300 }, jitterKnob { "JITTER", 0, 12, 0 },
+         spreadKnob { "SPREAD", 0, 1, 0.5f }, windowKnob { "WINDOW", 0, 1, 0 }, grainReverseKnob { "REVERSE", 0, 1, 0 },
+         releaseKnob { "RELEASE", 5, 4000, 300 };
+    juce::ComboBox yCombo;
+    juce::Label yLabel;
+    juce::TextButton holdButton { "HOLD" }, freezeButton { "FREEZE" };
     std::vector<std::pair<Knob*, SamplerSource::Param>> paramKnobs;
     juce::TextButton loopButton { "LOOP" };
     juce::TextButton rootDown { "-" }, rootUp { "+" };

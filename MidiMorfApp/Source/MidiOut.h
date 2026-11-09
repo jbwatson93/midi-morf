@@ -92,6 +92,8 @@ public:
         {
             triedVirtual = true;
             virtualOut = juce::MidiOutput::createNewDevice ("MidiMorf");
+            const juce::ScopedLock sl (lock);
+            reopenLocked();   // tracks and clock already pointed at it connect now
         }
         return virtualOut != nullptr;
     }
@@ -199,6 +201,8 @@ public:
     {
         setTrackChannel (track, t.getProperty ("midiChannel", track + 1));
         setTrackDestination (track, t["midiOut"].toString(), t["midiOutName"].toString());
+        if (t["midiOut"].toString() == VirtualId)
+            tryCreateVirtualPort();
     }
 
     void saveSettings (juce::PropertySet& p) const
@@ -216,6 +220,8 @@ public:
             clockIds.removeEmptyStrings();
             reopenLocked();
         }
+        if (clockIds.contains (VirtualId))
+            tryCreateVirtualPort();
         setOffsetMs (p.getDoubleValue ("midi_offset_ms", 0.0));
     }
 
@@ -285,9 +291,12 @@ private:
 
     static bool validTrack (int t) { return t >= 0 && t < NumTracks; }
 
-    double dueTime() const
+    // Never earlier than the last: moving TIMING while notes sound must not
+    // send a note-off ahead of its note-on.
+    double dueTime()
     {
-        return blockStartMs + blockPosition * msPerSample + audioLatencyMs.load() + offsetMs.load();
+        lastDueMs = juce::jmax (lastDueMs, blockStartMs + blockPosition * msPerSample + audioLatencyMs.load() + offsetMs.load());
+        return lastDueMs;
     }
 
     static void push (juce::AbstractFifo& fifo, std::array<Event, FifoSize>& events, const Event& e)
@@ -516,7 +525,7 @@ private:
     std::array<std::atomic<double>, NumTracks> lastActivity {};
 
     // Audio thread.
-    double blockStartMs = 0.0, msPerSample = 1000.0 / 48000.0;
+    double blockStartMs = 0.0, msPerSample = 1000.0 / 48000.0, lastDueMs = 0.0;
     int blockPosition = 0;
 
     juce::AbstractFifo audioFifo { FifoSize }, messageFifo { FifoSize };

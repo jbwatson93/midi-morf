@@ -176,7 +176,7 @@ public:
         publish();
     }
 
-    void noteOnAudio (int, int note, int velocity127) override
+    void noteOnAudio (int channel, int note, int velocity127) override
     {
         const bool latch = getParam (Latch) >= 0.5f;
         if (latch && held == 0)
@@ -210,8 +210,9 @@ public:
         {
             *v = {};
             v->note = note;
-            v->freq = 440.0 * std::pow (2.0, (note - 69) / 12.0);
         }
+        v->channel = channel;
+        v->freq = 440.0 * std::pow (2.0, (note - 69 + bends[(size_t) juce::jlimit (0, 16, channel)]) / 12.0);
         v->active = true;
         v->gate = true;
         v->age = ++ages;
@@ -230,6 +231,19 @@ public:
     }
 
     void allNotesOff() override { releasePending.store (true); }
+
+    // A held string on the channel retunes; it keeps ringing as it goes, so
+    // the bend is heard as a glide.
+    void pitchBendAudio (int channel, float semis) override
+    {
+        bends[(size_t) juce::jlimit (0, 16, channel)] = semis;
+        for (auto& v : voices)
+            if (v.active && v.gate && v.channel == channel)
+            {
+                v.freq = 440.0 * std::pow (2.0, (v.note - 69 + semis) / 12.0);
+                v.dirty = true;
+            }
+    }
 
     //==========================================================================
     static inline const juce::Identifier stateType { "Halo" };
@@ -257,7 +271,7 @@ private:
     struct Voice
     {
         bool active = false, gate = false, dirty = true;
-        int note = -1, partials = 0;
+        int note = -1, partials = 0, channel = 1;
         double freq = 440.0;
         float strike = 0.0f;                  // a pluck waiting to be struck
         float listening = 0.0f, energy = 0.0f, shownEnergy = 0.0f;
@@ -365,6 +379,7 @@ private:
     // Audio thread.
     double rate = 48000.0;
     std::array<Voice, NumVoices> voices {};
+    std::array<float, 17> bends {};   // each channel's bend, semitones
     std::array<float, 4096> excite {};
     int heardSamples = 0, held = 0;
     bool wasLatched = false;

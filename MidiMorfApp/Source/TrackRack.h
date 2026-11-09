@@ -34,6 +34,11 @@ public:
     virtual void allNotesOff() = 0;
     virtual void controller (int /*cc*/, int /*value*/) {}
 
+    // Bends every note on `channel` by `semitones` (0 = in tune), for a
+    // controller that gives each of its strings its own channel (Harpejji).
+    // A new note on the channel starts at the channel's current bend.
+    virtual void pitchBendAudio (int /*channel*/, float /*semitones*/) {}
+
     // A source that resonates with the other tracks (Halo) says so. The rack
     // renders it after them and, before each render, hands it what each of
     // them just played: mono, before the fader (so a muted track still
@@ -211,6 +216,7 @@ public:
     void postNoteOn (int track, int channel, int note, int velocity127) { post ({ Event::On, track, channel, note, velocity127 }); }
     void postNoteOff (int track, int channel, int note)                 { post ({ Event::Off, track, channel, note, 0 }); }
     void postAllNotesOff (int track)                                    { post ({ Event::AllOff, track, 0, 0, 0 }); }
+    void postPitchBend (int track, int channel, float semitones)        { Event e { Event::Bend, track, channel, 0, 0 }; e.bend = semitones; post (e); }
 
     // Notes to play at a time to come (Time::getMillisecondCounterHiRes), to
     // the audio block — for instruments that work out their timing ahead
@@ -297,9 +303,10 @@ public:
 private:
     struct Event
     {
-        enum Type { On, Off, AllOff };
+        enum Type { On, Off, AllOff, Bend };
         Type type; int track, channel, note, velocity;
         double due = 0.0;   // 0: now
+        float bend = 0.0f;  // Bend: semitones
     };
 
     static constexpr int FifoSize = 1024;
@@ -364,6 +371,13 @@ private:
                     later[(size_t) kept++] = later[(size_t) i];
             numLater = kept;
             allOffs[(size_t) e.track].fetch_add (1);
+        }
+
+        if (e.type == Event::Bend)
+        {
+            if (auto* s = getSource (e.track))
+                s->pitchBendAudio (e.channel, e.bend);
+            return;   // not a note: nothing to tap or record
         }
 
         if (auto* s = getSource (e.track))

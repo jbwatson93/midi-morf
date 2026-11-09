@@ -306,9 +306,11 @@ JB (2026-11-09): "send midi wirelessly and or send midi from a usb to midi adapt
 
 **UI:** track rail → track menu → **MIDI Out**: device picker (with "Pair Bluetooth…" and a Network status line), channel, latency in ms, and "send clock" per device. A small activity light on the track while notes go out.
 
-- [ ] **M1:** USB and network out, per-track device and channel, held-note cleanup.
-- [ ] **M2:** Bluetooth pairing, drum note map, CC and pitch bend.
-- [ ] **M3:** clock, transport messages, latency offset with timestamps.
+- [x] **M1:** USB and network out, per-track device and channel, held-note cleanup. *(built 2026-11-09, branch `midi-out`)*
+- [x] **M2:** Bluetooth pairing and CC out. The Drum Grid already sends GM drum notes (kick 36, snare 38, clap 39, hats 42/46…), so the note map isn't editable yet. Nothing in the app sends pitch bend yet.
+- [x] **M3:** clock (24 PPQN) with Start/Stop per device, and a global timing offset (−20…+80 ms) on top of the audio latency. Messages are timed to the audio sample, measured within 1 ms on the Mac.
+- [ ] On device: everything above. Only the Mac test harness has heard it (a virtual port, timing, held notes, re-routing, mute/solo, clock, saving).
+- [ ] "Add a port for other apps" needs `UIBackgroundModes: audio`, which the app doesn't have; without it the menu item says it isn't available. Decide whether to add background audio.
 - [ ] Later: Android (`android.media.midi` covers USB; network still needs the bridge), MIDI in.
 
 Test on a device only: a USB adapter and a synth, plus a Mac network session.
@@ -335,12 +337,24 @@ JB (2026-11-09): "a grain synth where you sample … you could be touching the w
 
 **UI:** in Grain mode the `SampleEditor` waveform switches from trim/pan/pinch to **play**; zoom moves to the buttons or an edge strip so it doesn't fight playing. Knob row: Density, Size, Spray, Pitch, Spread, Window, Release, Y→. Hold and Freeze buttons. Record and the library picker stay, so you can record from the mic and play it straight away.
 
-- [ ] **G1:** grain engine, and Grain mode playable from notes with a Position knob. Proves the sound.
-- [ ] **G2:** multi-finger clouds on the waveform with x/y and grain drawing (the main feature).
-- [ ] **G3:** Hold and Freeze, saved per project, presets.
+- [x] **G1:** grain engine (96 grains), and Grain mode playable from notes. Notes play where the last finger went down, not from a Position knob. *(built 2026-11-09, branch `grain-mode`)*
+- [x] **G2:** multi-finger clouds on the waveform with x/y and grain drawing. Each cloud also **loops**: it reads LOOP ms from the finger at SCAN speed (1 = the sample's speed, 0 = still), which is "one finger making one loop".
+- [x] **G3:** HOLD (lift keeps playing; tap the ring to stop, drag it to move) and FREEZE (clouds stop scanning), saved per project. No grain presets yet.
+- [ ] On device: feel of the touch (ring size, the 28 px pick-up distance), knob ranges, CPU on the oldest test phone. Pinch-zoom is off in Grain mode (the −/+/FIT buttons still work).
 - [ ] Later: **gesture recording** (record finger moves into a clip so a scrub loop plays back), **resample another track** into the grain buffer.
 
 **Order:** MIDI out M1 first (small, and External MIDI was already high priority), then grain G1 → G2.
+
+### Phase 12 — Halo and Ripple (2026-11-09)
+
+JB (2026-11-09) asked for "a new sound source and a new midi instrument … something that hasn't been done before". Built on branch `halo-and-ripple`, on top of `grain-mode`.
+
+**Halo — a sound.** Sympathetic strings for the whole band. Each held note tunes a bank of 8 resonators at its harmonics, and **the other tracks are the bow**: the rack renders listening sources after the rest and hands them what each track just played, before its fader. Hold a chord and the drums ring in it. **Mute the drums and they still drive it**, so the groove plays the chord unheard. LISTEN picks all the other tracks or one; PLUCK and BOW let it sound on its own; DECAY/DAMP; BRIGHT; METAL stretches the harmonics from string to bell to gong; WIDTH; LATCH keeps a chord tuned until the next one. `Halo.h`, `HaloPage.h`; the sound list has "Halo".
+
+**Ripple — an instrument.** A pond of notes where **distance is time**. The stones are a Tonnetz (right = a fifth, up-right = a major third, up-left = a minor third), so every small triangle is a triad. A touch sends a ring out at the tempo, one stone per step (SPEED), and each in-key stone plays as the ring reaches it, softer further out, until REACH. On a stone: that note now, then its neighbours together one step later. In a triangle's middle: the triad as a chord. A held finger PULSEs new rings; dragging morphs the figure. When two rings reach a stone together it **chimes an octave up**. KEY, SCALE, GATE, OCT. Notes are worked out ahead and posted with their time (`TrackRack::postNoteOnAt`), so figures sit on the tempo; STOP cancels what's still to come. Like any controller, it records into note clips and goes out over MIDI. `RipplePage.h`; the instrument list has "Ripple".
+
+- [ ] On device: both pages' layouts on the iPhone (the Ripple bar is tight), Halo levels with real material, Ripple feel at different tempos, the Perform view with either in a quarter.
+- [ ] Later ideas: Halo LISTEN to the mic; Ripple rings that bounce off the pond's edges; Ripple snapping the first ring to the clock's 16th.
 
 ## Open questions
 

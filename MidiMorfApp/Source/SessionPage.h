@@ -99,7 +99,7 @@ public:
 
     // The page indices the bottom buttons open, and the Drum Grid's (an
     // instrument that isn't a ControllerMode).
-    struct Pages { int transport, fx, settings, about, drumGrid, remix; };
+    struct Pages { int transport, fx, settings, about, drumGrid, remix, ripple; };
 
     SessionPage (SessionModel& m, Callbacks cb, Pages p)
         : model (m), callbacks (std::move (cb)), pages (p), grid (*this)
@@ -663,7 +663,7 @@ private:
                  { (int) CM::Omnichord, "Strum-Chord" }, { (int) CM::MorfPad, "Morf-Pad" },
                  { (int) CM::DualMPad, "Dual M-Pad" },
                  { (int) CM::StepSequencer, "Step-Seq" }, { (int) CM::SliceSequencer, "Breaker" },
-                 { pages.drumGrid, "Drum Grid" }, { pages.remix, "Remix Lane" } };
+                 { pages.drumGrid, "Drum Grid" }, { pages.remix, "Remix Lane" }, { pages.ripple, "Ripple" } };
     }
 
     // A track's column: T1, what plays it and its sound side by side, then
@@ -689,6 +689,7 @@ private:
             sound.addItem ("Synth", 1 + 1);
             sound.addItem ("Sampler", 2 + 1);
             sound.addItem ("Drums", 3 + 1);
+            sound.addItem ("Halo", 4 + 1);
             sound.addItem ("Empty", 0 + 1);
             sound.onChange = [this]
             {

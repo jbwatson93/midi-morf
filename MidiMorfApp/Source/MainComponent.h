@@ -22,6 +22,8 @@
 #include "SamplerPage.h"
 #include "DrumGridPage.h"
 #include "DrumKitPage.h"
+#include "HaloPage.h"
+#include "RipplePage.h"
 #include "PerformView.h"
 #include "AccelerometerManager.h"
 #include "MidiMorfProtocol.h"
@@ -159,6 +161,7 @@ private:
     std::array<std::unique_ptr<MorfChordPage>, TrackRack::NumTracks> morfChordPages;
     std::array<std::unique_ptr<RoseChordPage>, TrackRack::NumTracks> roseChordPages;
     std::array<std::unique_ptr<RemixPage>, TrackRack::NumTracks> remixPages;
+    std::array<std::unique_ptr<RipplePage>, TrackRack::NumTracks> ripplePages;
     juce::Component morfPadPlaceholder, omnichordPlaceholder, dualMPadPlaceholder, morfChordPlaceholder, roseChordPlaceholder;
     TransportPage transportPage;
     // Every track has its own sequencer pages; the one-of-each slots they
@@ -175,6 +178,7 @@ private:
     SamplerPage samplerPage;
     PerformView performView;   // iPad only
     DrumKitPage drumKitPage;
+    HaloPage haloPage;
     NoteEditorPage noteEditorPage;
     int editingScene = -1;   // the clip the note editor has open
 

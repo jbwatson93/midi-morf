@@ -83,12 +83,15 @@ static constexpr int noteEditorPageIdx = MidiMorf::NUM_CONTROLLERS + 8;
 // Then every track's own instrument pages: 4 of each kind, kind-major.
 // Kinds 0-2 are the sequencers (as LocalSequencers::Kind), 3-7 the live
 // controllers.
-static constexpr int NumKinds         = 9;   // ... and 8, the Remix Lane
+static constexpr int NumKinds         = 10;   // ... 8, the Remix Lane, and 9, Ripple
 static constexpr int seqPageBase      = MidiMorf::NUM_CONTROLLERS + 9;
-static constexpr int numPages         = seqPageBase + NumKinds * TrackRack::NumTracks;
+static constexpr int seqPageEnd       = seqPageBase + NumKinds * TrackRack::NumTracks;
+// Then pages added since, after all the tracks' pages so no index moves.
+static constexpr int haloPageIdx      = seqPageEnd;
+static constexpr int numPages         = haloPageIdx + 1;
 
 static int seqPageIdx (int kind, int track) { return seqPageBase + kind * TrackRack::NumTracks + track; }
-static bool isSeqPage (int page)            { return page >= seqPageBase && page < numPages; }   // any track's instrument page
+static bool isSeqPage (int page)            { return page >= seqPageBase && page < seqPageEnd; }   // any track's instrument page
 static int pageKind (int page)              { return (page - seqPageBase) / TrackRack::NumTracks; }
 static int pageTrack (int page)             { return (page - seqPageBase) % TrackRack::NumTracks; }
 
@@ -107,8 +110,10 @@ static bool isIPad()
    #endif
 }
 
-// The Remix Lane's instrument id: not a page index (its pages are per track).
-static constexpr int RemixId = 200;
+// The Remix Lane's and Ripple's instrument ids: not page indices (their
+// pages are per track).
+static constexpr int RemixId = 200, RippleId = 201;
+static constexpr int KindRemix = 8, KindRipple = 9;
 
 static bool isSequencer (int mode)
 {
@@ -136,7 +141,9 @@ static constexpr int KindStep = (int) LocalSequencers::Kind::Step, KindSlice = (
 static int kindOf (int mode)
 {
     if (mode == RemixId)
-        return 8;
+        return KindRemix;
+    if (mode == RippleId)
+        return KindRipple;
     if (isSequencer (mode))
         return whichSequencer (mode);
     for (int k = 0; k < 5; ++k)
@@ -150,6 +157,8 @@ static juce::String instrumentShortName (int mode)
 {
     if (mode == RemixId)
         return "Remix";
+    if (mode == RippleId)
+        return "Ripple";
     if (mode == drumGridPageIdx)
         return "Drums";
     return juce::isPositiveAndBelow (mode, MidiMorf::NUM_CONTROLLERS) ? controllerShortNames[mode] : juce::String();
@@ -172,6 +181,8 @@ MainComponent::MainComponent()
         roseChordPages[(size_t) t] = std::make_unique<RoseChordPage> (router);
         remixPages[(size_t) t]     = std::make_unique<RemixPage> (audioEngine.getTrackMlr (t), audioEngine.getSequencers(), t);
         remixPages[(size_t) t]->onChanged = [this] { saveState(); };
+        ripplePages[(size_t) t]    = std::make_unique<RipplePage> (audioEngine.getRack(), t, [this] { return audioEngine.getSequencers().getBpm(); });
+        ripplePages[(size_t) t]->onStateChanged = [this] { saveState(); };
 
         stepPages[(size_t) t] = std::make_unique<StepSequencerPage> (router);
         stepPages[(size_t) t]->setTrack (t);
@@ -312,7 +323,7 @@ MainComponent::MainComponent()
     cb.changed       = [this] { saveState(); };
     homePage = std::make_unique<SessionPage> (session, cb, SessionPage::Pages { (int) MidiMorf::ControllerMode::Transport,
                                                                                 (int) MidiMorf::ControllerMode::FXPunchIn,
-                                                                                settingsPageIdx, aboutPageIdx, drumGridPageIdx, RemixId });
+                                                                                settingsPageIdx, aboutPageIdx, drumGridPageIdx, RemixId, RippleId });
 
     // Page container — controllers, then Sound, About, Settings, Home, Breaks.
     // The order is the page indices above.
@@ -343,6 +354,8 @@ MainComponent::MainComponent()
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (morfChordPages[(size_t) t].get());
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (roseChordPages[(size_t) t].get());
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (remixPages[(size_t) t].get());
+    for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (ripplePages[(size_t) t].get());
+    pageContainer.addPage (&haloPage);
 
     // Perform borrows the tracks' instrument pages and hands them back.
     performView.onShow       = [this] { populatePerform(); };
@@ -447,6 +460,7 @@ MainComponent::MainComponent()
         slicePage (t).setOnStateChanged ([this] { saveState(); });
     }
     drumKitPage.onChanged   = [this] { saveState(); };
+    haloPage.onChanged      = [this] { saveState(); };
     drumKitPage.onKitLoaded = [this] { homePage->refresh(); updateRail(); };
     drumKitPage.onAudition  = [this] (int note, bool down) { audition (drumKitPage.getTrack(), note, down); };
     samplerPage.onMicNeeded = [this] (std::function<void (bool)> done)
@@ -607,11 +621,13 @@ juce::String MainComponent::getPageDisplayName (int pageIndex) const
     {
         const int kind = pageKind (pageIndex);
         static const char* names[3] = { "Step-Seq", "Breaker", "Drum Grid" };
-        if (kind == 8) return "Remix Lane";
+        if (kind == KindRemix) return "Remix Lane";
+        if (kind == KindRipple) return "Ripple";
         return kind < 3 ? juce::String (names[kind]) : controllerNames[(int) controllerKinds[kind - 3]];
     }
     if (pageIndex == drumKitPageIdx)   return "Drums";
     if (pageIndex == noteEditorPageIdx) return "Editor";
+    if (pageIndex == haloPageIdx)      return "Halo";
     return {};
 }
 
@@ -629,7 +645,8 @@ void MainComponent::setInstrument (int track, int mode)
     // damaged settings file) means no instrument.
     using CM = MidiMorf::ControllerMode;
     const bool isInstrument = mode == (int) CM::MorfPad || mode == (int) CM::Omnichord || mode == (int) CM::DualMPad
-                           || mode == (int) CM::MorfChord || mode == (int) CM::RoseChord || isSequencer (mode);   // incl. Drum Grid
+                           || mode == (int) CM::MorfChord || mode == (int) CM::RoseChord || mode == RippleId
+                           || isSequencer (mode);   // incl. Drum Grid
     if (! isInstrument)
         mode = -1;
 
@@ -667,12 +684,13 @@ void MainComponent::setInstrument (int track, int mode)
 
 void MainComponent::setSound (int track, int sound)
 {
-    audioEngine.setTrackSound (track, static_cast<AudioEngine::Sound> (juce::jlimit (0, 3, sound)));
+    audioEngine.setTrackSound (track, static_cast<AudioEngine::Sound> (juce::jlimit (0, AudioEngine::NumSounds - 1, sound)));
 
     // A sound page can't keep editing a sound its track no longer plays.
     const int page = pageContainer.getCurrentPage();
     if ((page == synthPageIdx && audioEngine.getWavetable (soundTrack) == nullptr)
-        || (page == drumKitPageIdx && audioEngine.getTrackSound (drumKitPage.getTrack()) != AudioEngine::Sound::Drums))
+        || (page == drumKitPageIdx && audioEngine.getTrackSound (drumKitPage.getTrack()) != AudioEngine::Sound::Drums)
+        || (page == haloPageIdx && audioEngine.getTrackSound (haloPage.getTrack()) != AudioEngine::Sound::Halo))
         pageContainer.setPage (homePageIdx);
 }
 
@@ -687,6 +705,9 @@ int MainComponent::trackOfPage (int pageIndex) const
 
     if (pageIndex == drumKitPageIdx)
         return drumKitPage.getTrack();
+
+    if (pageIndex == haloPageIdx)
+        return haloPage.getTrack();
 
     if (pageIndex == noteEditorPageIdx)
         return noteEditorPage.getTrack();
@@ -708,7 +729,7 @@ int MainComponent::pageOf (int track) const
 
 bool MainComponent::pageIsSound (int pageIndex) const
 {
-    return pageIndex == synthPageIdx || pageIndex == samplerPageIdx || pageIndex == drumKitPageIdx;
+    return pageIndex == synthPageIdx || pageIndex == samplerPageIdx || pageIndex == drumKitPageIdx || pageIndex == haloPageIdx;
 }
 
 // First tap: the track's instrument. Tapping the lit track again flips
@@ -777,7 +798,7 @@ void MainComponent::showSound (int track)
 int MainComponent::prepareSoundPage (int track)
 {
     if (audioEngine.isTrackRemix (track))
-        return seqPageIdx (8, track);   // a Remix track's samples are on its grid
+        return seqPageIdx (KindRemix, track);   // a Remix track's samples are on its grid
 
     switch (audioEngine.getTrackSound (track))
     {
@@ -793,6 +814,10 @@ int MainComponent::prepareSoundPage (int track)
         case AudioEngine::Sound::Drums:
             drumKitPage.edit (audioEngine.getTrackDrums (track), track);
             return drumKitPageIdx;
+
+        case AudioEngine::Sound::Halo:
+            haloPage.edit (audioEngine.getTrackHalo (track), track);
+            return haloPageIdx;
 
         default:
             return -1;
@@ -1546,9 +1571,11 @@ void MainComponent::populatePerform()
             if (! wantsSound || (pass == 0) != performShowsSound[(size_t) t])
                 continue;
 
-            const int editor = audioEngine.getTrackSound (t) == AudioEngine::Sound::Synth   ? synthPageIdx
-                             : audioEngine.getTrackSound (t) == AudioEngine::Sound::Sampler ? samplerPageIdx
-                                                                                             : drumKitPageIdx;
+            const auto sound = audioEngine.getTrackSound (t);
+            const int editor = sound == AudioEngine::Sound::Synth   ? synthPageIdx
+                             : sound == AudioEngine::Sound::Sampler ? samplerPageIdx
+                             : sound == AudioEngine::Sound::Halo    ? haloPageIdx
+                                                                    : drumKitPageIdx;
             if (usedEditors.insert (editor).second)
                 show[(size_t) t] = prepareSoundPage (t);
             else if (pageOf (t) >= 0)
@@ -1698,6 +1725,7 @@ void MainComponent::saveNow()
         dualMPadPages[(size_t) t]->saveState (ps);
         morfChordPages[(size_t) t]->saveState (ps);
         roseChordPages[(size_t) t]->saveState (ps);
+        ripplePages[(size_t) t]->saveState (ps);
         if (auto xml = ps.createXml ("TrackPages"))
             pageState.setValue ("track_pages_" + juce::String (t), xml.get());
     }
@@ -1747,6 +1775,7 @@ void MainComponent::saveNow()
         track.appendChild (audioEngine.getTrackSampler (t).getState(), nullptr);   // the track plays
         track.appendChild (audioEngine.getTrackDrums (t).getState(), nullptr);
         track.appendChild (audioEngine.getTrackMlr (t).getState(), nullptr);
+        track.appendChild (audioEngine.getTrackHalo (t).getState(), nullptr);
         audioEngine.getMidiOut().saveTrack (t, track);
         project.appendChild (track, nullptr);
     }
@@ -1831,6 +1860,7 @@ void MainComponent::restoreState()
         dualMPadPages[(size_t) t]->restoreState (ps);
         morfChordPages[(size_t) t]->restoreState (ps);
         roseChordPages[(size_t) t]->restoreState (ps);
+        ripplePages[(size_t) t]->restoreState (ps);
     }
     fxPage.restoreState (pages);
     audioEngine.getSequencers().restoreState (pages);
@@ -1862,6 +1892,8 @@ void MainComponent::restoreState()
                 audioEngine.getTrackDrums (t).setState (kit);
             if (auto grid = track.getChildWithName (MlrSource::stateType); grid.isValid())
                 audioEngine.getTrackMlr (t).setState (grid);
+            if (auto halo = track.getChildWithName (HaloSource::stateType); halo.isValid())
+                audioEngine.getTrackHalo (t).setState (halo);
             audioEngine.getMidiOut().loadTrack (t, track);
             setInstrument (t, track.getProperty ("instrument", defaultInst[t]));
             audioEngine.getRack().setVolume (t, (float) (double) track.getProperty ("volume", 1.0));
@@ -1934,6 +1966,14 @@ void MainComponent::restoreState()
         if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Sampler)
         {
             samplerPage.edit (audioEngine.getTrackSampler (t), t);
+            break;
+        }
+
+    // The Halo page likewise.
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+        if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Halo)
+        {
+            haloPage.edit (audioEngine.getTrackHalo (t), t);
             break;
         }
 

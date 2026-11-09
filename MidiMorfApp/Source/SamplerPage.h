@@ -68,6 +68,11 @@ public:
     {
         if (g == grains)
             return;
+        // Leaving play mode lets go of every finger and held cloud.
+        if (grains != nullptr && g == nullptr)
+            for (int i = 0; i < (int) slots.size(); ++i)
+                if (slots[(size_t) i].finger >= 0 || slots[(size_t) i].held)
+                    grains->touch (i, false, slots[(size_t) i].x, slots[(size_t) i].y);
         grains = g;
         slots = {};
         touches.clear();

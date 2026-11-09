@@ -245,7 +245,16 @@ public:
 
     //==========================================================================
     // Playing — any thread.
-    void setMode (Mode m)      { mode.store ((int) m); }
+    // Leaving Grain mode stops its clouds (held ones too), so they can't come
+    // back when it returns.
+    void setMode (Mode m)
+    {
+        if (mode.exchange ((int) m) == Grain && m != Grain)
+        {
+            grain.releaseAllTouches();
+            grainCut.store (true);
+        }
+    }
     Mode getMode() const       { return (Mode) mode.load(); }
     void setRootNote (int n)   { root.store (juce::jlimit (0, 127, n)); }
     int  getRootNote() const   { return root.load(); }
@@ -281,6 +290,8 @@ public:
 
     void render (juce::AudioBuffer<float>& buffer, int start, int num) override
     {
+        if (grainCut.exchange (false))
+            grain.cutAll();
         if (releasePending.exchange (false))
         {
             breaks.releaseAll();
@@ -471,7 +482,7 @@ private:
 
     std::atomic<int> mode { Slice }, root { 60 };
     std::atomic<float> attack { 0.002f }, decay { 0.3f }, sustain { 1.0f }, release { 0.3f };
-    std::atomic<bool> releasePending { false };
+    std::atomic<bool> releasePending { false }, grainCut { false };
 
     int sliceRoot = 36;          // audio thread
     double sliceStepBeats = 0.25;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform.h"
+
 #include <JuceHeader.h>
 #include "WavetableEngine.h"
 #include "LocalSequencers.h"
@@ -109,6 +111,7 @@ public:
                 DBG ("AudioEngine: device init failed: " << error);
                 return;
             }
+            Platform::configureAudioDevice (deviceManager);
             deviceInitialised = true;
         }
 
@@ -129,6 +132,12 @@ public:
         deviceManager.removeAudioCallback (&sourcePlayer);
         sourcePlayer.setSource (nullptr);
         running = false;
+
+        if (Platform::closesAudioDeviceInBackground() && deviceInitialised)
+        {
+            deviceManager.closeAudioDevice();
+            deviceInitialised = false;
+        }
     }
 
     // Message thread. Opens or closes the first input channel and attaches the
@@ -138,6 +147,10 @@ public:
     {
         if (micOn == on)
             return true;
+        // On Android the permission prompt backgrounds the app, closing the
+        // device, and its answer arrives before the app resumes.
+        if (on && ! deviceInitialised)
+            start();
         if (! deviceInitialised)
             return false;
 

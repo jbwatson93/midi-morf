@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform.h"
+
 #include <JuceHeader.h>
 #include "BreakPlayer.h"
 #include "WavetablePresets.h"
@@ -117,7 +119,7 @@ public:
     // way and shows up in the Files app.
     const Break* loadRecording (const juce::AudioBuffer<float>& audio, double sampleRate, juce::String& error)
     {
-        auto dir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Recordings");
+        auto dir = Platform::documentsDirectory().getChildFile ("Recordings");
         dir.createDirectory();
         int number = 1;
         while (dir.getChildFile ("Recording " + juce::String (number) + ".wav").exists())

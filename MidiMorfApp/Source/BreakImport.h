@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform.h"
+
 #include <JuceHeader.h>
 #include "LocalSequencers.h"
 
@@ -12,15 +14,16 @@
 namespace BreakImport
 {
     // What the pickers offer. MP3, M4A/AAC and CAF are read by Core Audio.
-    inline const juce::String patterns { "*.wav;*.aif;*.aiff;*.mp3;*.m4a;*.aac;*.caf;*.flac" };
+    inline const juce::String patterns { Platform::importableAudioPatterns() };
 
     // The copy, or an empty File (with `error` set) if it couldn't be read.
     inline juce::File copyIn (const juce::URL& url, juce::String& error)
     {
-        auto dir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Breaks");
+        auto dir = Platform::documentsDirectory().getChildFile ("Breaks");
         dir.createDirectory();
-        auto name = url.getFileName().isNotEmpty() ? url.getFileName() : juce::String ("Imported.wav");
-        auto dest = dir.getChildFile (juce::URL::removeEscapeChars (name));
+        auto name = Platform::importedFileName (url);
+        if (name.isEmpty()) name = "Imported.wav";
+        auto dest = dir.getChildFile (name);
 
         if (auto in = url.createInputStream (juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)))
         {

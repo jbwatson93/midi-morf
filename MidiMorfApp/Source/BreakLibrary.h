@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform.h"
+
 #include <JuceHeader.h>
 #include <vector>
 
@@ -493,7 +495,7 @@ namespace BreakLibrary
         auto reader = std::unique_ptr<juce::AudioFormatReader> (formats.createReaderFor (file));
         if (reader == nullptr)
         {
-            error = "Couldn't read " + file.getFileName() + ". Try a WAV, AIFF, MP3 or M4A file.";
+            error = "Couldn't read " + file.getFileName() + ". Try " + Platform::importableAudioNames() + ".";
             return nullptr;
         }
         return fromReader (std::move (reader), file.getFileNameWithoutExtension(), 0.0, error);

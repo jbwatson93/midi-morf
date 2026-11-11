@@ -880,7 +880,7 @@ private:
 
         enum { FromFile = 1, FromMic, FirstPreset = 100 };
         juce::PopupMenu menu;
-        menu.addItem (FromFile, "Audio file (WAV, AIFF, MP3, M4A)...");
+        menu.addItem (FromFile, "Audio file (" + Platform::importableAudioNames() + ")...");
         menu.addItem (FromMic, "Record from the mic", ! micOpen);
         juce::PopupMenu synths;
         const auto& presets = WavetablePresets::factory();
@@ -944,7 +944,7 @@ private:
             safe->importButton.setEnabled (true);
             if (! ok)
             {
-                safe->alert ("No microphone", "Midi-Morf can't use the mic. Allow it in Settings > Midi-Morf > Microphone.");
+                safe->alert ("No microphone", "Midi-Morf can't use the mic. Allow it in " + Platform::microphoneSettingsPath() + ".");
                 return;
             }
             if (! safe->isShowing() || safe->sampler == nullptr)
@@ -1002,7 +1002,7 @@ private:
 
         if (audio.getNumSamples() == 0)
         {
-            alert ("Nothing recorded", "No sound came in from the mic. If it's blocked, allow it in Settings > Midi-Morf > Microphone.");
+            alert ("Nothing recorded", "No sound came in from the mic. If it's blocked, allow it in " + Platform::microphoneSettingsPath() + ".");
             return;
         }
 

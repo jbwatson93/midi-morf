@@ -1,26 +1,6 @@
 #include "MainComponent.h"
+#include "Platform.h"
 #include <set>
-
-#if JUCE_IOS
- #import <UIKit/UIKit.h>
- #import <AVFoundation/AVFoundation.h>
-#endif
-
-// Asks for the microphone (iOS shows its prompt the first time) and calls
-// back on the message thread with the answer.
-static void requestMicrophone (std::function<void (bool)> done)
-{
-   #if JUCE_IOS
-    JUCE_BEGIN_IGNORE_DEPRECATION_WARNINGS
-    [[AVAudioSession sharedInstance] requestRecordPermission: ^(BOOL granted)
-    {
-        juce::MessageManager::callAsync ([done, granted] { done (granted); });
-    }];
-    JUCE_END_IGNORE_DEPRECATION_WARNINGS
-   #else
-    juce::MessageManager::callAsync ([done] { done (true); });
-   #endif
-}
 
 static juce::File projectFile();   // Documents/Projects/Current.midimorf, below
 
@@ -75,16 +55,6 @@ static int pageTrack (int page)             { return (page - seqPageBase) % Trac
 static const MidiMorf::ControllerMode controllerKinds[5] = {
     MidiMorf::ControllerMode::MorfPad, MidiMorf::ControllerMode::Omnichord, MidiMorf::ControllerMode::DualMPad,
     MidiMorf::ControllerMode::MorfChord, MidiMorf::ControllerMode::RoseChord };
-
-// The four-at-once Perform view is for iPad; an iPhone screen is too small.
-static bool isIPad()
-{
-   #if JUCE_IOS
-    return [UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad;
-   #else
-    return false;
-   #endif
-}
 
 // The Remix Lane's instrument id: not a page index (its pages are per track).
 static constexpr int RemixId = 200;
@@ -368,7 +338,7 @@ MainComponent::MainComponent()
         else                                                                                              pageContainer.setPage (homePageIdx);
         updateRail();
     };
-    if (isIPad())
+    if (Platform::isTablet())   // a phone screen is too small for four at once
         addAndMakeVisible (performButton);
 
     for (int t = 0; t < TrackRack::NumTracks; ++t)
@@ -423,7 +393,7 @@ MainComponent::MainComponent()
     drumKitPage.onAudition  = [this] (int note, bool down) { audition (drumKitPage.getTrack(), note, down); };
     samplerPage.onMicNeeded = [this] (std::function<void (bool)> done)
     {
-        requestMicrophone ([this, done] (bool granted) { done (granted && audioEngine.setMicOn (true)); });
+        Platform::requestMicrophone ([this, done] (bool granted) { done (granted && audioEngine.setMicOn (true)); });
     };
     samplerPage.onMicDone = [this] { audioEngine.setMicOn (false); };
 
@@ -453,10 +423,14 @@ MainComponent::MainComponent()
 
     // Landscape initial size hint
     setSize (800, 400);
+
+    Platform::configureWindow();
+    Platform::attachRenderer (*this);
 }
 
 MainComponent::~MainComponent()
 {
+    Platform::detachRenderer();
     juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
     saveNow();
     stopTimer();
@@ -499,14 +473,14 @@ void MainComponent::resized()
     const int floatingGapLR = 4;            // gap between button left edge and page right
     const int rightGutter   = btnW + floatingPadR + floatingGapLR;   // 64
 
-#if JUCE_IOS
+#if JUCE_IOS || JUCE_ANDROID
     // iPad has tiny rounded-corner safe-area insets — page content would
     // slide right under the rail (and cover things like the right-edge strum
     // bar on Strum-Chord and Morf-Chord) unless we floor the trim at the rail
     // gutter. iPhone with Dynamic Island already gives ~44pt of inset which is
     // enough; iPhone landscape is also tight on horizontal real estate so we
     // don't want to widen the wood frame there unnecessarily.
-    const bool onIPad = isIPad();
+    const bool onIPad = Platform::needsRailGutter();
 
     if (auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
     {
@@ -1554,8 +1528,7 @@ static const juce::StringArray appSettingKeys { "lastPage", "mode", "seq_sync", 
 
 static juce::File projectFile()
 {
-    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
-               .getChildFile ("Projects").getChildFile ("Current.midimorf");
+    return Platform::documentsDirectory().getChildFile ("Projects").getChildFile ("Current.midimorf");
 }
 
 void MainComponent::saveState()
@@ -1831,7 +1804,7 @@ void MainComponent::restoreState()
                                || trackOfPage (lastPage) >= 0);
     if (! reachable)
         lastPage = instrumentOf[0] >= 0 ? pageOf (0) : homePageIdx;
-    if (lastPage == performPageIdx && ! isIPad())
+    if (lastPage == performPageIdx && ! Platform::isTablet())
         lastPage = homePageIdx;
 
     pageContainer.setPage (lastPage);

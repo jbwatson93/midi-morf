@@ -122,6 +122,9 @@ namespace Platform
 
     // Without this JUCE draws on the CPU, and the hardware canvas it copies to
     // ignores dirty rects, so any small repaint redraws the whole screen.
+    void enableNetworkMidiSession() {}
+    bool isNetworkMidiSessionEnabled() { return true; }   // nothing to turn on
+
     static std::unique_ptr<juce::OpenGLContext> openGL;
 
     void attachRenderer (juce::Component& mainComponent)

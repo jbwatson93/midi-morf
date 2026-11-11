@@ -4,6 +4,7 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMotion/CoreMotion.h>
+#import <CoreMIDI/MIDINetworkSession.h>
 
 namespace Platform
 {
@@ -52,6 +53,17 @@ namespace Platform
     bool closesAudioDeviceInBackground() { return false; }
 
     void configureWindow() {}
+
+    // Anyone on the Wi-Fi may connect, as with a Mac's session; the Mac's
+    // side chooses what to play.
+    void enableNetworkMidiSession()
+    {
+        auto* session = [MIDINetworkSession defaultSession];
+        session.enabled = YES;
+        session.connectionPolicy = MIDINetworkConnectionPolicy_Anyone;
+    }
+
+    bool isNetworkMidiSessionEnabled() { return [MIDINetworkSession defaultSession].isEnabled; }
 
     // CoreGraphics honours dirty rects, so iOS stays on JUCE's default.
     void attachRenderer (juce::Component&) {}

@@ -22,6 +22,8 @@
 #include "SamplerPage.h"
 #include "DrumGridPage.h"
 #include "DrumKitPage.h"
+#include "HaloPage.h"
+#include "HarpejjiPage.h"
 #include "PerformView.h"
 #include "AccelerometerManager.h"
 #include "MidiMorfProtocol.h"
@@ -136,6 +138,7 @@ private:
     // Projects: the working one autosaves to Current.midimorf, and a named
     // one also to <name>.midimorf beside it.
     void showProjects();
+    void showMidiOutMenu (int track, juce::Component& opener);
     void openProject (const juce::File& file);   // a named project file, or {} for a new one
     void saveProjectAs (const juce::String& name);
     void loadProjectTree (const juce::ValueTree& project);
@@ -158,6 +161,7 @@ private:
     std::array<std::unique_ptr<MorfChordPage>, TrackRack::NumTracks> morfChordPages;
     std::array<std::unique_ptr<RoseChordPage>, TrackRack::NumTracks> roseChordPages;
     std::array<std::unique_ptr<RemixPage>, TrackRack::NumTracks> remixPages;
+    std::array<std::unique_ptr<HarpejjiPage>, TrackRack::NumTracks> harpejjiPages;
     juce::Component morfPadPlaceholder, omnichordPlaceholder, dualMPadPlaceholder, morfChordPlaceholder, roseChordPlaceholder;
     TransportPage transportPage;
     // Every track has its own sequencer pages; the one-of-each slots they
@@ -174,6 +178,7 @@ private:
     SamplerPage samplerPage;
     PerformView performView;   // iPad only
     DrumKitPage drumKitPage;
+    HaloPage haloPage;
     NoteEditorPage noteEditorPage;
     int editingScene = -1;   // the clip the note editor has open
 

@@ -260,7 +260,7 @@ Done: `DrumSynth.h` renders each drum from Tune / Decay / Tone / Level (plus kit
 
 JB (2026-10-30): "rethink our server plugin, maybe this is a whole separate app". Recommendation:
 
-- **Retire the server for the groovebox.** Add an **External MIDI** sound source per track that sends the track's notes out on its own channel through CoreMIDI: network MIDI (built into macOS and iOS — Audio MIDI Setup → Network, no server), USB and Bluetooth MIDI. Send MIDI clock (and later Ableton Link) so the DAW follows the phone.
+- **Retire the server for the groovebox.** Add an **External MIDI** sound source per track (superseded 2026-11-09: a per-track MIDI Out setting beside the sound, see Phase 10) that sends the track's notes out on its own channel through CoreMIDI: network MIDI (built into macOS and iOS — Audio MIDI Setup → Network, no server), USB and Bluetooth MIDI. Send MIDI clock (and later Ableton Link) so the DAW follows the phone.
 - The phone is always the clock; the DAW-sync mode and the server-side copies of the sequencers go away. That also lifts the "extra Step-Seqs only play locally in WiFi mode" limit.
 - **Android** has no built-in network MIDI, so a tiny free **bridge** app (receive and pass MIDI to the DAW) may still be worth it there — but it would be a dumb pipe, not a second engine.
 - The current server keeps working for v2 users until then.
@@ -299,6 +299,79 @@ JUCE builds for Android (Projucer's Android exporter plus Android Studio, with O
 - [x] App icon and home-screen name: "Midi-Morf", with an adaptive icon made from the iOS art by `Tools/make_android_icon.py` (in `Resources/Android/res`), so launchers can mask it to any shape. Confirmed on the Android 15 tablet.
 - [ ] Bump `androidVersionCode` in the `.jucer` for each Play upload after the first.
 - [ ] Google Play Console: developer account (one-time $25), paid app at $4.99, store listing.
+
+### Phase 10 — MIDI out per track (2026-11-09)
+
+JB (2026-11-09): "send midi wirelessly and or send midi from a usb to midi adapter per track". This replaces the **External MIDI sound source** in *Decision needed — the Mac server*: MIDI out is a **per-track setting beside the sound**, not a sound that replaces it. So a track can layer the phone's sound with hardware, setting the sound to Empty gives MIDI only, and drum and step tracks can drive a hardware drum machine without losing their pages.
+
+**One tap point.** Every note already passes through `TrackRack` (the message-thread FIFO drained in `render()`, and the audio-thread `noteOn`/`noteOff`). A `MidiOutRouter` hooks in there, so every controller, sequencer, Remix row and clip sends MIDI with no page changes.
+
+- **Threads:** the audio thread pushes `{track, status, data, sampleOffset}` into a lock-free FIFO and never calls CoreMIDI. A small high-priority MIDI thread drains it and sends. v1 sends straight away; v2 time-stamps each message (callback host time + sample offset + a per-device latency offset) so hardware lines up with the phone's audio.
+- **Per track:** destination device, channel 1–16, and a note map for drum tracks (pad → GM drum notes, editable). Saved in the project. Devices are matched by identifier, then name, and show "not connected" when missing.
+- **Stuck notes:** each track keeps a table of the notes it is holding. Changing device, channel or track, or stopping, sends note-offs for exactly those.
+- **CC and pitch bend:** `PhoneMidiSink::sendCC` (mod wheel, XY pads) goes out too.
+- **Clock:** the sequencers already run at 24 PPQN, MIDI clock's rate. Add Start/Stop/Song Position, with clock switched on per destination. Ableton Link later (LinkKit tempo only, see the Link Audio decision).
+
+| Transport | What's needed |
+|---|---|
+| USB-MIDI adapter / class-compliant gear (USB-C or Lightning camera adapter) | Nothing extra: it appears in `MidiOutput::getAvailableDevices()`. `MidiDeviceListConnection` keeps the list live as gear is plugged in and out. |
+| Network MIDI (Wi-Fi → Mac DAW) | A few lines of Objective-C++ in the iOS platform file to enable `MIDINetworkSession` (JUCE doesn't). The Mac connects in Audio MIDI Setup → Network. No server. |
+| Bluetooth MIDI | JUCE's `BluetoothMidiDevicePairingDialogue` (Apple's pairing sheet) and the Bluetooth usage string in the plist. |
+| Other iOS apps (AUM etc.) | A virtual output, `MidiOutput::createNewDevice ("MidiMorf")`. Probably needs background audio, which the `.jucer` doesn't set yet. |
+
+**UI:** track rail → track menu → **MIDI Out**: device picker (with "Pair Bluetooth…" and a Network status line), channel, latency in ms, and "send clock" per device. A small activity light on the track while notes go out.
+
+- [x] **M1:** USB and network out, per-track device and channel, held-note cleanup. *(built 2026-11-09, branch `midi-out`)*
+- [x] **M2:** Bluetooth pairing and CC out. The Drum Grid already sends GM drum notes (kick 36, snare 38, clap 39, hats 42/46…), so the note map isn't editable yet. Nothing in the app sends pitch bend yet.
+- [x] **M3:** clock (24 PPQN) with Start/Stop per device, and a global timing offset (−20…+80 ms) on top of the audio latency. Messages are timed to the audio sample, measured within 1 ms on the Mac.
+- [ ] On device: everything above. Only the Mac test harness has heard it (a virtual port, timing, held notes, re-routing, mute/solo, clock, saving).
+- [ ] "Add a port for other apps" needs `UIBackgroundModes: audio`, which the app doesn't have; without it the menu item says it isn't available. Decide whether to add background audio.
+- [ ] Later: Android (`android.media.midi` covers USB; network still needs the bridge), MIDI in.
+
+Test on a device only: a USB adapter and a synth, plus a Mac network session.
+
+### Phase 11 — Grain mode on the Sampler (2026-11-09)
+
+JB (2026-11-09): "a grain synth where you sample … you could be touching the wave form making one loop and drag another finger across it". It's a 4th **Sampler mode, `Grain`**, next to Slice / Keys / OneShot, not a new sound type: loading, mic recording (`SampleRecorder`), trimming, the built-in breaks and project saving all come for free. It only adds a grain engine and a new way to touch the waveform.
+
+**Touch model**
+
+- **Each finger on the waveform is a grain cloud**: a looping grain stream at that spot. x is the position in the sample, and dragging moves the cloud live, so one finger holds a loop while another sweeps across.
+- **y** controls one setting you pick: grain size (default), pitch or spray.
+- Up to 5 clouds, each with its own colour ring. Grains flash as dots where they play.
+- Lifting a finger fades its cloud over Release. **Hold** keeps clouds playing after lifting (tap one to stop it). **Freeze** locks every cloud in place.
+- **Notes still play it:** a step-sequencer or keyboard note fires a cloud at the current position (the last touch or a Position knob), pitched to the note, so a grain track sequences like any other.
+
+**Engine (`GrainEngine`, inside `SamplerSource`)**
+
+- A fixed pool of ~64 grains, allocated up front: nothing allocates on the audio thread. Each grain has start, length, rate, window, pan and a reverse flag.
+- Each cloud runs a scheduler: **Density** 1–100 grains/s, **Size** 5–500 ms, **Spray** (position jitter), **Pitch** ±24 st plus jitter, **Spread**, **Window** Hann ↔ Tukey, **Reverse** chance.
+- Cubic interpolation over the sample the Sampler already holds, swapped safely like `breaks`.
+- Fingers → audio: 5 cloud slots of atomic `active / x / y`; the audio thread smooths x so drags don't zipper. Audio → screen: a lock-free snapshot of live grains, drawn at 30–60 fps.
+- CPU: 64 grains × 4 tracks should be fine; measure with `getCpuUsage()` on the oldest test device.
+
+**UI:** in Grain mode the `SampleEditor` waveform switches from trim/pan/pinch to **play**; zoom moves to the buttons or an edge strip so it doesn't fight playing. Knob row: Density, Size, Spray, Pitch, Spread, Window, Release, Y→. Hold and Freeze buttons. Record and the library picker stay, so you can record from the mic and play it straight away.
+
+- [x] **G1:** grain engine (96 grains), and Grain mode playable from notes. Notes play where the last finger went down, not from a Position knob. *(built 2026-11-09, branch `grain-mode`)*
+- [x] **G2:** multi-finger clouds on the waveform with x/y and grain drawing. Each cloud also **loops**: it reads LOOP ms from the finger at SCAN speed (1 = the sample's speed, 0 = still), which is "one finger making one loop".
+- [x] **G3:** HOLD (lift keeps playing; tap the ring to stop, drag it to move) and FREEZE (clouds stop scanning), saved per project. No grain presets yet.
+- [ ] On device: feel of the touch (ring size, the 28 px pick-up distance), knob ranges, CPU on the oldest test phone. Pinch-zoom is off in Grain mode (the −/+/FIT buttons still work).
+- [ ] Later: **gesture recording** (record finger moves into a clip so a scrub loop plays back), **resample another track** into the grain buffer.
+
+**Order:** MIDI out M1 first (small, and External MIDI was already high priority), then grain G1 → G2.
+
+### Phase 12 — Halo and Harpejji (2026-11-09)
+
+JB (2026-11-09) asked for "a new sound source and a new midi instrument … something that hasn't been done before". Built on branch `halo-and-ripple`, on top of `grain-mode`.
+
+**Halo — a sound.** Sympathetic strings for the whole band. Each held note tunes a bank of 8 resonators at its harmonics, and **the other tracks are the bow**: the rack renders listening sources after the rest and hands them what each track just played, before its fader. Hold a chord and the drums ring in it. **Mute the drums and they still drive it**, so the groove plays the chord unheard. LISTEN picks all the other tracks or one; PLUCK and BOW let it sound on its own; DECAY/DAMP; BRIGHT; METAL stretches the harmonics from string to bell to gong; WIDTH; LATCH keeps a chord tuned until the next one. `Halo.h`, `HaloPage.h`; the sound list has "Halo".
+
+**Ripple — an instrument (removed 2026-11-09).** JB tried it on the phone: "the ripple thing isnt useful". Replaced by the Harpejji below.
+
+**Harpejji — an instrument (2026-11-09, JB's idea).** A tapped fretboard like the harpejji: strings side by side a whole step apart (low at the bottom), frets a semitone apart left to right, fret cells coloured like piano keys, every C named. Any finger on a fret sounds straight away. STRINGS sets 4–16 strings. Each string sounds one note, its highest held fret, so a higher fret hammers on and letting go pulls off (softer). A finger that's down **slides** along its string without a new note (FRETTED: a semitone per fret; SMOOTH: gliding) and **bends** the note up as it moves across the string (BEND: off, ½, 1, 1½ or 2 steps at one string's width). Slides and bends are per-string pitch bend on the string's own channel (`TrackRack::postPitchBend` → `SoundSource::pitchBendAudio`); the synth (±48 semitone wheel, a short glide) and Halo (its held strings retune as they ring) follow it; the Sampler and drums ignore it, and MIDI out and note clips don't carry it yet. RING keeps a string sounding after you lift until it's played again or you tap the nut (the × column). LOW (C1–C5), TUNING (whole steps, minor/major thirds, fourths, fifths), VEL. Each string plays on its own channel so the same pitch on two strings doesn't cut itself off. Frets size themselves to about a finger each (15 on an iPhone). `HarpejjiPage.h`; the instrument list has "Harpejji" (it takes Ripple's id, 201).
+
+- [ ] On device: both pages' layouts on the iPhone, Halo levels with real material, Harpejji feel (fret size, RING with the synth's release), the Perform view with either in a quarter.
+- [ ] Later ideas: Halo LISTEN to the mic; Harpejji slides and bends over MIDI out (MPE) and in note clips.
 
 ## Open questions
 

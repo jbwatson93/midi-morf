@@ -47,6 +47,12 @@ namespace Platform
     // Settles how the app's window sits on screen, once at startup.
     void configureWindow();
 
+    // Turns on the device's own network MIDI session (RTP-MIDI), so a Mac
+    // sees it in Audio MIDI Setup > Network. Android has none: there it does
+    // nothing and counts as on.
+    void enableNetworkMidiSession();
+    bool isNetworkMidiSessionEnabled();
+
     // Sets up whichever renderer draws the UI fastest here. Detach before the
     // component goes away.
     void attachRenderer (juce::Component& mainComponent);

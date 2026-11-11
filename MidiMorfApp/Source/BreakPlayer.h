@@ -44,6 +44,18 @@ public:
     enum Warp { Beats = 0, Stretch = 1, Repitch = 2 };
     enum FilterType { FilterOff = 0, LowPass = 1, BandPass = 2, HighPass = 3 };
 
+    // More voices, mixed in after the slices and keys and before TONE and the
+    // filter — the sampler's grain clouds. Audio thread; true if any sounded.
+    class ExtraVoices
+    {
+    public:
+        virtual ~ExtraVoices() = default;
+        virtual bool renderVoices (const Break&, float* L, float* R, int numSamples) = 0;
+    };
+
+    // Set once, before audio starts.
+    void setExtraVoices (ExtraVoices* e) { extra = e; }
+
     // Swaps in a new loop. The old one is kept alive for half a second so the
     // audio thread can never be caught reading freed memory.
     void setBreak (std::unique_ptr<Break> b)
@@ -408,6 +420,8 @@ private:
         }
 
         any |= renderKeys (b, srcL, srcR, len, n);
+        if (extra != nullptr)
+            any |= extra->renderVoices (b, scratchL.data(), scratchR.data(), n);
 
         if (! any)
             return;
@@ -585,6 +599,7 @@ private:
         return any;
     }
 
+    ExtraVoices* extra = nullptr;
     std::unique_ptr<Break> owned;
     std::atomic<const Break*> current { nullptr };
     std::vector<Retired> retired;

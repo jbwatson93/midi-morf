@@ -9,6 +9,8 @@
 #include "WavetablePresets.h"
 #include "SampleRecorder.h"
 #include "DrumSynth.h"
+#include "MidiOut.h"
+#include "Halo.h"
 
 //==============================================================================
 // Owns the iOS audio device, the track sources and the track rack. The device
@@ -24,7 +26,8 @@ class AudioEngine
 public:
     // Values are saved in projects. Sampler was "Breaks" before it played
     // keys and one-shots too.
-    enum class Sound { Empty = 0, Synth = 1, Sampler = 2, Drums = 3 };
+    enum class Sound { Empty = 0, Synth = 1, Sampler = 2, Drums = 3, Halo = 4 };
+    static constexpr int NumSounds = 5;
 
     AudioEngine()
     {
@@ -38,11 +41,14 @@ public:
             rack.addToPool (drums[(size_t) t].get());
             mlrs[(size_t) t] = std::make_unique<MlrSource>();
             rack.addToPool (mlrs[(size_t) t].get());
+            halos[(size_t) t] = std::make_unique<HaloSource>();
+            rack.addToPool (halos[(size_t) t].get());
         }
         samplers[2]->setBuiltInBreak (0);   // the Amen, for the slicer
 
         punch.setTempoSource ([this] { return sequencers.getBpm(); });
         rack.setMasterProcessor (&punch);
+        rack.setMidiTap (&midiOut);
         rack.setTempoSource ([this] { return sequencers.getBpm(); });
 
         if (auto* acid = WavetablePresets::findFactory ("Acid Bass"))
@@ -118,6 +124,13 @@ public:
         sourcePlayer.setSource (&sequencers);
         deviceManager.addAudioCallback (&sourcePlayer);
         running = true;
+
+        // MIDI out is timed to when the phone's audio is heard.
+        if (auto* device = deviceManager.getCurrentAudioDevice())
+        {
+            const double sr = juce::jmax (1.0, device->getCurrentSampleRate());
+            midiOut.setAudioLatencyMs (1000.0 * (device->getCurrentBufferSizeSamples() + device->getOutputLatencyInSamples()) / sr);
+        }
     }
 
     // Detach the audio callback but keep the iOS audio session alive. Avoids
@@ -205,6 +218,9 @@ public:
     // A track's own Remix grid, whether or not the track is playing it.
     MlrSource& getTrackMlr (int track) noexcept { return *mlrs[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
 
+    // A track's own Halo, whether or not the track is playing it.
+    HaloSource& getTrackHalo (int track) noexcept { return *halos[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
+
     // A track's own drum synth, whether or not the track is playing it.
     DrumSource& getTrackDrums (int track) noexcept { return *drums[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
 
@@ -227,6 +243,7 @@ public:
     LocalSequencers& getSequencers() noexcept { return sequencers; }
     TrackRack& getRack() noexcept             { return rack; }
     PunchFx& getPunchFx() noexcept            { return punch; }
+    MidiOutRouter& getMidiOut() noexcept      { return midiOut; }
 
     // What a track's sound is called in the UI: for a synth, the preset it
     // was loaded from (or saved as).
@@ -239,6 +256,7 @@ public:
             case Sound::Synth:  return soundNames[(size_t) track];
             case Sound::Sampler: return samplers[(size_t) track]->getSampleName();
             case Sound::Drums:   return drums[(size_t) track]->getKitName();
+            case Sound::Halo:    return "Halo";
             default:            return "Empty";
         }
     }
@@ -272,6 +290,7 @@ private:
                              : sound == Sound::Synth   ? (SoundSource*) synths[(size_t) track].get()
                              : sound == Sound::Sampler ? (SoundSource*) samplers[(size_t) track].get()
                              : sound == Sound::Drums   ? (SoundSource*) drums[(size_t) track].get()
+                             : sound == Sound::Halo    ? (SoundSource*) halos[(size_t) track].get()
                                                        : nullptr);
     }
 
@@ -284,8 +303,10 @@ private:
     std::array<std::unique_ptr<SamplerSource>, TrackRack::NumTracks> samplers;
     std::array<std::unique_ptr<DrumSource>, TrackRack::NumTracks> drums;
     std::array<std::unique_ptr<MlrSource>, TrackRack::NumTracks> mlrs;
+    std::array<std::unique_ptr<HaloSource>, TrackRack::NumTracks> halos;
     std::array<bool, TrackRack::NumTracks> remixing {};
     PunchFx punch;
+    MidiOutRouter midiOut;   // before the rack, which taps into it
     TrackRack rack;
     LocalSequencers sequencers { rack };
     juce::AudioDeviceManager deviceManager;

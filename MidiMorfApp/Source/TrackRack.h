@@ -34,6 +34,18 @@ public:
     virtual void allNotesOff() = 0;
     virtual void controller (int /*cc*/, int /*value*/) {}
 
+    // Bends every note on `channel` by `semitones` (0 = in tune), for a
+    // controller that gives each of its strings its own channel (Harpejji).
+    // A new note on the channel starts at the channel's current bend.
+    virtual void pitchBendAudio (int /*channel*/, float /*semitones*/) {}
+
+    // A source that resonates with the other tracks (Halo) says so. The rack
+    // renders it after them and, before each render, hands it what each of
+    // them just played: mono, before the fader (so a muted track still
+    // drives it), nullptr for a track with nothing to hear.
+    virtual bool listensToTracks() const { return false; }
+    virtual void hearTracks (const float* const* /*tracks*/, int /*numTracks*/, int /*num*/) {}
+
     virtual juce::ValueTree getState() const = 0;
     virtual void setState (const juce::ValueTree&) = 0;
 };
@@ -46,6 +58,28 @@ class LiveEventObserver
 public:
     virtual ~LiveEventObserver() = default;
     virtual void liveEvent (int track, bool on, int channel, int note, int velocity127) = 0;
+};
+
+//==============================================================================
+// Hears every note each track plays, wherever it came from, as it reaches the
+// track — MIDI out. Muted and un-soloed tracks send no note-ons (their
+// note-offs still go, so nothing hangs).
+//
+// Audio thread, except controllerFromMessageThread. beginBlock() comes at the
+// top of each device callback and setBlockPosition() before each sub-block,
+// so the tap can time what follows to the sample.
+class MidiTap
+{
+public:
+    enum class Clock { Start, Tick, Stop };
+
+    virtual ~MidiTap() = default;
+    virtual void beginBlock (double sampleRate) = 0;
+    virtual void setBlockPosition (int samplesFromBlockStart) = 0;
+    virtual void note (int track, bool on, int note, int velocity127) = 0;
+    virtual void allNotesOff (int track) = 0;
+    virtual void clock (Clock) = 0;
+    virtual void controllerFromMessageThread (int track, int cc, int value) = 0;
 };
 
 //==============================================================================
@@ -103,6 +137,8 @@ public:
     // Set once, before audio starts.
     void setMasterProcessor (MasterProcessor* m) { master = m; }
     void setLiveEventObserver (LiveEventObserver* o) { observer = o; }
+    void setMidiTap (MidiTap* t) { tap = t; }
+    MidiTap* getMidiTap() const noexcept { return tap; }
 
     // Track volume, 0..MaxVolume linear (1 = unity). Any thread; the audio
     // thread ramps to it over 20 ms so a fader move never clicks.
@@ -141,6 +177,8 @@ public:
     void prepare (double sampleRate, int maxBlockSize)
     {
         scratch.setSize (2, juce::jmax (maxBlockSize, 1024));
+        for (auto& h : heard)
+            h.assign ((size_t) scratch.getNumSamples(), 0.0f);
         for (auto* s : pool)
             s->prepare (sampleRate, scratch.getNumSamples());
 
@@ -178,6 +216,18 @@ public:
     void postNoteOn (int track, int channel, int note, int velocity127) { post ({ Event::On, track, channel, note, velocity127 }); }
     void postNoteOff (int track, int channel, int note)                 { post ({ Event::Off, track, channel, note, 0 }); }
     void postAllNotesOff (int track)                                    { post ({ Event::AllOff, track, 0, 0, 0 }); }
+    void postPitchBend (int track, int channel, float semitones)        { Event e { Event::Bend, track, channel, 0, 0 }; e.bend = semitones; post (e); }
+
+    // Notes to play at a time to come (Time::getMillisecondCounterHiRes), to
+    // the audio block — for instruments that work out their timing ahead
+    // (none at the moment). Posted in time order per track; at most 512 waiting. An
+    // all-notes-off on the track cancels its waiting ones.
+    void postNoteOnAt (double dueMs, int track, int channel, int note, int velocity127) { post ({ Event::On, track, channel, note, velocity127, dueMs }); }
+    void postNoteOffAt (double dueMs, int track, int channel, int note)                 { post ({ Event::Off, track, channel, note, 0, dueMs }); }
+
+    // Counts each track's all-notes-offs, so an instrument holding notes to
+    // come can tell it should drop them (STOP, panic). Any thread.
+    int getAllOffCount (int track) const { return validTrack (track) ? allOffs[(size_t) track].load() : 0; }
 
     void postAllNotesOffEverywhere()
     {
@@ -191,12 +241,14 @@ public:
     {
         if (auto* s = getSource (track))
             s->noteOnAudio (channel, note, velocity127);
+        tapNote (track, true, note, velocity127);
     }
 
     void noteOff (int track, int channel, int note)
     {
         if (auto* s = getSource (track))
             s->noteOffAudio (channel, note);
+        tapNote (track, false, note, 0);
     }
 
     void render (juce::AudioBuffer<float>& out, int start, int num)
@@ -214,18 +266,25 @@ public:
             buses.clearInputs (n);
             anySolo = std::any_of (solo.begin(), solo.end(), [] (const auto& s) { return s.load(); });
 
-            for (int t = 0; t < NumTracks; ++t)
-            {
-                auto* s = sources[(size_t) t].load();
-                if (s == nullptr)
-                    continue;
+            // Tracks that listen to the others go second, hearing the first.
+            std::array<const float*, NumTracks> heardBy {};
+            for (int pass = 0; pass < 2; ++pass)
+                for (int t = 0; t < NumTracks; ++t)
+                {
+                    auto* s = sources[(size_t) t].load();
+                    if (s == nullptr || s->listensToTracks() != (pass == 1))
+                        continue;
 
-                s->render (scratch, 0, n);
-                if (! inserts[(size_t) t].isNeutral())
-                    inserts[(size_t) t].process (scratch.getWritePointer (0), scratch.getNumChannels() > 1 ? scratch.getWritePointer (1) : nullptr, n);
-                mixTrack (t, out, start + done, n);
-                feedSends (t, n);
-            }
+                    if (pass == 1)
+                        s->hearTracks (heardBy.data(), NumTracks, n);
+                    s->render (scratch, 0, n);
+                    if (! inserts[(size_t) t].isNeutral())
+                        inserts[(size_t) t].process (scratch.getWritePointer (0), scratch.getNumChannels() > 1 ? scratch.getWritePointer (1) : nullptr, n);
+                    if (pass == 0)
+                        heardBy[(size_t) t] = keepHeard (t, n);
+                    mixTrack (t, out, start + done, n);
+                    feedSends (t, n);
+                }
 
             if (! buses.isIdle())
                 buses.process (out.getWritePointer (0, start + done), out.getNumChannels() > 1 ? out.getWritePointer (1, start + done) : nullptr,
@@ -244,8 +303,10 @@ public:
 private:
     struct Event
     {
-        enum Type { On, Off, AllOff };
+        enum Type { On, Off, AllOff, Bend };
         Type type; int track, channel, note, velocity;
+        double due = 0.0;   // 0: now
+        float bend = 0.0f;  // Bend: semitones
     };
 
     static constexpr int FifoSize = 1024;
@@ -263,24 +324,93 @@ private:
 
     void drainPosted()
     {
+        const double now = numLater > 0 || fifo.getNumReady() > 0 ? juce::Time::getMillisecondCounterHiRes() : 0.0;
+
+        // Waiting notes whose time has come, in order.
+        if (numLater > 0)
+        {
+            int kept = 0;
+            for (int i = 0; i < numLater; ++i)
+            {
+                if (later[(size_t) i].due <= now) handleEvent (later[(size_t) i]);
+                else                              later[(size_t) kept++] = later[(size_t) i];
+            }
+            numLater = kept;
+        }
+
         const auto scope = fifo.read (fifo.getNumReady());
-        auto handle = [this] (int start, int count)
+        auto handle = [this, now] (int start, int count)
         {
             for (int i = start; i < start + count; ++i)
             {
                 const auto& e = events[(size_t) i];
-                if (auto* s = getSource (e.track))
+                if (e.due > now && e.type != Event::AllOff)
                 {
-                    if (e.type == Event::On)       s->noteOnAudio (e.channel, e.note, e.velocity);
-                    else if (e.type == Event::Off) s->noteOffAudio (e.channel, e.note);
-                    else                           s->allNotesOff();
+                    if (numLater < (int) later.size())
+                    {
+                        later[(size_t) numLater++] = e;
+                        continue;
+                    }
+                    if (e.type == Event::On)
+                        continue;   // full: drop a note-on, but never a note-off
                 }
-                if (observer != nullptr && e.type != Event::AllOff)
-                    observer->liveEvent (e.track, e.type == Event::On, e.channel, e.note, e.velocity);
+                handleEvent (e);
             }
         };
         handle (scope.startIndex1, scope.blockSize1);
         handle (scope.startIndex2, scope.blockSize2);
+    }
+
+    void handleEvent (const Event& e)
+    {
+        if (e.type == Event::AllOff)
+        {
+            int kept = 0;
+            for (int i = 0; i < numLater; ++i)
+                if (later[(size_t) i].track != e.track)
+                    later[(size_t) kept++] = later[(size_t) i];
+            numLater = kept;
+            allOffs[(size_t) e.track].fetch_add (1);
+        }
+
+        if (e.type == Event::Bend)
+        {
+            if (auto* s = getSource (e.track))
+                s->pitchBendAudio (e.channel, e.bend);
+            return;   // not a note: nothing to tap or record
+        }
+
+        if (auto* s = getSource (e.track))
+        {
+            if (e.type == Event::On)       s->noteOnAudio (e.channel, e.note, e.velocity);
+            else if (e.type == Event::Off) s->noteOffAudio (e.channel, e.note);
+            else                           s->allNotesOff();
+        }
+        if (e.type == Event::AllOff) { if (tap != nullptr) tap->allNotesOff (e.track); }
+        else tapNote (e.track, e.type == Event::On, e.note, e.velocity);
+        if (observer != nullptr && e.type != Event::AllOff)
+            observer->liveEvent (e.track, e.type == Event::On, e.channel, e.note, e.velocity);
+    }
+
+    // The track's scratch render, mono, for the listening tracks.
+    const float* keepHeard (int t, int n)
+    {
+        auto* h = heard[(size_t) t].data();
+        const float* l = scratch.getReadPointer (0);
+        const float* r = scratch.getReadPointer (juce::jmin (1, scratch.getNumChannels() - 1));
+        for (int i = 0; i < n; ++i)
+            h[i] = 0.5f * (l[i] + r[i]);
+        return h;
+    }
+
+    // Note-ons only from a track that can be heard; note-offs always.
+    void tapNote (int t, bool on, int note, int velocity)
+    {
+        if (tap == nullptr || ! validTrack (t))
+            return;
+        if (on && (muted[(size_t) t].load() || (! solo[(size_t) t].load() && std::any_of (solo.begin(), solo.end(), [] (const auto& s) { return s.load(); }))))
+            return;
+        tap->note (t, on, note, velocity);
     }
 
     // Volume x balance for one side (0 left, 1 right).
@@ -404,6 +534,7 @@ private:
     std::vector<SoundSource*> pool;   // message thread
     MasterProcessor* master = nullptr;
     LiveEventObserver* observer = nullptr;
+    MidiTap* tap = nullptr;
     std::array<std::atomic<float>, NumTracks> volumes { 1.0f, 1.0f, 1.0f, 1.0f };
     std::array<std::atomic<float>, NumTracks> pans {};
     std::array<std::atomic<bool>, NumTracks> muted {}, solo {};
@@ -417,9 +548,13 @@ private:
     bool anySolo = false;                    // audio thread
     std::array<std::array<juce::SmoothedValue<float>, 2>, NumTracks> gains;   // audio thread, per side
     juce::AudioBuffer<float> scratch;
+    std::array<std::vector<float>, NumTracks> heard;   // audio thread
 
     juce::AbstractFifo fifo { FifoSize };
     std::array<Event, FifoSize> events {};
+    std::array<Event, 512> later {};   // audio thread: posted for a time to come
+    int numLater = 0;
+    std::array<std::atomic<int>, NumTracks> allOffs {};
 
     float limiterEnv = 0.0f, limiterRelease = 0.999f;
 };

@@ -29,10 +29,16 @@ public:
 
     bool canPlaySound (juce::SynthesiserSound*) override { return true; }
 
+    // A pitch wheel of 0..16383 covers this many semitones each way, so a
+    // fretboard's slide reaches two octaves.
+    static constexpr float BendRange = 48.0f;
+    static float wheelToSemis (int wheel) { return (float) (wheel - 8192) / 8192.0f * BendRange; }
+
     void startNote (int midiNoteNumber, float velocity,
-                    juce::SynthesiserSound*, int) override
+                    juce::SynthesiserSound*, int pitchWheel) override
     {
         level = velocity;
+        bendTarget = bendNow = wheelToSemis (pitchWheel);
         float driftCents = (random.nextFloat() * 2.0f - 1.0f) * 1.5f;
         frequency = juce::MidiMessage::getMidiNoteInHertz (midiNoteNumber)
                   * std::pow (2.0, driftCents / 1200.0);
@@ -65,7 +71,7 @@ public:
         }
     }
 
-    void pitchWheelMoved (int) override {}
+    void pitchWheelMoved (int wheel) override { bendTarget = wheelToSemis (wheel); }
     void controllerMoved (int, int) override {}
 
     void prepareToPlay (double sampleRate)
@@ -100,7 +106,9 @@ public:
         if (! isVoiceActive())
             return;
 
-        const double base = frequency * std::pow (2.0, pitchModSemi / 12.0) / currentSampleRate;
+        // A bend glides over a few blocks rather than stepping.
+        bendNow += (bendTarget - bendNow) * 0.4f;
+        const double base = frequency * std::pow (2.0, (pitchModSemi + bendNow) / 12.0) / currentSampleRate;
         const double incA = base * std::pow (2.0, oscA.semis / 12.0);
         const double incB = base * std::pow (2.0, oscB.semis / 12.0);
         const double incSub = base * 0.5;
@@ -228,6 +236,7 @@ private:
     float filterCutoff = 2000.0f, filterReso = 1.0f, filterEnvAmount = 0.0f;
     float envPosAmount = 0.0f;
     float drive = 0.0f, gain = 0.15f, pitchModSemi = 0.0f;
+    float bendTarget = 0.0f, bendNow = 0.0f;   // semitones, from the channel's pitch wheel
 
     float lsL[4] {}, lsR[4] {};
     juce::ADSR ampAdsr, filterAdsr;
@@ -397,6 +406,11 @@ public:
     void release() override                               { releaseResources(); }
     void noteOnAudio (int ch, int note, int velocity127) override { noteOnFromAudioThread (note, velocity127, ch); }
     void noteOffAudio (int ch, int note) override                 { noteOffFromAudioThread (note, ch); }
+    void pitchBendAudio (int ch, float semis) override
+    {
+        const int wheel = juce::jlimit (0, 16383, juce::roundToInt (8192.0f + semis / WavetableVoice::BendRange * 8192.0f));
+        audioThreadMidi.addEvent (juce::MidiMessage::pitchWheel (juce::jlimit (1, 16, ch), wheel), 0);
+    }
 
     void render (juce::AudioBuffer<float>& buffer, int start, int num) override
     {

@@ -42,12 +42,15 @@ static constexpr int noteEditorPageIdx = MidiMorf::NUM_CONTROLLERS + 8;
 // Then every track's own instrument pages: 4 of each kind, kind-major.
 // Kinds 0-2 are the sequencers (as LocalSequencers::Kind), 3-7 the live
 // controllers.
-static constexpr int NumKinds         = 9;   // ... and 8, the Remix Lane
+static constexpr int NumKinds         = 10;   // ... 8, the Remix Lane, and 9, Harpejji
 static constexpr int seqPageBase      = MidiMorf::NUM_CONTROLLERS + 9;
-static constexpr int numPages         = seqPageBase + NumKinds * TrackRack::NumTracks;
+static constexpr int seqPageEnd       = seqPageBase + NumKinds * TrackRack::NumTracks;
+// Then pages added since, after all the tracks' pages so no index moves.
+static constexpr int haloPageIdx      = seqPageEnd;
+static constexpr int numPages         = haloPageIdx + 1;
 
 static int seqPageIdx (int kind, int track) { return seqPageBase + kind * TrackRack::NumTracks + track; }
-static bool isSeqPage (int page)            { return page >= seqPageBase && page < numPages; }   // any track's instrument page
+static bool isSeqPage (int page)            { return page >= seqPageBase && page < seqPageEnd; }   // any track's instrument page
 static int pageKind (int page)              { return (page - seqPageBase) / TrackRack::NumTracks; }
 static int pageTrack (int page)             { return (page - seqPageBase) % TrackRack::NumTracks; }
 
@@ -56,8 +59,10 @@ static const MidiMorf::ControllerMode controllerKinds[5] = {
     MidiMorf::ControllerMode::MorfPad, MidiMorf::ControllerMode::Omnichord, MidiMorf::ControllerMode::DualMPad,
     MidiMorf::ControllerMode::MorfChord, MidiMorf::ControllerMode::RoseChord };
 
-// The Remix Lane's instrument id: not a page index (its pages are per track).
-static constexpr int RemixId = 200;
+// The Remix Lane's and Harpejji's instrument ids: not page indices (their
+// pages are per track).
+static constexpr int RemixId = 200, HarpejjiId = 201;
+static constexpr int KindRemix = 8, KindHarpejji = 9;
 
 static bool isSequencer (int mode)
 {
@@ -85,7 +90,9 @@ static constexpr int KindStep = (int) LocalSequencers::Kind::Step, KindSlice = (
 static int kindOf (int mode)
 {
     if (mode == RemixId)
-        return 8;
+        return KindRemix;
+    if (mode == HarpejjiId)
+        return KindHarpejji;
     if (isSequencer (mode))
         return whichSequencer (mode);
     for (int k = 0; k < 5; ++k)
@@ -99,6 +106,8 @@ static juce::String instrumentShortName (int mode)
 {
     if (mode == RemixId)
         return "Remix";
+    if (mode == HarpejjiId)
+        return "Harpejji";
     if (mode == drumGridPageIdx)
         return "Drums";
     return juce::isPositiveAndBelow (mode, MidiMorf::NUM_CONTROLLERS) ? controllerShortNames[mode] : juce::String();
@@ -121,6 +130,8 @@ MainComponent::MainComponent()
         roseChordPages[(size_t) t] = std::make_unique<RoseChordPage> (router);
         remixPages[(size_t) t]     = std::make_unique<RemixPage> (audioEngine.getTrackMlr (t), audioEngine.getSequencers(), t);
         remixPages[(size_t) t]->onChanged = [this] { saveState(); };
+        harpejjiPages[(size_t) t]  = std::make_unique<HarpejjiPage> (audioEngine.getRack(), t);
+        harpejjiPages[(size_t) t]->onStateChanged = [this] { saveState(); };
 
         stepPages[(size_t) t] = std::make_unique<StepSequencerPage> (router);
         stepPages[(size_t) t]->setTrack (t);
@@ -247,6 +258,13 @@ MainComponent::MainComponent()
         }
     };
     cb.getMuted      = [this] (int t) { return audioEngine.getRack().isMuted (t); };
+    cb.midiOutState  = [this] (int t)
+    {
+        auto& m = audioEngine.getMidiOut();
+        return ! m.isTrackSending (t) ? 0 : m.isTrackMissing (t) ? 2 : 1;
+    };
+    cb.midiOutActive = [this] (int t) { return audioEngine.getMidiOut().recentlyActive (t); };
+    cb.midiOutMenu   = [this] (int t, juce::Component& opener) { showMidiOutMenu (t, opener); };
     cb.setMuted      = [this] (int t, bool m) { audioEngine.getRack().setMuted (t, m); };
     cb.openPage      = [this] (int page) { pageContainer.setPage (page); };
     cb.openProjects  = [this] { showProjects(); };
@@ -254,7 +272,7 @@ MainComponent::MainComponent()
     cb.changed       = [this] { saveState(); };
     homePage = std::make_unique<SessionPage> (session, cb, SessionPage::Pages { (int) MidiMorf::ControllerMode::Transport,
                                                                                 (int) MidiMorf::ControllerMode::FXPunchIn,
-                                                                                settingsPageIdx, aboutPageIdx, drumGridPageIdx, RemixId });
+                                                                                settingsPageIdx, aboutPageIdx, drumGridPageIdx, RemixId, HarpejjiId });
 
     // Page container — controllers, then Sound, About, Settings, Home, Breaks.
     // The order is the page indices above.
@@ -285,6 +303,8 @@ MainComponent::MainComponent()
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (morfChordPages[(size_t) t].get());
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (roseChordPages[(size_t) t].get());
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (remixPages[(size_t) t].get());
+    for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (harpejjiPages[(size_t) t].get());
+    pageContainer.addPage (&haloPage);
 
     // Perform borrows the tracks' instrument pages and hands them back.
     performView.onShow       = [this] { populatePerform(); };
@@ -389,6 +409,7 @@ MainComponent::MainComponent()
         slicePage (t).setOnStateChanged ([this] { saveState(); });
     }
     drumKitPage.onChanged   = [this] { saveState(); };
+    haloPage.onChanged      = [this] { saveState(); };
     drumKitPage.onKitLoaded = [this] { homePage->refresh(); updateRail(); };
     drumKitPage.onAudition  = [this] (int note, bool down) { audition (drumKitPage.getTrack(), note, down); };
     samplerPage.onMicNeeded = [this] (std::function<void (bool)> done)
@@ -553,11 +574,13 @@ juce::String MainComponent::getPageDisplayName (int pageIndex) const
     {
         const int kind = pageKind (pageIndex);
         static const char* names[3] = { "Step-Seq", "Breaker", "Drum Grid" };
-        if (kind == 8) return "Remix Lane";
+        if (kind == KindRemix) return "Remix Lane";
+        if (kind == KindHarpejji) return "Harpejji";
         return kind < 3 ? juce::String (names[kind]) : controllerNames[(int) controllerKinds[kind - 3]];
     }
     if (pageIndex == drumKitPageIdx)   return "Drums";
     if (pageIndex == noteEditorPageIdx) return "Editor";
+    if (pageIndex == haloPageIdx)      return "Halo";
     return {};
 }
 
@@ -575,7 +598,8 @@ void MainComponent::setInstrument (int track, int mode)
     // damaged settings file) means no instrument.
     using CM = MidiMorf::ControllerMode;
     const bool isInstrument = mode == (int) CM::MorfPad || mode == (int) CM::Omnichord || mode == (int) CM::DualMPad
-                           || mode == (int) CM::MorfChord || mode == (int) CM::RoseChord || isSequencer (mode);   // incl. Drum Grid
+                           || mode == (int) CM::MorfChord || mode == (int) CM::RoseChord || mode == HarpejjiId
+                           || isSequencer (mode);   // incl. Drum Grid
     if (! isInstrument)
         mode = -1;
 
@@ -613,12 +637,13 @@ void MainComponent::setInstrument (int track, int mode)
 
 void MainComponent::setSound (int track, int sound)
 {
-    audioEngine.setTrackSound (track, static_cast<AudioEngine::Sound> (juce::jlimit (0, 3, sound)));
+    audioEngine.setTrackSound (track, static_cast<AudioEngine::Sound> (juce::jlimit (0, AudioEngine::NumSounds - 1, sound)));
 
     // A sound page can't keep editing a sound its track no longer plays.
     const int page = pageContainer.getCurrentPage();
     if ((page == synthPageIdx && audioEngine.getWavetable (soundTrack) == nullptr)
-        || (page == drumKitPageIdx && audioEngine.getTrackSound (drumKitPage.getTrack()) != AudioEngine::Sound::Drums))
+        || (page == drumKitPageIdx && audioEngine.getTrackSound (drumKitPage.getTrack()) != AudioEngine::Sound::Drums)
+        || (page == haloPageIdx && audioEngine.getTrackSound (haloPage.getTrack()) != AudioEngine::Sound::Halo))
         pageContainer.setPage (homePageIdx);
 }
 
@@ -633,6 +658,9 @@ int MainComponent::trackOfPage (int pageIndex) const
 
     if (pageIndex == drumKitPageIdx)
         return drumKitPage.getTrack();
+
+    if (pageIndex == haloPageIdx)
+        return haloPage.getTrack();
 
     if (pageIndex == noteEditorPageIdx)
         return noteEditorPage.getTrack();
@@ -654,7 +682,7 @@ int MainComponent::pageOf (int track) const
 
 bool MainComponent::pageIsSound (int pageIndex) const
 {
-    return pageIndex == synthPageIdx || pageIndex == samplerPageIdx || pageIndex == drumKitPageIdx;
+    return pageIndex == synthPageIdx || pageIndex == samplerPageIdx || pageIndex == drumKitPageIdx || pageIndex == haloPageIdx;
 }
 
 // First tap: the track's instrument. Tapping the lit track again flips
@@ -723,7 +751,7 @@ void MainComponent::showSound (int track)
 int MainComponent::prepareSoundPage (int track)
 {
     if (audioEngine.isTrackRemix (track))
-        return seqPageIdx (8, track);   // a Remix track's samples are on its grid
+        return seqPageIdx (KindRemix, track);   // a Remix track's samples are on its grid
 
     switch (audioEngine.getTrackSound (track))
     {
@@ -739,6 +767,10 @@ int MainComponent::prepareSoundPage (int track)
         case AudioEngine::Sound::Drums:
             drumKitPage.edit (audioEngine.getTrackDrums (track), track);
             return drumKitPageIdx;
+
+        case AudioEngine::Sound::Halo:
+            haloPage.edit (audioEngine.getTrackHalo (track), track);
+            return haloPageIdx;
 
         default:
             return -1;
@@ -1146,6 +1178,96 @@ void MainComponent::applySessionToSequencers()
 //==============================================================================
 // Projects
 
+//==============================================================================
+// A track's MIDI out: where it sends, on which channel, and the gear's clock
+// and timing. Anything picked applies at once and is saved.
+void MainComponent::showMidiOutMenu (int track, juce::Component& opener)
+{
+    auto& midi = audioEngine.getMidiOut();
+    const auto current = midi.getTrackDestination (track);
+    const auto destinations = midi.available();
+    juce::Component::SafePointer<juce::Component> safeOpener (&opener);
+
+    juce::PopupMenu m;
+    m.addSectionHeader ("T" + juce::String (track + 1) + " MIDI OUT");
+    m.addItem ("Off", true, current.isEmpty(), [this, track]
+    {
+        audioEngine.getMidiOut().setTrackDestination (track, {}, {});
+        homePage->refresh();
+        saveState();
+    });
+
+    bool currentListed = false;
+    for (const auto& d : destinations)
+    {
+        currentListed |= d.id == current;
+        m.addItem (d.name, true, d.id == current, [this, track, d]
+        {
+            audioEngine.getMidiOut().setTrackDestination (track, d.id, d.name);
+            homePage->refresh();
+            saveState();
+        });
+    }
+    if (current.isNotEmpty() && ! currentListed)
+        m.addItem (midi.getTrackDestinationName (track) + " (not connected)", false, true, nullptr);
+    if (destinations.empty())
+        m.addItem ("Nothing connected yet", false, false, nullptr);
+
+    m.addSeparator();
+    if (! Platform::isNetworkMidiSessionEnabled())
+        m.addItem ("Turn on Wi-Fi MIDI", [this]
+        {
+            Platform::enableNetworkMidiSession();
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Wi-Fi MIDI is on",
+                "On your Mac, open Audio MIDI Setup, then Window > Show MIDI Studio > Network. "
+                "Select this phone under Directory and press Connect.\n\n"
+                "Then pick \"Network Session 1\" here as the track's MIDI out.");
+        });
+   #if JUCE_IOS || JUCE_ANDROID
+    if (juce::BluetoothMidiDevicePairingDialogue::isAvailable())
+        m.addItem (juce::String::fromUTF8 ("Pair Bluetooth MIDI\xe2\x80\xa6"), [] { juce::BluetoothMidiDevicePairingDialogue::open(); });
+   #endif
+    m.addItem ("Add a port for other apps", [this]
+    {
+        if (! audioEngine.getMidiOut().tryCreateVirtualPort())
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Not available",
+                "iOS didn't allow a MIDI port for other apps. USB, Bluetooth and Wi-Fi MIDI still work.");
+    });
+
+    if (current.isNotEmpty())
+    {
+        m.addSeparator();
+        juce::PopupMenu channels;
+        for (int ch = 1; ch <= 16; ++ch)
+            channels.addItem ("Channel " + juce::String (ch), true, midi.getTrackChannel (track) == ch, [this, track, ch]
+            {
+                audioEngine.getMidiOut().setTrackChannel (track, ch);
+                saveState();
+            });
+        m.addSubMenu ("Channel " + juce::String (midi.getTrackChannel (track)), channels);
+
+        const bool clock = midi.sendsClock (current);
+        m.addItem ("Send clock to " + midi.getTrackDestinationName (track), true, clock, [this, current, clock]
+        {
+            audioEngine.getMidiOut().setSendsClock (current, ! clock);
+            saveState();
+        });
+    }
+
+    juce::PopupMenu timing;
+    const double offset = midi.getOffsetMs();
+    for (int ms : { -20, -10, -5, 0, 5, 10, 20, 40, 80 })
+        timing.addItem ((ms > 0 ? "+" : "") + juce::String (ms) + " ms" + (ms == 0 ? " (in time with the phone)" : ""),
+                        true, juce::roundToInt (offset) == ms, [this, ms]
+                        {
+                            audioEngine.getMidiOut().setOffsetMs (ms);
+                            saveState();
+                        });
+    m.addSubMenu ("Timing " + juce::String ((offset > 0 ? "+" : "") + juce::String (juce::roundToInt (offset))) + " ms", timing);
+
+    m.showMenuAsync (PopupStyle::attached (m, opener), [safeOpener] (int) {});
+}
+
 void MainComponent::showProjects()
 {
     if (projectBrowser == nullptr)
@@ -1402,9 +1524,11 @@ void MainComponent::populatePerform()
             if (! wantsSound || (pass == 0) != performShowsSound[(size_t) t])
                 continue;
 
-            const int editor = audioEngine.getTrackSound (t) == AudioEngine::Sound::Synth   ? synthPageIdx
-                             : audioEngine.getTrackSound (t) == AudioEngine::Sound::Sampler ? samplerPageIdx
-                                                                                             : drumKitPageIdx;
+            const auto sound = audioEngine.getTrackSound (t);
+            const int editor = sound == AudioEngine::Sound::Synth   ? synthPageIdx
+                             : sound == AudioEngine::Sound::Sampler ? samplerPageIdx
+                             : sound == AudioEngine::Sound::Halo    ? haloPageIdx
+                                                                    : drumKitPageIdx;
             if (usedEditors.insert (editor).second)
                 show[(size_t) t] = prepareSoundPage (t);
             else if (pageOf (t) >= 0)
@@ -1524,7 +1648,7 @@ void MainComponent::timerCallback()
 // Documents/Projects/Current.midimorf. The settings file keeps only app
 // preferences: WiFi/Local, sync source, last page, the edited sound.
 
-static const juce::StringArray appSettingKeys { "lastPage", "mode", "seq_sync", "sound_track", "tour_done" };
+static const juce::StringArray appSettingKeys { "lastPage", "mode", "seq_sync", "sound_track", "tour_done", "midi_clock_to", "midi_offset_ms" };
 
 static juce::File projectFile()
 {
@@ -1553,6 +1677,7 @@ void MainComponent::saveNow()
         dualMPadPages[(size_t) t]->saveState (ps);
         morfChordPages[(size_t) t]->saveState (ps);
         roseChordPages[(size_t) t]->saveState (ps);
+        harpejjiPages[(size_t) t]->saveState (ps);
         if (auto xml = ps.createXml ("TrackPages"))
             pageState.setValue ("track_pages_" + juce::String (t), xml.get());
     }
@@ -1602,6 +1727,8 @@ void MainComponent::saveNow()
         track.appendChild (audioEngine.getTrackSampler (t).getState(), nullptr);   // the track plays
         track.appendChild (audioEngine.getTrackDrums (t).getState(), nullptr);
         track.appendChild (audioEngine.getTrackMlr (t).getState(), nullptr);
+        track.appendChild (audioEngine.getTrackHalo (t).getState(), nullptr);
+        audioEngine.getMidiOut().saveTrack (t, track);
         project.appendChild (track, nullptr);
     }
     if (auto xml = pageState.createXml ("PageState"))
@@ -1628,6 +1755,7 @@ void MainComponent::saveNow()
     {
         props->setValue ("lastPage", pageContainer.getCurrentPage());
         props->setValue ("sound_track", soundTrack);
+        audioEngine.getMidiOut().saveSettings (*props);
 
         // Once the project is safely on disk, everything else in the settings
         // file is from before it existed.
@@ -1647,6 +1775,8 @@ void MainComponent::restoreState()
     auto* settings = appProperties.getUserSettings();
     if (settings == nullptr)
         return;
+
+    audioEngine.getMidiOut().loadSettings (*settings);
 
     // The project, if there is one. Without it (first launch of this
     // version) everything comes from the settings file, as it used to.
@@ -1682,6 +1812,7 @@ void MainComponent::restoreState()
         dualMPadPages[(size_t) t]->restoreState (ps);
         morfChordPages[(size_t) t]->restoreState (ps);
         roseChordPages[(size_t) t]->restoreState (ps);
+        harpejjiPages[(size_t) t]->restoreState (ps);
     }
     fxPage.restoreState (pages);
     audioEngine.getSequencers().restoreState (pages);
@@ -1713,6 +1844,9 @@ void MainComponent::restoreState()
                 audioEngine.getTrackDrums (t).setState (kit);
             if (auto grid = track.getChildWithName (MlrSource::stateType); grid.isValid())
                 audioEngine.getTrackMlr (t).setState (grid);
+            if (auto halo = track.getChildWithName (HaloSource::stateType); halo.isValid())
+                audioEngine.getTrackHalo (t).setState (halo);
+            audioEngine.getMidiOut().loadTrack (t, track);
             setInstrument (t, track.getProperty ("instrument", defaultInst[t]));
             audioEngine.getRack().setVolume (t, (float) (double) track.getProperty ("volume", 1.0));
             audioEngine.setSoundName (t, track["soundName"].toString());
@@ -1787,6 +1921,14 @@ void MainComponent::restoreState()
             break;
         }
 
+    // The Halo page likewise.
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+        if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Halo)
+        {
+            haloPage.edit (audioEngine.getTrackHalo (t), t);
+            break;
+        }
+
     // The Drums page likewise, on the first track playing drums.
     for (int t = 0; t < TrackRack::NumTracks; ++t)
         if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Drums)
@@ -1798,6 +1940,8 @@ void MainComponent::restoreState()
     // Last page, if it still belongs somewhere; otherwise T1's
     // instrument (Morf-Chord on first launch), or Home.
     int lastPage = settings->getIntValue ("lastPage", -1);
+    if (lastPage == haloPageIdx && audioEngine.getTrackSound (haloPage.getTrack()) != AudioEngine::Sound::Halo)
+        lastPage = -1;   // no track plays Halo any more
     const bool reachable = lastPage >= 0 && lastPage < numPages
                            && ((lastPage >= MidiMorf::NUM_CONTROLLERS && lastPage < seqPageBase && lastPage != drumGridPageIdx && lastPage != noteEditorPageIdx)
                                || lastPage == (int) CM::Transport || lastPage == (int) CM::FXPunchIn

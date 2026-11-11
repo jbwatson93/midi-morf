@@ -5,16 +5,19 @@
 #include <JuceHeader.h>
 #include "BreakPlayer.h"
 #include "WavetablePresets.h"
+#include "GrainEngine.h"
 #include <atomic>
 
 //==============================================================================
-// The sampler as a track source. One sample, three ways to play it:
+// The sampler as a track source. One sample, four ways to play it:
 //
 //   • Slice     — the slice sequencer's breaks: notes from the slice root up
 //                 pick slices, one-shots at native speed.
 //   • Keys      — the whole sample across the keyboard from a root note, with
 //                 an ADSR.
 //   • One-shot  — every note plays the whole sample at its own pitch.
+//   • Grain     — clouds of grains: one per finger on the waveform, one per
+//                 held note (GrainEngine). The G* params are its settings.
 //
 // The sample is a built-in break, an imported audio file, or a note rendered
 // from one of the synth's factory presets (so "Bell Keys" can become a
@@ -24,10 +27,11 @@
 // says how long the trimmed part is (and so its tempo), REVERSE and the fades
 // shape it, and the player gets a fresh copy built from those. The playback
 // settings (Param) go straight to the player, Simpler style.
-class SamplerSource : public SoundSource
+class SamplerSource : public SoundSource,
+                      private BreakPlayer::ExtraVoices
 {
 public:
-    enum Mode { Slice = 0, Keys = 1, OneShot = 2 };
+    enum Mode { Slice = 0, Keys = 1, OneShot = 2, Grain = 3 };
 
     // What's cut from the source. Times in seconds; end < 0 is the end.
     struct Edit
@@ -44,8 +48,10 @@ public:
         }
     };
 
-    enum Param { Transpose = 0, Detune, Warp, Grain, Speed, Gain, VelSense, Loop,
-                 FilterType, Cutoff, Resonance, NumParams };
+    enum Param { Transpose = 0, Detune, Warp, GrainMs, Speed, Gain, VelSense, Loop,
+                 FilterType, Cutoff, Resonance,
+                 GDensity, GSize, GSpray, GScan, GLoop, GJitter, GSpread, GWindow, GReverse,
+                 GRelease, GYAxis, GPosition, GHold, GFreeze, NumParams };
 
     struct ParamInfo { const char* key; float min, max, def; };
     static const ParamInfo& paramInfo (Param p)
@@ -62,6 +68,20 @@ public:
             { "ftype",      0.0f,  3.0f,  0.0f },     // BreakPlayer::FilterType
             { "cutoff",    20.0f, 20000.0f, 20000.0f },
             { "res",        0.0f,  1.0f,  0.2f },
+            { "gDensity",   1.0f,  100.0f, 30.0f },   // grains per second
+            { "gSize",      5.0f,  500.0f, 80.0f },   // ms
+            { "gSpray",     0.0f,  1.0f,  0.1f },
+            { "gScan",     -2.0f,  2.0f,  1.0f },     // x the sample's own speed
+            { "gLoop",     10.0f,  2000.0f, 300.0f }, // ms
+            { "gJitter",    0.0f,  12.0f, 0.0f },     // semitones
+            { "gSpread",    0.0f,  1.0f,  0.5f },
+            { "gWindow",    0.0f,  1.0f,  0.0f },
+            { "gReverse",   0.0f,  1.0f,  0.0f },
+            { "gRelease",   5.0f,  4000.0f, 300.0f }, // ms
+            { "gYAxis",     0.0f,  3.0f,  0.0f },     // GrainEngine::YAxis
+            { "gPos",       0.0f,  1.0f,  0.25f },
+            { "gHold",      0.0f,  1.0f,  0.0f },
+            { "gFreeze",    0.0f,  1.0f,  0.0f },
         };
         return info[p];
     }
@@ -69,6 +89,12 @@ public:
     static const juce::StringArray& warpNames()
     {
         static const juce::StringArray n { "Beats", "Stretch", "Repitch" };
+        return n;
+    }
+
+    static const juce::StringArray& yAxisNames()
+    {
+        static const juce::StringArray n { "Size", "Pitch", "Spray", "Density" };
         return n;
     }
 
@@ -82,15 +108,18 @@ public:
     {
         for (int p = 0; p < NumParams; ++p)
             params[(size_t) p].store (paramInfo ((Param) p).def);
+        applyParams();
+        breaks.setExtraVoices (this);
     }
 
     static const juce::StringArray& modeNames()
     {
-        static const juce::StringArray n { "Slice", "Keys", "One-shot" };
+        static const juce::StringArray n { "Slice", "Keys", "One-shot", "Grain" };
         return n;
     }
 
     BreakPlayer& player() noexcept { return breaks; }
+    GrainEngine& grains() noexcept { return grain; }
 
     //==========================================================================
     // The sample — message thread. Each returns the new sample, or nullptr.
@@ -218,7 +247,16 @@ public:
 
     //==========================================================================
     // Playing — any thread.
-    void setMode (Mode m)      { mode.store ((int) m); }
+    // Leaving Grain mode stops its clouds (held ones too), so they can't come
+    // back when it returns.
+    void setMode (Mode m)
+    {
+        if (mode.exchange ((int) m) == Grain && m != Grain)
+        {
+            grain.releaseAllTouches();
+            grainCut.store (true);
+        }
+    }
     Mode getMode() const       { return (Mode) mode.load(); }
     void setRootNote (int n)   { root.store (juce::jlimit (0, 127, n)); }
     int  getRootNote() const   { return root.load(); }
@@ -246,12 +284,22 @@ public:
     // SoundSource
     juce::String typeId() const override { return "sampler"; }
 
-    void prepare (double sampleRate, int) override { breaks.prepare (sampleRate); }
+    void prepare (double sampleRate, int) override
+    {
+        breaks.prepare (sampleRate);
+        grain.prepare (sampleRate);
+    }
 
     void render (juce::AudioBuffer<float>& buffer, int start, int num) override
     {
+        if (grainCut.exchange (false))
+            grain.cutAll();
         if (releasePending.exchange (false))
+        {
             breaks.releaseAll();
+            for (int i = 0; i < 128; ++i)
+                grain.noteOff (i);
+        }
 
         float* L = buffer.getNumChannels() > 0 ? buffer.getWritePointer (0, start) : nullptr;
         float* R = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1, start) : nullptr;
@@ -268,6 +316,7 @@ public:
             case Slice:   breaks.trigger (note - sliceRoot, sliceStepBeats, sliceSecondsPerBeat, vel); break;
             case Keys:    breaks.startKey (note, vel, std::pow (2.0, (note - root.load()) / 12.0), false, getEnvelope()); break;
             case OneShot: breaks.startKey (note, vel, 1.0, true, {}); break;
+            case Grain:   grain.noteOn (note, root.load(), vel); break;
         }
     }
 
@@ -277,10 +326,17 @@ public:
     {
         if (getMode() == Keys)
             breaks.stopKey (note);
+        else if (getMode() == Grain)
+            grain.noteOff (note);
     }
 
     // Any thread: the voices aren't atomic, so this flags the audio thread.
-    void allNotesOff() override { releasePending.store (true); }
+    // Held grain clouds let go too.
+    void allNotesOff() override
+    {
+        releasePending.store (true);
+        grain.releaseAllTouches();
+    }
 
     //==========================================================================
     static inline const juce::Identifier stateType { "Sampler" };
@@ -306,7 +362,7 @@ public:
     // sampler that never had a sample stays empty.
     void setState (const juce::ValueTree& t) override
     {
-        setMode ((Mode) juce::jlimit (0, 2, (int) t.getProperty ("mode", (int) Slice)));
+        setMode ((Mode) juce::jlimit (0, 3, (int) t.getProperty ("mode", (int) Slice)));
         setRootNote (t.getProperty ("root", 60));
         for (int p = 0; p < NumParams; ++p)
             setParam ((Param) p, (float) t.getProperty (paramInfo ((Param) p).key, paramInfo ((Param) p).def));
@@ -388,15 +444,39 @@ private:
     {
         breaks.setTune (getParam (Transpose) + getParam (Detune) * 0.01f);
         breaks.setWarp ((BreakPlayer::Warp) juce::roundToInt (getParam (Warp)));
-        breaks.setGrainMs (getParam (Grain));
+        breaks.setGrainMs (getParam (GrainMs));
         breaks.setSpeed (getParam (Speed));
         breaks.setGain (juce::Decibels::decibelsToGain (getParam (Gain)));
         breaks.setVelocitySense (getParam (VelSense));
         breaks.setLoop (getParam (Loop) >= 0.5f);
         breaks.setFilter ((BreakPlayer::FilterType) juce::roundToInt (getParam (FilterType)), getParam (Cutoff), getParam (Resonance));
+
+        auto& g = grain.settings;
+        g.density   = getParam (GDensity);
+        g.sizeMs    = getParam (GSize);
+        g.spray     = getParam (GSpray);
+        g.scan      = getParam (GScan);
+        g.loopMs    = getParam (GLoop);
+        g.jitter    = getParam (GJitter);
+        g.spread    = getParam (GSpread);
+        g.window    = getParam (GWindow);
+        g.reverse   = getParam (GReverse);
+        g.releaseMs = getParam (GRelease);
+        g.yAxis     = juce::roundToInt (getParam (GYAxis));
+        g.position  = getParam (GPosition);
+        g.freeze    = getParam (GFreeze) >= 0.5f;
+        g.tuneSemis = getParam (Transpose) + getParam (Detune) * 0.01f;
+        g.velSense  = getParam (VelSense);
+    }
+
+    // BreakPlayer::ExtraVoices: the clouds, in Grain mode.
+    bool renderVoices (const Break& b, float* L, float* R, int n) override
+    {
+        return getMode() == Grain && grain.render (b, L, R, n);
     }
 
     BreakPlayer breaks;
+    GrainEngine grain;
     Origin origin;   // message thread
     std::unique_ptr<Break> source;   // as loaded; the player has the edited copy
     Edit edit;
@@ -404,7 +484,7 @@ private:
 
     std::atomic<int> mode { Slice }, root { 60 };
     std::atomic<float> attack { 0.002f }, decay { 0.3f }, sustain { 1.0f }, release { 0.3f };
-    std::atomic<bool> releasePending { false };
+    std::atomic<bool> releasePending { false }, grainCut { false };
 
     int sliceRoot = 36;          // audio thread
     double sliceStepBeats = 0.25;

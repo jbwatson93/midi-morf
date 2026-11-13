@@ -218,7 +218,7 @@ public:
     // The page calls this when assigning starts or stops, and to animate.
     void refreshModState()
     {
-        const bool assigning = host != nullptr && host->assigningSource() >= 0;
+        const bool assigning = host != nullptr && modDest >= 0 && host->assigningSource() >= 0;
         slider.setInterceptsMouseClicks (! assigning, ! assigning);
         repaint();
     }
@@ -227,7 +227,7 @@ public:
 
     void paintOverChildren (juce::Graphics& g) override
     {
-        if (host == nullptr) return;
+        if (host == nullptr || modDest < 0) return;
 
         auto knob = slider.getBounds().withTrimmedBottom (16).toFloat();
         const float radius = juce::jmin (knob.getWidth(), knob.getHeight()) * 0.5f - 1.0f;

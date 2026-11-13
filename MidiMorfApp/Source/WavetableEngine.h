@@ -68,7 +68,9 @@ struct WtMod
         ModDestLFO2Rate  = 24,
         ModDestLFO3Rate  = 25,
         ModDestLFO4Rate  = 26,
-        NumModDests      = 27
+        ModDestCutoff2   = 27,
+        ModDestResonance2 = 28,
+        NumModDests      = 29
     };
 
     static juce::StringArray sourceNames()
@@ -90,7 +92,7 @@ struct WtMod
                  "Pitch", "Gain", "Reverb Mix", "Delay Mix", "Dist Drive", "Delay Time",
                  "OSC A Level", "OSC B Level", "OSC A Pitch", "OSC B Pitch", "Sub Level", "Noise Level",
                  "Unison Detune", "Drive", "Filter Env", "OSC A Warp", "OSC B Warp", "Pan",
-                 "LFO 1 Rate", "LFO 2 Rate", "LFO 3 Rate", "LFO 4 Rate" };
+                 "LFO 1 Rate", "LFO 2 Rate", "LFO 3 Rate", "LFO 4 Rate", "Filter 2 Cutoff", "Filter 2 Reso" };
     }
 
     enum Curve { CurveLinear = 0, CurveExp = 1, CurveLog = 2, NumCurves = 3 };
@@ -98,6 +100,13 @@ struct WtMod
 
     enum VoiceMode { Poly = 0, Mono = 1, Legato = 2 };
     static juce::StringArray voiceModeNames() { return { "Poly", "Mono", "Legato" }; }
+
+    // How the two filters combine when both are on.
+    enum FilterRouting { FiltersSerial = 0, FiltersParallel = 1 };
+    static juce::StringArray filterRoutingNames() { return { "Serial", "Parallel" }; }
+
+    // Which sources go through the filters (the rest bypass them).
+    enum FilterInput { FilterOscA = 1, FilterOscB = 2, FilterSub = 4, FilterNoise = 8, FilterAll = 15 };
 
     enum Warp { WarpOff = 0, WarpSync, WarpBendUp, WarpBendDown, WarpPwm, WarpMirror, WarpQuantize, WarpFM, NumWarps };
     static juce::StringArray warpNames() { return { "Off", "Sync", "Bend +", "Bend -", "PWM", "Mirror", "Quantize", "FM" }; }
@@ -165,6 +174,11 @@ struct WtBlockParams
     int   filterType = SynthFilter::Ladder;
     bool  filterOn = true;
     float cutoff = 2500.0f, reso = 0.8f, envAmount = 0.0f, filterVel = 0.0f, keytrack = 0.0f;
+    bool  filter2On = false;
+    int   filter2Type = SynthFilter::LP12;
+    float cutoff2 = 2000.0f, reso2 = 0.5f, envAmount2 = 0.0f;
+    int   filterRouting = WtMod::FiltersSerial;
+    int   filterInputs = WtMod::FilterAll;
 
     float envToPos = 0.0f, drive = 0.0f, gain = 0.15f;
     float glide = 0.0f;       // seconds
@@ -239,6 +253,8 @@ public:
 
         filterL.reset();
         filterR.reset();
+        filter2L.reset();
+        filter2R.reset();
         countdown = 0;
         ampAdsr.noteOn();
         filterAdsr.noteOn();
@@ -300,7 +316,7 @@ public:
     // tick: the engine uses the newest voice's for the FX and the UI.
     const float* getLastSources() const noexcept { return src; }
     const float* getLastMods() const noexcept    { return mods; }
-    float getCurrentCutoff() const noexcept      { return currentCutoff; }
+    float getCurrentCutoff (int filter = 0) const noexcept { return filter == 0 ? currentCutoff : currentCutoff2; }
     float getPosition (int osc) const noexcept   { return osc == 0 ? posA : posB; }
 
     void renderNextBlock (juce::AudioBuffer<float>& outputBuffer,
@@ -331,16 +347,18 @@ public:
                 controlTick (p, sample);
             }
 
-            float l = 0.0f, r = 0.0f;
+            // Each source goes to the filtered path (f) or around it (d).
+            float fl = 0.0f, fr = 0.0f, dl = 0.0f, dr = 0.0f;
+            const int inputs = p.filterInputs;
             for (int u = 0; u < unison; ++u)
             {
-                float s = 0.0f;
+                float a = 0.0f, b = 0.0f;
                 if (useA && (levelA > 0.0001f || fmFromA))
                 {
                     const double ph = warpPhase (p.osc[0].warp, warpA, phaseA[u], lastB[u]);
                     const float v = p.osc[0].table->read (mipA, ph, posA);
                     lastA[u] = v;
-                    s += v * levelA;
+                    a = v * levelA;
                     phaseA[u] += incA * ratio[u];
                     if (phaseA[u] >= 1.0) phaseA[u] -= 1.0;
                 }
@@ -349,43 +367,65 @@ public:
                     const double ph = warpPhase (p.osc[1].warp, warpB, phaseB[u], lastA[u]);
                     const float v = p.osc[1].table->read (mipB, ph, posB);
                     lastB[u] = v;
-                    s += v * levelB;
+                    b = v * levelB;
                     phaseB[u] += incB * ratio[u];
                     if (phaseB[u] >= 1.0) phaseB[u] -= 1.0;
                 }
-                l += s * gainL[u];
-                r += s * gainR[u];
+                const float f = ((inputs & FilterOscA) ? a : 0.0f) + ((inputs & FilterOscB) ? b : 0.0f);
+                const float d = a + b - f;
+                fl += f * gainL[u]; fr += f * gainR[u];
+                dl += d * gainL[u]; dr += d * gainR[u];
             }
 
             if (subLevel > 0.0001f)
             {
                 const float sub = std::sin ((float) subPhase * juce::MathConstants<float>::twoPi) * subLevel;
-                l += sub; r += sub;
+                if (inputs & FilterSub) { fl += sub; fr += sub; } else { dl += sub; dr += sub; }
                 subPhase += incSub;
                 if (subPhase >= 1.0) subPhase -= 1.0;
             }
 
             if (noiseLevel > 0.0001f)
             {
-                l += nextNoise() * noiseLevel;
-                r += nextNoise() * noiseLevel;
+                const float nl = nextNoise() * noiseLevel, nr = nextNoise() * noiseLevel;
+                if (inputs & FilterNoise) { fl += nl; fr += nr; } else { dl += nl; dr += nr; }
             }
 
-            l *= level; r *= level;
+            fl *= level; fr *= level;
 
             if (driveAmount > 0.0001f)
             {
                 const float k = 1.0f + driveAmount * 6.0f;
                 const float norm = 1.0f / std::tanh (k);
-                l = std::tanh (l * k) * norm;
-                r = std::tanh (r * k) * norm;
+                fl = std::tanh (fl * k) * norm;
+                fr = std::tanh (fr * k) * norm;
             }
 
-            if (p.filterOn)
+            if (p.filterOn && p.filter2On)
             {
-                l = filterL.process (p.filterType, coeffs, l);
-                r = filterR.process (p.filterType, coeffs, r);
+                if (p.filterRouting == FiltersSerial)
+                {
+                    fl = filter2L.process (p.filter2Type, coeffs2, filterL.process (p.filterType, coeffs, fl));
+                    fr = filter2R.process (p.filter2Type, coeffs2, filterR.process (p.filterType, coeffs, fr));
+                }
+                else
+                {
+                    fl = 0.5f * (filterL.process (p.filterType, coeffs, fl) + filter2L.process (p.filter2Type, coeffs2, fl));
+                    fr = 0.5f * (filterR.process (p.filterType, coeffs, fr) + filter2R.process (p.filter2Type, coeffs2, fr));
+                }
             }
+            else if (p.filterOn)
+            {
+                fl = filterL.process (p.filterType, coeffs, fl);
+                fr = filterR.process (p.filterType, coeffs, fr);
+            }
+            else if (p.filter2On)
+            {
+                fl = filter2L.process (p.filter2Type, coeffs2, fl);
+                fr = filter2R.process (p.filter2Type, coeffs2, fr);
+            }
+
+            const float l = fl + dl * level, r = fr + dr * level;
 
             const float amp = ampValue * voiceGain;
             if (outR != nullptr)
@@ -525,17 +565,26 @@ private:
         panL = juce::jmin (1.0f, 1.0f - pan);
         panR = juce::jmin (1.0f, 1.0f + pan);
 
-        // ── Filter ─────────────────────────────────────────────────────────
+        // ── Filters ────────────────────────────────────────────────────────
+        // VEL and KEY are shared; each filter has its own ENV amount.
+        const float velScale = 1.0f - p.filterVel + p.filterVel * level;
+        const float keyOctaves = p.keytrack * (float) (noteNumber - 60) / 12.0f;
         if (p.filterOn)
         {
             const float envAmt = juce::jlimit (-1.0f, 1.0f, p.envAmount + mods[ModDestEnvAmount]);
-            const float envDepth = envAmt * EnvOctaves * (1.0f - p.filterVel + p.filterVel * level);
-            const float octaves = mods[ModDestCutoff] * MatrixCutoffOctaves
-                                + p.keytrack * (float) (noteNumber - 60) / 12.0f
-                                + envDepth * env2Value;
+            const float octaves = mods[ModDestCutoff] * MatrixCutoffOctaves + keyOctaves
+                                + envAmt * EnvOctaves * velScale * env2Value;
             const float reso = juce::jlimit (0.0f, SynthFilter::MaxReso, p.reso + mods[ModDestResonance] * SynthFilter::MaxReso);
             currentCutoff = juce::jlimit (20.0f, 20000.0f, p.cutoff * std::exp2 (octaves));
             coeffs = SynthFilter::makeCoeffs (p.filterType, currentCutoff, reso, sr);
+        }
+        if (p.filter2On)
+        {
+            const float octaves = mods[ModDestCutoff2] * MatrixCutoffOctaves + keyOctaves
+                                + p.envAmount2 * EnvOctaves * velScale * env2Value;
+            const float reso = juce::jlimit (0.0f, SynthFilter::MaxReso, p.reso2 + mods[ModDestResonance2] * SynthFilter::MaxReso);
+            currentCutoff2 = juce::jlimit (20.0f, 20000.0f, p.cutoff2 * std::exp2 (octaves));
+            coeffs2 = SynthFilter::makeCoeffs (p.filter2Type, currentCutoff2, reso, sr);
         }
     }
 
@@ -610,9 +659,9 @@ private:
     float  ampValue = 0.0f, env2Value = 0.0f, env3Value = 0.0f;
     int    countdown = 0;
 
-    SynthFilter::Channel filterL, filterR;
-    SynthFilter::Coeffs coeffs;
-    float currentCutoff = 2500.0f;
+    SynthFilter::Channel filterL, filterR, filter2L, filter2R;
+    SynthFilter::Coeffs coeffs, coeffs2;
+    float currentCutoff = 2500.0f, currentCutoff2 = 2000.0f;
     juce::ADSR ampAdsr, filterAdsr, env3;
 };
 
@@ -916,9 +965,39 @@ public:
     float getFilterKeytrack() const     { return filterKey; }
     float getEnvToPosition() const      { return envToPos; }
 
-    // Where the filter is right now on the most recent sounding note, for the
+    // FILTER 2: its own type, cutoff, resonance and ENV amount (from ENV 2);
+    // VEL, KEY and DRIVE are shared with filter 1. ROUTING is serial or
+    // parallel when both are on; INPUTS says which sources go through them.
+    void  setFilter2Enabled (bool on)   { filter2On = on; }
+    void  setFilter2Type (int t)        { filter2Type = juce::jlimit (0, SynthFilter::NumTypes - 1, t); }
+    void  setFilter2Cutoff (float hz)   { filter2Cutoff = juce::jlimit (20.0f, 20000.0f, hz); }
+    void  setFilter2Resonance (float q) { filter2Reso = juce::jlimit (0.0f, SynthFilter::MaxReso, q); }
+    void  setFilter2EnvAmount (float a) { filter2EnvAmount = juce::jlimit (-1.0f, 1.0f, a); }
+    void  setFilterRouting (int r)      { filterRouting = juce::jlimit (0, 1, r); }
+    void  setFilterInputs (int mask)    { filterInputs = mask & FilterAll; }
+    bool  isFilter2Enabled() const      { return filter2On; }
+    int   getFilter2Type() const        { return filter2Type; }
+    float getFilter2Cutoff() const      { return filter2Cutoff; }
+    float getFilter2Resonance() const   { return filter2Reso; }
+    float getFilter2EnvAmount() const   { return filter2EnvAmount; }
+    int   getFilterRouting() const      { return filterRouting; }
+    int   getFilterInputs() const       { return filterInputs; }
+
+    // Either filter by index (0 or 1), for the FILTER tab.
+    bool  isFilterOn (int f) const          { return f == 0 ? filterOn : filter2On; }
+    int   filterTypeOf (int f) const        { return f == 0 ? filterType : filter2Type; }
+    float filterCutoffOf (int f) const      { return f == 0 ? filterCutoff : filter2Cutoff; }
+    float filterResoOf (int f) const        { return f == 0 ? filterReso : filter2Reso; }
+    float filterEnvOf (int f) const         { return f == 0 ? filterEnvAmount : filter2EnvAmount; }
+    void  setFilterOn (int f, bool on)      { if (f == 0) setFilterEnabled (on); else setFilter2Enabled (on); }
+    void  setFilterTypeOf (int f, int t)    { if (f == 0) setFilterType (t); else setFilter2Type (t); }
+    void  setFilterCutoffOf (int f, float v){ if (f == 0) setFilterCutoff (v); else setFilter2Cutoff (v); }
+    void  setFilterResoOf (int f, float v)  { if (f == 0) setFilterResonance (v); else setFilter2Resonance (v); }
+    void  setFilterEnvOf (int f, float v)   { if (f == 0) setFilterEnvAmount (v); else setFilter2EnvAmount (v); }
+
+    // Where a filter is right now on the most recent sounding note, for the
     // filter display; negative when nothing is playing.
-    float getLiveCutoff() const         { return liveCutoff.load(); }
+    float getLiveCutoff (int filter = 0) const { return (filter == 0 ? liveCutoff : liveCutoff2).load(); }
 
     // ENV 1 is the amp, ENV 2 the filter (and ENV>POS), ENV 3 free.
     void setAmpADSR (float a, float d, float s, float r)    { ampA = a; ampD = d; ampS = s; ampR = r; adsrDirty = true; }
@@ -1024,6 +1103,9 @@ public:
         setFilterType (SynthFilter::Ladder); setFilterEnabled (true);
         setFilterCutoff (1200.0f); setFilterResonance (0.8f); setFilterEnvAmount (0.35f);
         setFilterVelocity (0.5f); setFilterKeytrack (0.0f);
+        setFilter2Enabled (false); setFilter2Type (SynthFilter::LP12); setFilter2Cutoff (2000.0f);
+        setFilter2Resonance (0.5f); setFilter2EnvAmount (0.0f);
+        setFilterRouting (FiltersSerial); setFilterInputs (FilterAll);
         setEnvToPosition (0.0f);
         setAmpADSR (0.01f, 0.4f, 0.7f, 0.6f);
         setFilterADSR (0.01f, 0.5f, 0.3f, 0.5f);
@@ -1092,6 +1174,13 @@ public:
         t.setProperty ("filtEnv", filterEnvAmount, nullptr);
         t.setProperty ("filtVel", filterVel, nullptr);
         t.setProperty ("filtKey", filterKey, nullptr);
+        t.setProperty ("filt2On",   filter2On, nullptr);
+        t.setProperty ("filt2Type", filter2Type, nullptr);
+        t.setProperty ("cutoff2",   filter2Cutoff, nullptr);
+        t.setProperty ("reso2",     filter2Reso, nullptr);
+        t.setProperty ("filt2Env",  filter2EnvAmount, nullptr);
+        t.setProperty ("filtRoute", filterRouting, nullptr);
+        t.setProperty ("filtIn",    filterInputs, nullptr);
         t.setProperty ("envPos",  envToPos, nullptr);
 
         auto adsr = [] (float a, float d, float s, float r)
@@ -1204,6 +1293,14 @@ public:
             setFilterVelocity  (f ("filtVel",  filterVel));
             setFilterKeytrack  (f ("filtKey",  filterKey));
         }
+
+        setFilter2Enabled   (b ("filt2On",   false));
+        setFilter2Type      (i ("filt2Type", SynthFilter::LP12));
+        setFilter2Cutoff    (f ("cutoff2",   2000.0f));
+        setFilter2Resonance (f ("reso2",     0.5f));
+        setFilter2EnvAmount (f ("filt2Env",  0.0f));
+        setFilterRouting    (i ("filtRoute", FiltersSerial));
+        setFilterInputs     (i ("filtIn",    FilterAll));
 
         auto adsr = [&t] (const char* id, float* out)
         {
@@ -1426,6 +1523,9 @@ private:
         block.filterType = filterType; block.filterOn = filterOn;
         block.cutoff = filterCutoff; block.reso = filterReso; block.envAmount = filterEnvAmount;
         block.filterVel = filterVel; block.keytrack = filterKey;
+        block.filter2On = filter2On; block.filter2Type = filter2Type;
+        block.cutoff2 = filter2Cutoff; block.reso2 = filter2Reso; block.envAmount2 = filter2EnvAmount;
+        block.filterRouting = filterRouting; block.filterInputs = filterInputs;
         block.envToPos = envToPos; block.drive = drive; block.gain = gain;
         block.glide = glide;
         block.sampleRate = currentSampleRate;
@@ -1438,6 +1538,7 @@ private:
         fxMods.delayTimeMs = fxMod[ModDestDelayTime] * 1000.0f;
         fxMods.reverbWet   = fxMod[ModDestReverbMix];
         fx.setModulated (fxMods);
+        fx.setTempo (bpm);
     }
 
     // After the voices have rendered: what the newest sounding note is
@@ -1451,7 +1552,8 @@ private:
                     newestVoice = v;
 
         const bool playing = newestVoice != nullptr && newestVoice->isVoiceActive();
-        liveCutoff.store (playing ? newestVoice->getCurrentCutoff() : -1.0f);
+        liveCutoff.store (playing ? newestVoice->getCurrentCutoff (0) : -1.0f);
+        liveCutoff2.store (playing ? newestVoice->getCurrentCutoff (1) : -1.0f);
         effPosA.store (playing ? newestVoice->getPosition (0) : oscStateA.position);
         effPosB.store (playing ? newestVoice->getPosition (1) : oscStateB.position);
         for (int d = 0; d < NumModDests; ++d)
@@ -1520,7 +1622,11 @@ private:
     bool  filterOn = true;
     float filterCutoff = 2500.0f, filterReso = 0.8f, filterEnvAmount = 0.3f, envToPos = 0.0f;
     float filterVel = 0.5f, filterKey = 0.0f;
-    std::atomic<float> liveCutoff { -1.0f };
+    bool  filter2On = false;
+    int   filter2Type = SynthFilter::LP12;
+    float filter2Cutoff = 2000.0f, filter2Reso = 0.5f, filter2EnvAmount = 0.0f;
+    int   filterRouting = FiltersSerial, filterInputs = FilterAll;
+    std::atomic<float> liveCutoff { -1.0f }, liveCutoff2 { -1.0f };
     WavetableVoice* newestVoice = nullptr;   // audio thread
 
     float ampA = 0.01f, ampD = 0.4f, ampS = 0.7f, ampR = 0.6f;

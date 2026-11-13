@@ -481,6 +481,10 @@ public:
 
     std::function<void (float cutoffHz, float reso)> onDrag;
 
+    // Which filter the curve and the drag are for; the other, when it's on,
+    // is drawn faintly behind.
+    void setFilter (int f) { which = f; repaint(); }
+
     void paint (juce::Graphics& g) override
     {
         auto bounds = getLocalBounds().toFloat().reduced (1.5f);
@@ -501,10 +505,18 @@ public:
             g.drawText (label, juce::Rectangle<float> (xForHz (hz) + 3.0f, plot.getBottom() - 12.0f, 30.0f, 12.0f),
                         juce::Justification::centredLeft);
 
-        const bool on = engine.isFilterEnabled();
-        const int type = engine.getFilterType();
-        const float reso = engine.getFilterResonance();
-        const float cutoff = engine.getFilterCutoff();
+        const bool on = engine.isFilterOn (which);
+        const int type = engine.filterTypeOf (which);
+        const float reso = engine.filterResoOf (which);
+        const float cutoff = engine.filterCutoffOf (which);
+
+        const int other = 1 - which;
+        if (engine.isFilterOn (other))
+        {
+            g.setColour (MidiMorfColors::textLight.withAlpha (0.25f));
+            g.strokePath (responsePath (engine.filterTypeOf (other), engine.filterCutoffOf (other), engine.filterResoOf (other)),
+                          juce::PathStrokeType (1.0f));
+        }
 
         auto curve = responsePath (on ? type : -1, cutoff, reso);
         juce::Path fill (curve);
@@ -540,17 +552,19 @@ private:
 
     void timerCallback() override
     {
-        const float now = engine.getLiveCutoff();
+        const float now = engine.getLiveCutoff (which);
         if (std::abs (now - live) > 0.5f || (now < 0.0f) != (live < 0.0f))
         {
             live = now;
             repaint();
         }
-        else if (engine.getFilterCutoff() != lastCutoff || engine.getFilterResonance() != lastReso
-                 || engine.getFilterType() != lastType || engine.isFilterEnabled() != lastOn)
+        else if (engine.filterCutoffOf (which) != lastCutoff || engine.filterResoOf (which) != lastReso
+                 || engine.filterTypeOf (which) != lastType || engine.isFilterOn (which) != lastOn
+                 || engine.isFilterOn (1 - which) != lastOtherOn)
         {
-            lastCutoff = engine.getFilterCutoff(); lastReso = engine.getFilterResonance();
-            lastType = engine.getFilterType();     lastOn = engine.isFilterEnabled();
+            lastCutoff = engine.filterCutoffOf (which); lastReso = engine.filterResoOf (which);
+            lastType = engine.filterTypeOf (which);     lastOn = engine.isFilterOn (which);
+            lastOtherOn = engine.isFilterOn (1 - which);
             repaint();
         }
     }
@@ -590,8 +604,8 @@ private:
     WavetableEngine& engine;
     juce::Rectangle<float> plot;
     float live = -1.0f, lastCutoff = 0.0f, lastReso = 0.0f;
-    int   lastType = -1;
-    bool  lastOn = true;
+    int   lastType = -1, which = 0;
+    bool  lastOn = true, lastOtherOn = false;
 };
 
 //==============================================================================
@@ -606,8 +620,8 @@ class WtFilterTab : public WtTab
 public:
     WtFilterTab (WavetableEngine& e, std::function<void()> notify, SynthModUI::ModContext& m)
         : WtTab (e, notify, m),
-          filterCard ("FILTER", [this] { return engine.isFilterEnabled(); },
-                                [this] (bool on) { engine.setFilterEnabled (on); }),
+          filterCard ("FILTER", [this] { return engine.isFilterOn (sel); },
+                                [this] (bool on) { engine.setFilterOn (sel, on); }),
           envCard ("FILTER ENV"),
           display (e),
           cutoff ("CUTOFF", 20.0f, 20000.0f, e.getFilterCutoff(), 1.0f, 1000.0f),
@@ -622,12 +636,42 @@ public:
         type.addItemList (SynthFilter::typeNames(), 1);
         type.onChange = [this]
         {
-            engine.setFilterType (type.getSelectedId() - 1);
+            engine.setFilterTypeOf (sel, type.getSelectedId() - 1);
             changed();
         };
         filterCard.addAndMakeVisible (type);
+
+        // FILTER 1 / FILTER 2: which one the type, curve, CUTOFF, RESO and ENV edit.
+        for (int f = 0; f < 2; ++f)
+        {
+            auto& b = f == 0 ? select1 : select2;
+            b.setButtonText ("FILTER " + juce::String (f + 1));
+            b.setRadioGroupId (4101);
+            b.setClickingTogglesState (true);
+            b.onClick = [this, f] { selectFilter (f); };
+            filterCard.addAndMakeVisible (b);
+        }
+        select1.setToggleState (true, juce::dontSendNotification);
+
+        // Which sources go through the filters; the rest bypass them.
+        const juce::StringArray inputNames { "A", "B", "SUB", "NOISE" };
+        for (int i = 0; i < 4; ++i)
+        {
+            auto* b = inputButtons.add (new juce::TextButton (inputNames[i]));
+            b->setClickingTogglesState (true);
+            b->onClick = [this, i, b]
+            {
+                const int bit = 1 << i;
+                engine.setFilterInputs (b->getToggleState() ? (engine.getFilterInputs() | bit) : (engine.getFilterInputs() & ~bit));
+                changed();
+            };
+            filterCard.addAndMakeVisible (b);
+        }
+        routing.addItemList (WavetableEngine::filterRoutingNames(), 1);
+        routing.onChange = [this] { engine.setFilterRouting (routing.getSelectedId() - 1); changed(); };
+        filterCard.addAndMakeVisible (routing);
         filterCard.addAndMakeVisible (display);
-        filterCard.onEnabledChanged = [this] { changed(); };
+        filterCard.onEnabledChanged = [this] { refresh(); changed(); };
 
         display.onDrag = [this] (float hz, float r)
         {
@@ -635,10 +679,10 @@ public:
             reso.getSlider().setValue (r, juce::sendNotificationSync);
         };
 
-        wire (cutoff, [this] (float v) { engine.setFilterCutoff (v); });
-        wire (reso,   [this] (float v) { engine.setFilterResonance (v); });
+        wire (cutoff, [this] (float v) { engine.setFilterCutoffOf (sel, v); });
+        wire (reso,   [this] (float v) { engine.setFilterResoOf (sel, v); });
         wire (drive,  [this] (float v) { engine.setDrive (v); });
-        wire (envAmt, [this] (float v) { engine.setFilterEnvAmount (v); });
+        wire (envAmt, [this] (float v) { engine.setFilterEnvOf (sel, v); });
         wire (vel,    [this] (float v) { engine.setFilterVelocity (v); });
         wire (key,    [this] (float v) { engine.setFilterKeytrack (v); });
         for (auto* k : knobs())
@@ -674,7 +718,18 @@ public:
         auto c = filterCard.getContentArea();
         auto knobArea = c.removeFromRight (c.getWidth() * 9 / 20);
         c.removeFromRight (6);
-        type.setBounds (c.removeFromTop (28));
+        auto row = c.removeFromTop (28);
+        select1.setBounds (row.removeFromLeft (row.getWidth() / 4).reduced (1, 0));
+        select2.setBounds (row.removeFromLeft (row.getWidth() / 3).reduced (1, 0));
+        row.removeFromLeft (4);
+        type.setBounds (row);
+        c.removeFromTop (4);
+        row = c.removeFromTop (26);
+        routing.setBounds (row.removeFromRight (row.getWidth() / 3));
+        row.removeFromRight (4);
+        const int w = row.getWidth() / 4;
+        for (auto* b : inputButtons)
+            b->setBounds (row.removeFromLeft (w).reduced (1, 0));
         c.removeFromTop (4);
         display.setBounds (c);
 
@@ -688,11 +743,15 @@ public:
     void refresh() override
     {
         filterCard.refreshFromModel();
-        type.setSelectedId (engine.getFilterType() + 1, juce::dontSendNotification);
-        cutoff.getSlider().setValue (engine.getFilterCutoff(),     juce::dontSendNotification);
-        reso.getSlider().setValue   (engine.getFilterResonance(),  juce::dontSendNotification);
+        type.setSelectedId (engine.filterTypeOf (sel) + 1, juce::dontSendNotification);
+        cutoff.getSlider().setValue (engine.filterCutoffOf (sel),  juce::dontSendNotification);
+        reso.getSlider().setValue   (engine.filterResoOf (sel),    juce::dontSendNotification);
         drive.getSlider().setValue  (engine.getDrive(),            juce::dontSendNotification);
-        envAmt.getSlider().setValue (engine.getFilterEnvAmount(),  juce::dontSendNotification);
+        envAmt.getSlider().setValue (engine.filterEnvOf (sel),     juce::dontSendNotification);
+        for (int i = 0; i < inputButtons.size(); ++i)
+            inputButtons[i]->setToggleState ((engine.getFilterInputs() & (1 << i)) != 0, juce::dontSendNotification);
+        routing.setSelectedId (engine.getFilterRouting() + 1, juce::dontSendNotification);
+        routing.setEnabled (engine.isFilterOn (0) && engine.isFilterOn (1));
         vel.getSlider().setValue    (engine.getFilterVelocity(),   juce::dontSendNotification);
         key.getSlider().setValue    (engine.getFilterKeytrack(),   juce::dontSendNotification);
 
@@ -711,6 +770,21 @@ private:
     static float val (Fader& f) { return (float) f.getSlider().getValue(); }
     void pushEnv() { engine.setFilterADSR (val (fA), val (fD), val (fS), val (fR)); }
 
+    void selectFilter (int f)
+    {
+        sel = f;
+        display.setFilter (f);
+        using E = WavetableEngine;
+        cutoff.setModDest (&mod, f == 0 ? E::ModDestCutoff : E::ModDestCutoff2);
+        reso.setModDest (&mod, f == 0 ? E::ModDestResonance : E::ModDestResonance2);
+        envAmt.setModDest (&mod, f == 0 ? E::ModDestEnvAmount : -1);
+        refresh();
+    }
+
+    int sel = 0;
+    juce::TextButton select1, select2;
+    juce::OwnedArray<juce::TextButton> inputButtons;
+    juce::ComboBox routing;
     FxModule filterCard;
     SectionCard envCard;
     juce::ComboBox type;
@@ -1480,6 +1554,12 @@ private:
         {
             const auto& p = u->params[(size_t) i];
             auto* k = knobs.add (new Knob (p.name, p.min, p.max, u->getValue (i), p.step, p.skewMid));
+            if (! p.valueNames.isEmpty())
+            {
+                const auto names = p.valueNames;
+                k->getSlider().textFromValueFunction = [names] (double v) { return names[juce::jlimit (0, names.size() - 1, juce::roundToInt (v))]; };
+                k->getSlider().updateText();
+            }
             wire (*k, [u, i] (float v) { u->setValue (i, v); });
             editor->addAndMakeVisible (*k);
         }

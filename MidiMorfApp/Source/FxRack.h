@@ -31,6 +31,7 @@ public:
         float min, max, def;
         float skewMid = 0.0f;   // 0: linear
         float step    = 0.01f;
+        juce::StringArray valueNames;   // shown instead of the number (value 0, 1, 2...)
     };
 
     // What the synth's mod matrix sends the FX, once per block. Each kind of
@@ -77,6 +78,7 @@ public:
     // Audio thread.
     virtual void prepare (double sampleRate) = 0;
     virtual void applyMatrix (const MatrixMods&) { modOffset.fill (0.0f); }
+    void setTempo (double b) noexcept { bpm = b; }
 
     // L and R are always both there. `dryL/R` is scratch space the size of
     // the block, for the mix.
@@ -122,6 +124,7 @@ protected:
     virtual void processWet (float* L, float* R, int n) = 0;
 
     std::array<float, MaxParams> modOffset {};
+    double bpm = 120.0;
 
 private:
     std::atomic<float> values[MaxParams];
@@ -283,12 +286,25 @@ namespace Fx
     public:
         enum Mode { Mono, PingPong };
 
+        // SYNC off uses TIME; otherwise the delay is that note value at the
+        // groovebox tempo.
+        static juce::StringArray syncNames()
+        {
+            return { "Off", "1/32", "1/16T", "1/16", "1/8T", "1/16D", "1/8", "1/4T", "1/8D", "1/4", "1/2T", "1/4D", "1/2" };
+        }
+        static double syncBeats (int i)
+        {
+            static const double beats[] = { 0.0, 0.125, 1.0 / 6.0, 0.25, 1.0 / 3.0, 0.375, 0.5, 2.0 / 3.0, 0.75, 1.0, 4.0 / 3.0, 1.5, 2.0 };
+            return beats[juce::jlimit (0, (int) std::size (beats) - 1, i)];
+        }
+
         Delay()
             : FxUnit ("delay", "Delay",
                       { { "time", "TIME", 5.0f, 2000.0f, 350.0f, 250.0f, 1.0f },
                         { "fb",   "FB",   0.0f, 0.95f,  0.4f },
                         { "tone", "TONE", 0.0f, 1.0f,   1.0f },
-                        { "mix",  "MIX",  0.0f, 1.0f,   0.2f } },
+                        { "mix",  "MIX",  0.0f, 1.0f,   0.2f },
+                        { "sync", "SYNC", 0.0f, 12.0f,  0.0f, 0.0f, 1.0f, syncNames() } },
                       { "Mono", "Ping-Pong" }) {}
 
         void prepare (double sr) override
@@ -311,7 +327,10 @@ namespace Fx
             if (buf[0].empty()) return;
 
             const int size = (int) buf[0].size();
-            const int delay = juce::jlimit (1, size - 1, (int) (get (0) * 0.001f * (float) sampleRate));
+            const int sync = juce::roundToInt (get (4));
+            const double seconds = sync > 0 ? syncBeats (sync) * 60.0 / juce::jmax (20.0, bpm) + modOffset[0] * 0.001
+                                            : get (0) * 0.001;
+            const int delay = juce::jlimit (1, size - 1, (int) (seconds * sampleRate));
             const float fb = get (1), tone = get (2);
             const bool toneOn = tone < 0.999f;
             const float a = OnePole::coeff (600.0f * std::exp2 (tone * 5.0f), sampleRate);
@@ -671,6 +690,7 @@ public:
     }
 
     void setModulated (const FxUnit::MatrixMods& m) { mods = m; }
+    void setTempo (double bpm) { tempo = bpm; }
 
     void process (float* L, float* R, int n)
     {
@@ -691,6 +711,7 @@ public:
             for (auto& u : chain->units)
             {
                 u->applyMatrix (mods);
+                u->setTempo (tempo);
                 u->process (l, r, len, dryL, dryR);
             }
 
@@ -813,5 +834,6 @@ private:
     std::atomic<double> sampleRate { 44100.0 };
 
     FxUnit::MatrixMods mods;
+    double tempo = 120.0;
     float dryL[Chunk] {}, dryR[Chunk] {}, monoR[Chunk] {};
 };

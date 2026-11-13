@@ -1,5 +1,23 @@
 # Synth flow plan — learning from Serum 2
 
+## Status (2026-11-13)
+
+| Phase | State |
+|---|---|
+| 0 Filter fix | **Done, merged** (octaves, per-note velocity, VEL/KEY, wheel rests at 0) |
+| FILTER tab + FX rack | **Done, merged** |
+| 1 Per-note mod system, source strip, MATRIX | **Built on `synth-mod`**, testing |
+| 2 Drawable LFOs + tempo sync | **Built on `synth-mod`**, testing |
+| 3 Filters: dual (serial/parallel), per-source inputs | **Built on `synth-mod`**, testing |
+| 4 Voices: mono/legato/glide, unison 7, noise, warp | **Built on `synth-mod`**, testing |
+| 5 Drawable wavetables | **Built on `synth-mod`**, testing |
+| 6 FX rack | **Done, merged**; delay SYNC on `synth-mod` |
+
+Still open: envelope curves / BPM-synced envelopes, chaos LFO, LFO phase
+locked to the transport, a third oscillator, FX buses/splitters. The test
+list is in `MORNING-TEST-LIST.md`.
+
+
 Goal: make the wavetable synth flow like Serum 2 (routing, LFOs, filters,
 voices, FX) and add drawable LFOs and drawable wavetables, without turning
 it into a desktop synth crammed onto a phone. One engine, as now

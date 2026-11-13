@@ -147,7 +147,35 @@ private:
 };
 
 //==============================================================================
+// What a knob needs from the synth page to show and take modulation, without
+// knowing about the engine. Destinations are the engine's ModDest ids.
+class ModAssignHost
+{
+public:
+    virtual ~ModAssignHost() = default;
+
+    // amount -1..1. A bipolar source (an LFO, tilt) swings both ways from
+    // the knob, so its ring is drawn both sides of the value.
+    struct Ring { juce::Colour colour; float amount; bool bipolar = false; };
+
+    // The source being assigned (tapped in the source strip), or -1.
+    virtual int  assigningSource() const = 0;
+    virtual juce::Colour assigningColour() const = 0;
+    // Drag on a knob while assigning: change that source's amount on `dest`.
+    virtual void nudgeRoute (int dest, float delta) = 0;
+    // Double-tap while assigning: take that source's route off `dest`.
+    virtual void removeRoute (int dest) = 0;
+    virtual std::vector<Ring> ringsFor (int dest) const = 0;
+    // What the matrix adds to `dest` on the newest note right now.
+    virtual float liveModFor (int dest) const = 0;
+};
+
+//==============================================================================
 // Rotary knob with a label below. Wraps a juce::Slider in rotary mode.
+//
+// Given a mod destination (setModDest), it draws a coloured ring per route
+// to it, and a dot where the modulation has it now. While a source is being
+// assigned, dragging the knob sets that source's amount instead of turning it.
 class Knob : public juce::Component
 {
 public:
@@ -183,9 +211,92 @@ public:
 
     juce::Slider& getSlider() noexcept { return slider; }
 
+    //--------------------------------------------------------------------------
+    void setModDest (ModAssignHost* h, int dest) { host = h; modDest = dest; refreshModState(); }
+    int  getModDest() const noexcept { return host != nullptr ? modDest : -1; }
+
+    // The page calls this when assigning starts or stops, and to animate.
+    void refreshModState()
+    {
+        const bool assigning = host != nullptr && host->assigningSource() >= 0;
+        slider.setInterceptsMouseClicks (! assigning, ! assigning);
+        repaint();
+    }
+
+    bool hasModulation() const { return host != nullptr && ! host->ringsFor (modDest).empty(); }
+
+    void paintOverChildren (juce::Graphics& g) override
+    {
+        if (host == nullptr) return;
+
+        auto knob = slider.getBounds().withTrimmedBottom (16).toFloat();
+        const float radius = juce::jmin (knob.getWidth(), knob.getHeight()) * 0.5f - 1.0f;
+        const auto centre = knob.getCentre();
+        const auto rp = slider.getRotaryParameters();
+        const float span = rp.endAngleRadians - rp.startAngleRadians;
+        const float value = (float) slider.valueToProportionOfLength (slider.getValue());
+        auto angle = [&] (float proportion) { return rp.startAngleRadians + span * juce::jlimit (0.0f, 1.0f, proportion); };
+
+        if (host->assigningSource() >= 0)
+        {
+            g.setColour (host->assigningColour().withAlpha (0.55f));
+            const float dashes[] = { 3.0f, 3.0f };
+            juce::Path outline;
+            outline.addEllipse (centre.x - radius, centre.y - radius, radius * 2.0f, radius * 2.0f);
+            juce::Path dashed;
+            juce::PathStrokeType (1.2f).createDashedStroke (dashed, outline, dashes, 2);
+            g.fillPath (dashed);
+        }
+
+        auto rings = host->ringsFor (modDest);
+        float r = radius + 1.0f;
+        for (auto& ring : rings)
+        {
+            juce::Path arc;
+            const float a0 = angle (ring.bipolar ? value - ring.amount : value), a1 = angle (value + ring.amount);
+            arc.addCentredArc (centre.x, centre.y, r, r, 0.0f, juce::jmin (a0, a1), juce::jmax (a0, a1), true);
+            g.setColour (ring.colour);
+            g.strokePath (arc, juce::PathStrokeType (2.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            r -= 3.0f;
+        }
+
+        if (! rings.empty())
+        {
+            const float live = host->liveModFor (modDest);
+            if (std::abs (live) > 0.0005f)
+            {
+                const float a = angle (value + live);
+                const juce::Point<float> p (centre.x + std::sin (a) * (radius + 1.0f), centre.y - std::cos (a) * (radius + 1.0f));
+                g.setColour (juce::Colours::white);
+                g.fillEllipse (p.x - 3.0f, p.y - 3.0f, 6.0f, 6.0f);
+            }
+        }
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override { lastDragY = e.position.y; }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (host == nullptr || host->assigningSource() < 0) return;
+        const float dy = lastDragY - e.position.y;
+        lastDragY = e.position.y;
+        host->nudgeRoute (modDest, dy / 150.0f);
+        repaint();
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent&) override
+    {
+        if (host == nullptr || host->assigningSource() < 0) return;
+        host->removeRoute (modDest);
+        repaint();
+    }
+
 private:
     juce::Slider slider;
     juce::Label  label;
+    ModAssignHost* host = nullptr;
+    int   modDest = -1;
+    float lastDragY = 0.0f;
 };
 
 //==============================================================================

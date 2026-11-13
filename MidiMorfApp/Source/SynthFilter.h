@@ -94,6 +94,15 @@ namespace SynthFilter
         }
     };
 
+    // tanh's shape, cheaply: within 0.1% for |x| < 1, and flat at ±1 past 3.
+    inline float softClip (float x)
+    {
+        if (x >  3.0f) return 1.0f;
+        if (x < -3.0f) return -1.0f;
+        const float x2 = x * x;
+        return x * (27.0f + x2) / (27.0f + 9.0f * x2);
+    }
+
     //==========================================================================
     // One channel of the voice filter.
     struct Channel
@@ -115,8 +124,11 @@ namespace SynthFilter
             {
                 case Ladder:
                 {
+                    // The feedback goes through a soft clip, as on an analog
+                    // ladder: identical at normal levels, but near full
+                    // resonance with the cutoff up high it can't run away.
                     float* s = ladder;
-                    const float in = x - c.reso * s[3];
+                    const float in = x - c.reso * softClip (s[3]);
                     s[0] += c.g * (in   - s[0]);
                     s[1] += c.g * (s[0] - s[1]);
                     s[2] += c.g * (s[1] - s[2]);

@@ -40,6 +40,9 @@
       <FILE id="wTPge1" name="WavetableSynthPage.h" compile="0" resource="0" file="Source/WavetableSynthPage.h"/>
       <FILE id="fxRck1" name="FxRack.h" compile="0" resource="0" file="Source/FxRack.h"/>
       <FILE id="sFltr1" name="SynthFilter.h" compile="0" resource="0" file="Source/SynthFilter.h"/>
+      <FILE id="sMod01" name="SynthMod.h" compile="0" resource="0" file="Source/SynthMod.h"/>
+      <FILE id="wtEdt1" name="WavetableEditor.h" compile="0" resource="0" file="Source/WavetableEditor.h"/>
+      <FILE id="sMUI01" name="SynthModUI.h" compile="0" resource="0" file="Source/SynthModUI.h"/>
       <FILE id="aAuEn1" name="AudioEngine.h" compile="0" resource="0" file="Source/AudioEngine.h"/>
       <FILE id="aMdSk1" name="MidiSink.h" compile="0" resource="0" file="Source/MidiSink.h"/>
       <FILE id="aMpHd1" name="MorfPadHandler.h" compile="0" resource="0"

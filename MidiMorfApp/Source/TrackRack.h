@@ -39,6 +39,10 @@ public:
     // A new note on the channel starts at the channel's current bend.
     virtual void pitchBendAudio (int /*channel*/, float /*semitones*/) {}
 
+    // The groovebox tempo, before each render, for anything synced to it
+    // (the synth's LFOs). Audio thread.
+    virtual void setTempo (double /*bpm*/) {}
+
     // A source that resonates with the other tracks (Halo) says so. The rack
     // renders it after them and, before each render, hands it what each of
     // them just played: mono, before the fader (so a muted track still
@@ -258,6 +262,7 @@ public:
 
         for (int ch = 0; ch < out.getNumChannels(); ++ch)
             out.clear (ch, start, num);
+        const double bpm = tempoSource ? tempoSource() : 120.0;
 
         for (int done = 0; done < num;)
         {
@@ -277,6 +282,7 @@ public:
 
                     if (pass == 1)
                         s->hearTracks (heardBy.data(), NumTracks, n);
+                    s->setTempo (bpm);
                     s->render (scratch, 0, n);
                     if (! inserts[(size_t) t].isNeutral())
                         inserts[(size_t) t].process (scratch.getWritePointer (0), scratch.getNumChannels() > 1 ? scratch.getWritePointer (1) : nullptr, n);
@@ -288,7 +294,7 @@ public:
 
             if (! buses.isIdle())
                 buses.process (out.getWritePointer (0, start + done), out.getNumChannels() > 1 ? out.getWritePointer (1, start + done) : nullptr,
-                               n, tempoSource ? tempoSource() : 120.0);
+                               n, bpm);
 
             done += n;
         }

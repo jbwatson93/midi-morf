@@ -33,7 +33,7 @@ public:
     {
         for (int t = 0; t < TrackRack::NumTracks; ++t)
         {
-            synths[(size_t) t] = std::make_unique<WavetableEngine> (t == 0 ? 24 : 12);
+            synths[(size_t) t] = std::make_unique<WavetableEngine> (24);
             rack.addToPool (synths[(size_t) t].get());
             samplers[(size_t) t] = std::make_unique<SamplerSource>();
             rack.addToPool (samplers[(size_t) t].get());
@@ -294,8 +294,8 @@ private:
                                                        : nullptr);
     }
 
-    // Voice budgets: chords and strums with long releases on T1, 12 elsewhere.
-    // Voices cost nothing until they sound.
+    // Voice budgets: 24 on every track, so a held chord plus a strum across
+    // the whole bar fits on any of them. Voices cost nothing until they sound.
     std::array<std::unique_ptr<WavetableEngine>, TrackRack::NumTracks> synths;
     std::array<Sound, TrackRack::NumTracks> sounds { Sound::Empty, Sound::Empty, Sound::Empty, Sound::Empty };
     // T1 keeps whatever patch an older install had, so it isn't called Init.

@@ -38,7 +38,8 @@
       <FILE id="wTbl01" name="Wavetable.h" compile="0" resource="0" file="Source/Wavetable.h"/>
       <FILE id="wTEng1" name="WavetableEngine.h" compile="0" resource="0" file="Source/WavetableEngine.h"/>
       <FILE id="wTPge1" name="WavetableSynthPage.h" compile="0" resource="0" file="Source/WavetableSynthPage.h"/>
-      <FILE id="mFx001" name="MasterFx.h" compile="0" resource="0" file="Source/MasterFx.h"/>
+      <FILE id="fxRck1" name="FxRack.h" compile="0" resource="0" file="Source/FxRack.h"/>
+      <FILE id="sFltr1" name="SynthFilter.h" compile="0" resource="0" file="Source/SynthFilter.h"/>
       <FILE id="aAuEn1" name="AudioEngine.h" compile="0" resource="0" file="Source/AudioEngine.h"/>
       <FILE id="aMdSk1" name="MidiSink.h" compile="0" resource="0" file="Source/MidiSink.h"/>
       <FILE id="aMpHd1" name="MorfPadHandler.h" compile="0" resource="0"

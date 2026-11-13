@@ -325,9 +325,7 @@ protected:
 };
 
 //==============================================================================
-// OSC tab — OSC A | OSC B | VOICE · FILTER. The filter lives here rather than
-// on its own tab: on a wavetable synth the oscillators and the filter are
-// what you tweak together.
+// OSC tab — OSC A | OSC B | VOICE.
 class WtOscTab : public WtTab
 {
 public:
@@ -335,14 +333,11 @@ public:
         : WtTab (e, notify),
           oscA ("OSC A", e, 0, notify),
           oscB ("OSC B", e, 1, notify),
-          voiceCard ("VOICE / FILTER"),
+          voiceCard ("VOICE"),
           unison  ("UNISON", 1.0f, (float) WavetableVoice::MaxUnison, (float) e.getUnison(), 1.0f),
           detune  ("DETUNE", 0.0f, 50.0f, e.getUnisonDetune(), 0.1f),
           sub     ("SUB",    0.0f, 1.0f,  e.getSubLevel()),
           gain    ("GAIN",   0.01f, 0.4f, e.getGain()),
-          cutoff  ("CUTOFF", 20.0f, 20000.0f, e.getFilterCutoff(), 1.0f, 1000.0f),
-          reso    ("RESO",   0.0f, 4.0f,  e.getFilterResonance()),
-          envAmt  ("ENV",    0.0f, 10000.0f, e.getFilterEnvAmount(), 1.0f, 2000.0f),
           envPos  ("ENV>POS", -1.0f, 1.0f, e.getEnvToPosition())
     {
         addAndMakeVisible (oscA);
@@ -353,9 +348,6 @@ public:
         wire (detune, [this] (float v) { engine.setUnisonDetune (v); });
         wire (sub,    [this] (float v) { engine.setSubLevel (v); });
         wire (gain,   [this] (float v) { engine.setGain (v); });
-        wire (cutoff, [this] (float v) { engine.setFilterCutoff (v); });
-        wire (reso,   [this] (float v) { engine.setFilterResonance (v); });
-        wire (envAmt, [this] (float v) { engine.setFilterEnvAmount (v); });
         wire (envPos, [this] (float v) { engine.setEnvToPosition (v); });
         for (auto* k : knobs())
             voiceCard.addAndMakeVisible (*k);
@@ -365,16 +357,18 @@ public:
     {
         auto area = getLocalBounds();
         const int gap = 6;
-        const int w = (area.getWidth() - 2 * gap) / 3;
+        const int w = (area.getWidth() - 2 * gap) * 2 / 5;
         oscA.setBounds (area.removeFromLeft (w));       area.removeFromLeft (gap);
         oscB.setBounds (area.removeFromLeft (w));       area.removeFromLeft (gap);
         voiceCard.setBounds (area);
 
-        // 4 × 2 knob grid inside the voice card.
+        // 2 × 3 knob grid inside the voice card (ENV>POS last: the filter
+        // envelope sweeping the tables, set on the FILTER tab).
         auto c = voiceCard.getContentArea();
-        auto top = c.removeFromTop (c.getHeight() / 2);
-        layoutInRow (top, { &unison, &detune, &sub, &gain }, 2);
-        layoutInRow (c,   { &cutoff, &reso, &envAmt, &envPos }, 2);
+        const int rowH = c.getHeight() / 3;
+        layoutInRow (c.removeFromTop (rowH), { &unison, &detune }, 2);
+        layoutInRow (c.removeFromTop (rowH), { &sub, &gain }, 2);
+        envPos.setBounds (c.withSizeKeepingCentre (c.getWidth() / 2, c.getHeight()).reduced (2));
     }
 
     void refresh() override
@@ -385,34 +379,271 @@ public:
         detune.getSlider().setValue (engine.getUnisonDetune(),      juce::dontSendNotification);
         sub.getSlider().setValue    (engine.getSubLevel(),          juce::dontSendNotification);
         gain.getSlider().setValue   (engine.getGain(),              juce::dontSendNotification);
-        cutoff.getSlider().setValue (engine.getFilterCutoff(),      juce::dontSendNotification);
-        reso.getSlider().setValue   (engine.getFilterResonance(),   juce::dontSendNotification);
-        envAmt.getSlider().setValue (engine.getFilterEnvAmount(),   juce::dontSendNotification);
         envPos.getSlider().setValue (engine.getEnvToPosition(),     juce::dontSendNotification);
     }
 
 private:
-    std::vector<Knob*> knobs() { return { &unison, &detune, &sub, &gain, &cutoff, &reso, &envAmt, &envPos }; }
+    std::vector<Knob*> knobs() { return { &unison, &detune, &sub, &gain, &envPos }; }
 
     OscCard oscA, oscB;
     SectionCard voiceCard;
-    Knob unison, detune, sub, gain, cutoff, reso, envAmt, envPos;
+    Knob unison, detune, sub, gain, envPos;
 };
 
 //==============================================================================
-// ENV & LFO tab — AMP envelope | FILTER · POS envelope | LFO.
-// The second envelope drives both the filter (ENV on the OSC tab) and the
-// table position (ENV>POS), so it's named for both.
+// FilterDisplay — the filter's response, Serum-style: the curve at the knob
+// settings, filled, and while a note sounds a bright curve where the filter
+// is right now (envelope, velocity, keytracking and mod matrix included).
+// Drag on it: left/right is cutoff, up/down is resonance.
+class FilterDisplay : public juce::Component, private juce::Timer
+{
+public:
+    explicit FilterDisplay (WavetableEngine& e) : engine (e) { startTimerHz (30); }
+
+    std::function<void (float cutoffHz, float reso)> onDrag;
+
+    void paint (juce::Graphics& g) override
+    {
+        auto bounds = getLocalBounds().toFloat().reduced (1.5f);
+        g.setColour (juce::Colour (0xff141417));
+        g.fillRoundedRectangle (bounds, 5.0f);
+        plot = bounds.reduced (6.0f, 6.0f);
+
+        // Decades, and the 0 dB line.
+        g.setColour (MidiMorfColors::textLight.withAlpha (0.08f));
+        for (float hz : { 100.0f, 1000.0f, 10000.0f })
+            g.drawVerticalLine ((int) xForHz (hz), plot.getY(), plot.getBottom());
+        g.drawHorizontalLine ((int) yForDb (0.0f), plot.getX(), plot.getRight());
+
+        g.setColour (MidiMorfColors::textLight.withAlpha (0.3f));
+        g.setFont (juce::FontOptions (9.0f));
+        static const std::pair<float, const char*> marks[] = { { 100.0f, "100" }, { 1000.0f, "1k" }, { 10000.0f, "10k" } };
+        for (auto [hz, label] : marks)
+            g.drawText (label, juce::Rectangle<float> (xForHz (hz) + 3.0f, plot.getBottom() - 12.0f, 30.0f, 12.0f),
+                        juce::Justification::centredLeft);
+
+        const bool on = engine.isFilterEnabled();
+        const int type = engine.getFilterType();
+        const float reso = engine.getFilterResonance();
+        const float cutoff = engine.getFilterCutoff();
+
+        auto curve = responsePath (on ? type : -1, cutoff, reso);
+        juce::Path fill (curve);
+        fill.lineTo (plot.getRight(), plot.getBottom());
+        fill.lineTo (plot.getX(), plot.getBottom());
+        fill.closeSubPath();
+        g.setColour (MidiMorfColors::accent.withAlpha (on ? 0.22f : 0.08f));
+        g.fillPath (fill);
+        g.setColour (MidiMorfColors::accent.withAlpha (on ? 0.9f : 0.3f));
+        g.strokePath (curve, juce::PathStrokeType (1.5f));
+
+        if (on && live > 0.0f)
+        {
+            g.setColour (MidiMorfColors::textLight.withAlpha (0.85f));
+            g.strokePath (responsePath (type, live, reso), juce::PathStrokeType (1.2f));
+        }
+
+        if (on)
+        {
+            // The handle sits on the curve at the cutoff.
+            const float x = xForHz (cutoff);
+            const float y = yForDb (dbAt (type, cutoff, cutoff, reso));
+            g.setColour (MidiMorfColors::textLight);
+            g.fillEllipse (x - 4.5f, y - 4.5f, 9.0f, 9.0f);
+        }
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override { drag (e); }
+    void mouseDrag (const juce::MouseEvent& e) override { drag (e); }
+
+private:
+    static constexpr float MinDb = -42.0f, MaxDb = 24.0f;
+
+    void timerCallback() override
+    {
+        const float now = engine.getLiveCutoff();
+        if (std::abs (now - live) > 0.5f || (now < 0.0f) != (live < 0.0f))
+        {
+            live = now;
+            repaint();
+        }
+        else if (engine.getFilterCutoff() != lastCutoff || engine.getFilterResonance() != lastReso
+                 || engine.getFilterType() != lastType || engine.isFilterEnabled() != lastOn)
+        {
+            lastCutoff = engine.getFilterCutoff(); lastReso = engine.getFilterResonance();
+            lastType = engine.getFilterType();     lastOn = engine.isFilterEnabled();
+            repaint();
+        }
+    }
+
+    void drag (const juce::MouseEvent& e)
+    {
+        if (plot.isEmpty() || ! onDrag) return;
+        const float t = juce::jlimit (0.0f, 1.0f, (e.position.x - plot.getX()) / plot.getWidth());
+        const float hz = 20.0f * std::pow (1000.0f, t);
+        const float reso = juce::jlimit (0.0f, 1.0f, 1.0f - (e.position.y - plot.getY()) / plot.getHeight())
+                         * SynthFilter::MaxReso;
+        onDrag (hz, reso);
+    }
+
+    float xForHz (float hz) const { return plot.getX() + plot.getWidth() * std::log (hz / 20.0f) / std::log (1000.0f); }
+    float yForDb (float db) const { return plot.getY() + plot.getHeight() * (MaxDb - juce::jlimit (MinDb, MaxDb, db)) / (MaxDb - MinDb); }
+
+    static float dbAt (int type, float hz, float cutoff, float reso)
+    {
+        if (type < 0) return 0.0f;
+        return juce::Decibels::gainToDecibels (SynthFilter::magnitude (type, hz, cutoff, reso), MinDb - 6.0f);
+    }
+
+    juce::Path responsePath (int type, float cutoff, float reso) const
+    {
+        juce::Path p;
+        const int steps = juce::jmax (32, (int) plot.getWidth() / 2);
+        for (int i = 0; i <= steps; ++i)
+        {
+            const float hz = 20.0f * std::pow (1000.0f, (float) i / (float) steps);
+            const juce::Point<float> pt (xForHz (hz), yForDb (dbAt (type, hz, cutoff, reso)));
+            if (i == 0) p.startNewSubPath (pt); else p.lineTo (pt);
+        }
+        return p;
+    }
+
+    WavetableEngine& engine;
+    juce::Rectangle<float> plot;
+    float live = -1.0f, lastCutoff = 0.0f, lastReso = 0.0f;
+    int   lastType = -1;
+    bool  lastOn = true;
+};
+
+//==============================================================================
+// FILTER tab — FILTER (type, response, knobs, power) | FILTER ENV.
+//
+// Cutoff moves in octaves. ENV is how far the envelope moves it (up or down);
+// VEL is how much playing softly shrinks that sweep, so every note still
+// closes back to CUTOFF; KEY makes higher notes brighter, as on an analog.
+// DRIVE is the per-voice drive into the filter.
+class WtFilterTab : public WtTab
+{
+public:
+    WtFilterTab (WavetableEngine& e, std::function<void()> notify)
+        : WtTab (e, notify),
+          filterCard ("FILTER", [this] { return engine.isFilterEnabled(); },
+                                [this] (bool on) { engine.setFilterEnabled (on); }),
+          envCard ("FILTER ENV"),
+          display (e),
+          cutoff ("CUTOFF", 20.0f, 20000.0f, e.getFilterCutoff(), 1.0f, 1000.0f),
+          reso   ("RESO",   0.0f, SynthFilter::MaxReso, e.getFilterResonance()),
+          drive  ("DRIVE",  0.0f, 1.0f, e.getDrive()),
+          envAmt ("ENV",   -1.0f, 1.0f, e.getFilterEnvAmount()),
+          vel    ("VEL",    0.0f, 1.0f, e.getFilterVelocity()),
+          key    ("KEY",    0.0f, 1.0f, e.getFilterKeytrack()),
+          fA ("A", 0.001f, 2.0f, 0.01f, 0.001f, 0.2f), fD ("D", 0.01f, 2.0f, 0.5f, 0.01f, 0.3f),
+          fS ("S", 0.0f, 1.0f, 0.3f),                   fR ("R", 0.01f, 3.0f, 0.5f, 0.01f, 0.5f)
+    {
+        type.addItemList (SynthFilter::typeNames(), 1);
+        type.onChange = [this]
+        {
+            engine.setFilterType (type.getSelectedId() - 1);
+            changed();
+        };
+        filterCard.addAndMakeVisible (type);
+        filterCard.addAndMakeVisible (display);
+        filterCard.onEnabledChanged = [this] { changed(); };
+
+        display.onDrag = [this] (float hz, float r)
+        {
+            cutoff.getSlider().setValue (hz, juce::sendNotificationSync);
+            reso.getSlider().setValue (r, juce::sendNotificationSync);
+        };
+
+        wire (cutoff, [this] (float v) { engine.setFilterCutoff (v); });
+        wire (reso,   [this] (float v) { engine.setFilterResonance (v); });
+        wire (drive,  [this] (float v) { engine.setDrive (v); });
+        wire (envAmt, [this] (float v) { engine.setFilterEnvAmount (v); });
+        wire (vel,    [this] (float v) { engine.setFilterVelocity (v); });
+        wire (key,    [this] (float v) { engine.setFilterKeytrack (v); });
+        for (auto* k : knobs())
+            filterCard.addAndMakeVisible (*k);
+
+        for (auto* f : { &fA, &fD, &fS, &fR })
+        {
+            wire (*f, [this] (float) { pushEnv(); });
+            envCard.addAndMakeVisible (*f);
+        }
+
+        addAndMakeVisible (filterCard);
+        addAndMakeVisible (envCard);
+        refresh();
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds();
+        const int gap = 6;
+        envCard.setBounds (area.removeFromRight ((int) (area.getWidth() * 0.3f)));
+        area.removeFromRight (gap);
+        filterCard.setBounds (area);
+
+        // Type picker and response on the left, knobs in a 3 × 2 grid on the
+        // right, so the curve gets the height.
+        auto c = filterCard.getContentArea();
+        auto knobArea = c.removeFromRight (c.getWidth() * 9 / 20);
+        c.removeFromRight (6);
+        type.setBounds (c.removeFromTop (28));
+        c.removeFromTop (4);
+        display.setBounds (c);
+
+        auto top = knobArea.removeFromTop (knobArea.getHeight() / 2);
+        layoutInRow (top,      { &cutoff, &reso, &drive }, 2);
+        layoutInRow (knobArea, { &envAmt, &vel, &key }, 2);
+
+        layoutInRow (envCard.getContentArea(), { &fA, &fD, &fS, &fR });
+    }
+
+    void refresh() override
+    {
+        filterCard.refreshFromModel();
+        type.setSelectedId (engine.getFilterType() + 1, juce::dontSendNotification);
+        cutoff.getSlider().setValue (engine.getFilterCutoff(),     juce::dontSendNotification);
+        reso.getSlider().setValue   (engine.getFilterResonance(),  juce::dontSendNotification);
+        drive.getSlider().setValue  (engine.getDrive(),            juce::dontSendNotification);
+        envAmt.getSlider().setValue (engine.getFilterEnvAmount(),  juce::dontSendNotification);
+        vel.getSlider().setValue    (engine.getFilterVelocity(),   juce::dontSendNotification);
+        key.getSlider().setValue    (engine.getFilterKeytrack(),   juce::dontSendNotification);
+
+        float a, d, s, r;
+        engine.getFilterADSR (a, d, s, r);
+        const float v[] = { a, d, s, r };
+        int i = 0;
+        for (auto* f : { &fA, &fD, &fS, &fR })
+            f->getSlider().setValue (v[i++], juce::dontSendNotification);
+        display.repaint();
+    }
+
+private:
+    std::vector<Knob*> knobs() { return { &cutoff, &reso, &drive, &envAmt, &vel, &key }; }
+
+    static float val (Fader& f) { return (float) f.getSlider().getValue(); }
+    void pushEnv() { engine.setFilterADSR (val (fA), val (fD), val (fS), val (fR)); }
+
+    FxModule filterCard;
+    SectionCard envCard;
+    juce::ComboBox type;
+    FilterDisplay display;
+    Knob cutoff, reso, drive, envAmt, vel, key;
+    Fader fA, fD, fS, fR;
+};
+
+//==============================================================================
+// ENV & LFO tab — AMP envelope | LFO. The filter envelope is on the FILTER tab.
 class WtEnvLfoTab : public WtTab
 {
 public:
     WtEnvLfoTab (WavetableEngine& e, std::function<void()> notify)
         : WtTab (e, notify),
-          ampCard ("AMP ENV"), modCard ("FILTER / POS ENV"), lfoCard ("LFO"),
+          ampCard ("AMP ENV"), lfoCard ("LFO"),
           aA ("A", 0.001f, 2.0f, 0.01f, 0.001f, 0.2f), aD ("D", 0.01f, 2.0f, 0.4f, 0.01f, 0.3f),
           aS ("S", 0.0f, 1.0f, 0.7f),                   aR ("R", 0.01f, 3.0f, 0.6f, 0.01f, 0.5f),
-          fA ("A", 0.001f, 2.0f, 0.01f, 0.001f, 0.2f), fD ("D", 0.01f, 2.0f, 0.5f, 0.01f, 0.3f),
-          fS ("S", 0.0f, 1.0f, 0.3f),                   fR ("R", 0.01f, 3.0f, 0.5f, 0.01f, 0.5f),
           rate  ("RATE",  0.05f, 20.0f, e.getLFORate(), 0.01f, 2.0f),
           depth ("DEPTH", 0.0f,  1.0f,  e.getLFODepth()),
           wave  ("WAVE")
@@ -421,11 +652,6 @@ public:
         {
             wire (*f, [this] (float) { pushAmp(); });
             ampCard.addAndMakeVisible (*f);
-        }
-        for (auto* f : { &fA, &fD, &fS, &fR })
-        {
-            wire (*f, [this] (float) { pushFilter(); });
-            modCard.addAndMakeVisible (*f);
         }
 
         wire (rate,  [this] (float v) { engine.setLFORate (v); });
@@ -441,7 +667,6 @@ public:
         lfoCard.addAndMakeVisible (wave);
 
         addAndMakeVisible (ampCard);
-        addAndMakeVisible (modCard);
         addAndMakeVisible (lfoCard);
         refresh();
     }
@@ -450,13 +675,10 @@ public:
     {
         auto area = getLocalBounds();
         const int gap = 6;
-        const int w = (int) (area.getWidth() * 0.36f);
-        ampCard.setBounds (area.removeFromLeft (w)); area.removeFromLeft (gap);
-        modCard.setBounds (area.removeFromLeft (w)); area.removeFromLeft (gap);
+        ampCard.setBounds (area.removeFromLeft ((int) (area.getWidth() * 0.55f))); area.removeFromLeft (gap);
         lfoCard.setBounds (area);
 
         layoutInRow (ampCard.getContentArea(), { &aA, &aD, &aS, &aR });
-        layoutInRow (modCard.getContentArea(), { &fA, &fD, &fS, &fR });
 
         auto l = lfoCard.getContentArea();
         wave.setBounds (l.removeFromBottom (56));
@@ -468,8 +690,6 @@ public:
         float a, d, s, r;
         engine.getAmpADSR (a, d, s, r);
         setFaders ({ &aA, &aD, &aS, &aR }, a, d, s, r);
-        engine.getFilterADSR (a, d, s, r);
-        setFaders ({ &fA, &fD, &fS, &fR }, a, d, s, r);
         rate.getSlider().setValue  (engine.getLFORate(),  juce::dontSendNotification);
         depth.getSlider().setValue (engine.getLFODepth(), juce::dontSendNotification);
         wave.getCombo().setSelectedId (engine.getLFOWaveform() + 1, juce::dontSendNotification);
@@ -485,11 +705,10 @@ private:
     }
 
     static float val (Fader& f) { return (float) f.getSlider().getValue(); }
-    void pushAmp()    { engine.setAmpADSR    (val (aA), val (aD), val (aS), val (aR)); }
-    void pushFilter() { engine.setFilterADSR (val (fA), val (fD), val (fS), val (fR)); }
+    void pushAmp() { engine.setAmpADSR (val (aA), val (aD), val (aS), val (aR)); }
 
-    SectionCard ampCard, modCard, lfoCard;
-    Fader aA, aD, aS, aR, fA, fD, fS, fR;
+    SectionCard ampCard, lfoCard;
+    Fader aA, aD, aS, aR;
     Knob rate, depth;
     LabeledCombo wave;
 };
@@ -591,82 +810,309 @@ private:
 };
 
 //==============================================================================
-// FX tab — DISTORTION | DELAY | REVERB on MasterFx, each with ON/OFF.
-// DISTORTION also carries the per-voice PRE drive (before the filter) next to
-// the bus's POST drive, so both kinds of dirt sit in one place.
+// FX tab — the rack, Serum-style: the modules in order down the left, the
+// selected one's controls on the right.
+//
+// Tap a module to edit it, tap its dot to bypass it, × to take it out, drag
+// it up or down to reorder. + ADD puts a new module at the end. The order is
+// the signal path, top to bottom.
 class WtFxTab : public WtTab
 {
 public:
     WtFxTab (WavetableEngine& e, std::function<void()> notify)
-        : WtTab (e, notify),
-          distModule   ("DISTORTION", [this] { return fx().distEnabled; },   [this] (bool on) { fx().distEnabled = on; }),
-          delayModule  ("DELAY",      [this] { return fx().delayEnabled; },  [this] (bool on) { fx().delayEnabled = on; }),
-          reverbModule ("REVERB",     [this] { return fx().reverbEnabled; }, [this] (bool on) { fx().reverbEnabled = on; }),
-          pre     ("PRE",     0.0f, 1.0f,    e.getDrive()),
-          post    ("POST",    0.0f, 1.0f,    e.getFx().distDrive),
-          dlyTime ("TIME ms", 5.0f, 2000.0f, e.getFx().delayTimeMs, 1.0f, 250.0f),
-          dlyFb   ("FB",      0.0f, 0.95f,   e.getFx().delayFeedback),
-          dlyMix  ("MIX",     0.0f, 1.0f,    e.getFx().delayMix),
-          revMix  ("MIX",     0.0f, 1.0f,    e.getFx().reverbWet),
-          revSize ("ROOM",    0.0f, 1.0f,    e.getFx().reverbSize)
+        : WtTab (e, notify)
     {
-        wire (pre,     [this] (float v) { engine.setDrive (v); });
-        wire (post,    [this] (float v) { fx().distDrive     = v; });
-        wire (dlyTime, [this] (float v) { fx().delayTimeMs   = v; });
-        wire (dlyFb,   [this] (float v) { fx().delayFeedback = v; });
-        wire (dlyMix,  [this] (float v) { fx().delayMix      = v; });
-        wire (revMix,  [this] (float v) { fx().reverbWet     = v; });
-        wire (revSize, [this] (float v) { fx().reverbSize    = v; });
+        addButton.setButtonText ("+ ADD");
+        addButton.onClick = [this] { showAddMenu(); };
+        addAndMakeVisible (addButton);
+        refresh();
+    }
 
-        for (auto* m : { &distModule, &delayModule, &reverbModule })
+    void paint (juce::Graphics& g) override
+    {
+        auto bounds = listArea.toFloat().reduced (1.5f);
+        g.setColour (juce::Colour (0xff232328));
+        g.fillRoundedRectangle (bounds, 6.0f);
+        g.setColour (juce::Colour (0xff3A3A40));
+        g.drawRoundedRectangle (bounds.reduced (0.5f), 6.0f, 1.0f);
+
+        auto header = bounds.withHeight (22.0f);
+        g.setColour (juce::Colour (0xff2A2A30));
+        g.fillRoundedRectangle (header, 6.0f);
+        g.setColour (MidiMorfColors::textLight);
+        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.drawText ("FX RACK", header.reduced (10.0f, 0.0f), juce::Justification::centredLeft);
+        g.setColour (MidiMorfColors::textLight.withAlpha (0.4f));
+        g.drawText (juce::String (fx().size()) + "/" + juce::String (FxRack::MaxUnits),
+                    header.reduced (10.0f, 0.0f), juce::Justification::centredRight);
+
+        if (fx().size() == 0)
         {
-            m->onEnabledChanged = [this] { changed(); };
-            addAndMakeVisible (*m);
+            g.setColour (MidiMorfColors::textLight.withAlpha (0.45f));
+            g.setFont (juce::FontOptions (12.0f));
+            g.drawFittedText ("No effects yet.\nTap + ADD.", rowsArea, juce::Justification::centred, 2);
         }
 
-        distModule.addAndMakeVisible (pre);
-        distModule.addAndMakeVisible (post);
-        delayModule.addAndMakeVisible (dlyTime);
-        delayModule.addAndMakeVisible (dlyFb);
-        delayModule.addAndMakeVisible (dlyMix);
-        reverbModule.addAndMakeVisible (revMix);
-        reverbModule.addAndMakeVisible (revSize);
+        for (int i = 0; i < fx().size(); ++i)
+            paintRow (g, i);
+
+        if (dragFrom >= 0 && dragMoved)
+        {
+            // Where the module will land.
+            const int y = rowsArea.getY() + dropIndex * rowHeight();
+            g.setColour (MidiMorfColors::accent);
+            g.fillRect (rowsArea.getX(), y - 1, rowsArea.getWidth(), 3);
+        }
+
+        if (fx().size() > 0 && editor == nullptr)
+        {
+            g.setColour (MidiMorfColors::textLight.withAlpha (0.45f));
+            g.drawFittedText ("Tap a module to edit it.", editorArea, juce::Justification::centred, 1);
+        }
     }
 
     void resized() override
     {
-        // Widths follow knob count: 2 · 3 · 2.
         auto area = getLocalBounds();
-        const int gap = 6;
-        const int unit = (area.getWidth() - 2 * gap) / 7;
-        distModule.setBounds (area.removeFromLeft (unit * 2));  area.removeFromLeft (gap);
-        delayModule.setBounds (area.removeFromLeft (unit * 3)); area.removeFromLeft (gap);
-        reverbModule.setBounds (area);
+        listArea = area.removeFromLeft (juce::jlimit (150, 220, area.getWidth() / 4));
+        area.removeFromLeft (6);
+        editorArea = area;
 
-        layoutInRow (distModule.getContentArea(),   { &pre, &post });
-        layoutInRow (delayModule.getContentArea(),  { &dlyTime, &dlyFb, &dlyMix });
-        layoutInRow (reverbModule.getContentArea(), { &revMix, &revSize });
+        auto list = listArea.withTrimmedTop (26).reduced (6, 4);
+        addButton.setBounds (list.removeFromBottom (30).reduced (0, 2));
+        list.removeFromBottom (4);
+        rowsArea = list;
+
+        if (editor != nullptr)
+            layoutEditor();
     }
 
     void refresh() override
     {
-        distModule.refreshFromModel();
-        delayModule.refreshFromModel();
-        reverbModule.refreshFromModel();
-        pre.getSlider().setValue     (engine.getDrive(),    juce::dontSendNotification);
-        post.getSlider().setValue    (fx().distDrive,       juce::dontSendNotification);
-        dlyTime.getSlider().setValue (fx().delayTimeMs,     juce::dontSendNotification);
-        dlyFb.getSlider().setValue   (fx().delayFeedback,   juce::dontSendNotification);
-        dlyMix.getSlider().setValue  (fx().delayMix,        juce::dontSendNotification);
-        revMix.getSlider().setValue  (fx().reverbWet,       juce::dontSendNotification);
-        revSize.getSlider().setValue (fx().reverbSize,      juce::dontSendNotification);
+        selected = juce::jlimit (-1, fx().size() - 1, selected < 0 && fx().size() > 0 ? 0 : selected);
+        addButton.setEnabled (! fx().isFull());
+        rebuildEditor();
+        repaint();
+    }
+
+    //==========================================================================
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        dragFrom = rowAt (e.getPosition());
+        dragMoved = false;
+        dropIndex = dragFrom;
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (dragFrom < 0) return;
+        if (! dragMoved && e.getDistanceFromDragStart() < 8) return;
+        dragMoved = true;
+        const int slot = (int) std::round ((float) (e.y - rowsArea.getY()) / (float) rowHeight());
+        dropIndex = juce::jlimit (0, fx().size(), slot);
+        repaint();
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        const int row = dragFrom;
+        dragFrom = -1;
+        if (row < 0) return;
+
+        if (dragMoved)
+        {
+            // Dropping below itself counts the gap it leaves.
+            const int to = dropIndex > row ? dropIndex - 1 : dropIndex;
+            if (to != row)
+            {
+                fx().move (row, to);
+                selected = to;
+                rebuildEditor();
+                changed();
+            }
+            repaint();
+            return;
+        }
+
+        const auto r = rowBounds (row);
+        if (removeBounds (r).contains (e.getPosition()))
+        {
+            fx().remove (row);
+            if (selected >= fx().size()) selected = fx().size() - 1;
+            else if (selected > row) --selected;
+            refresh();
+            changed();
+        }
+        else if (powerBounds (r).contains (e.getPosition()))
+        {
+            auto* u = fx().get (row);
+            u->enabled.store (! u->enabled.load());
+            if (editor != nullptr && selected == row) editor->refreshFromModel();
+            repaint();
+            changed();
+        }
+        else if (row != selected)
+        {
+            selected = row;
+            rebuildEditor();
+            repaint();
+        }
     }
 
 private:
-    MasterFx& fx() { return engine.getFx(); }
+    FxRack& fx() const { return engine.getFx(); }
 
-    FxModule distModule, delayModule, reverbModule;
-    Knob pre, post, dlyTime, dlyFb, dlyMix, revMix, revSize;
+    int rowHeight() const
+    {
+        return juce::jlimit (24, 36, rowsArea.getHeight() / juce::jmax (5, fx().size()));
+    }
+
+    juce::Rectangle<int> rowBounds (int i) const
+    {
+        return { rowsArea.getX(), rowsArea.getY() + i * rowHeight(), rowsArea.getWidth(), rowHeight() };
+    }
+
+    static juce::Rectangle<int> removeBounds (juce::Rectangle<int> row) { return row.removeFromRight (28); }
+    static juce::Rectangle<int> powerBounds (juce::Rectangle<int> row)  { return row.withTrimmedRight (28).removeFromRight (28); }
+
+    int rowAt (juce::Point<int> p) const
+    {
+        for (int i = 0; i < fx().size(); ++i)
+            if (rowBounds (i).contains (p))
+                return i;
+        return -1;
+    }
+
+    void paintRow (juce::Graphics& g, int i)
+    {
+        auto* u = fx().get (i);
+        const bool on = u->enabled.load();
+        auto r = rowBounds (i).reduced (0, 2).toFloat();
+
+        g.setColour (i == selected ? juce::Colour (0xff34343C) : juce::Colour (0xff1C1C21));
+        g.fillRoundedRectangle (r, 4.0f);
+        if (i == selected)
+        {
+            g.setColour (MidiMorfColors::accent);
+            g.drawRoundedRectangle (r.reduced (0.5f), 4.0f, 1.0f);
+        }
+        g.setColour (on ? MidiMorfColors::accent : juce::Colour (0xff4A4A52));
+        g.fillRect (r.withWidth (3.0f));
+
+        g.setColour (on ? MidiMorfColors::textLight : juce::Colour (0xff77777F));
+        g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        g.drawText (juce::String (i + 1) + "  " + u->name.toUpperCase(), r.withTrimmedLeft (10.0f).withTrimmedRight (56.0f),
+                    juce::Justification::centredLeft);
+
+        auto power = powerBounds (rowBounds (i)).toFloat().withSizeKeepingCentre (12.0f, 12.0f);
+        if (on)
+        {
+            g.setColour (MidiMorfColors::accent);
+            g.fillEllipse (power);
+        }
+        else
+        {
+            g.setColour (juce::Colour (0xff77777F));
+            g.drawEllipse (power, 1.5f);
+        }
+
+        auto x = removeBounds (rowBounds (i)).toFloat().withSizeKeepingCentre (10.0f, 10.0f);
+        g.setColour (MidiMorfColors::textLight.withAlpha (0.5f));
+        g.drawLine ({ x.getTopLeft(), x.getBottomRight() }, 1.5f);
+        g.drawLine ({ x.getBottomLeft(), x.getTopRight() }, 1.5f);
+    }
+
+    void showAddMenu()
+    {
+        juce::PopupMenu m;
+        const auto types = Fx::typeIds();
+        for (int i = 0; i < types.size(); ++i)
+            m.addItem (i + 1, Fx::displayName (types[i]));
+
+        juce::Component::SafePointer<WtFxTab> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addButton),
+                         [safe, types] (int result)
+                         {
+                             if (safe == nullptr || result <= 0) return;
+                             const int at = safe->fx().add (types[result - 1]);
+                             if (at < 0) return;
+                             safe->selected = at;
+                             safe->refresh();
+                             safe->changed();
+                         });
+    }
+
+    //==========================================================================
+    // The selected module's card: MODE (if it has modes) and one knob per
+    // parameter, built from what the module declares.
+    void rebuildEditor()
+    {
+        knobs.clear();
+        modeCombo.reset();
+        editor.reset();
+
+        auto* u = fx().get (selected);
+        if (u == nullptr) return;
+
+        juce::Component::SafePointer<WtFxTab> safe (this);
+        editor = std::make_unique<FxModule> (u->name.toUpperCase(),
+                                             [u] { return u->enabled.load(); },
+                                             [u] (bool on) { u->enabled.store (on); });
+        editor->onEnabledChanged = [safe] { if (safe != nullptr) { safe->repaint(); safe->changed(); } };
+
+        if (! u->modes.isEmpty())
+        {
+            modeCombo = std::make_unique<LabeledCombo> ("MODE");
+            modeCombo->getCombo().addItemList (u->modes, 1);
+            modeCombo->getCombo().setSelectedId (u->mode.load() + 1, juce::dontSendNotification);
+            modeCombo->getCombo().onChange = [safe, u]
+            {
+                if (safe == nullptr) return;
+                u->mode.store (safe->modeCombo->getCombo().getSelectedId() - 1);
+                safe->changed();
+            };
+            editor->addAndMakeVisible (*modeCombo);
+        }
+
+        for (int i = 0; i < (int) u->params.size(); ++i)
+        {
+            const auto& p = u->params[(size_t) i];
+            auto* k = knobs.add (new Knob (p.name, p.min, p.max, u->getValue (i), p.step, p.skewMid));
+            wire (*k, [u, i] (float v) { u->setValue (i, v); });
+            editor->addAndMakeVisible (*k);
+        }
+
+        addAndMakeVisible (*editor);
+        layoutEditor();
+    }
+
+    void layoutEditor()
+    {
+        editor->setBounds (editorArea);
+        auto c = editor->getContentArea();
+        if (modeCombo != nullptr)
+        {
+            auto column = c.removeFromLeft (juce::jlimit (110, 160, c.getWidth() / 5));
+            modeCombo->setBounds (column.withSizeKeepingCentre (column.getWidth(), 64));
+        }
+
+        // Keep knobs a sensible size when a module only has a few.
+        const int n = knobs.size();
+        const int w = juce::jmin (c.getWidth() / juce::jmax (1, n), juce::jmax (90, c.getHeight()), 140);
+        auto row = c.withSizeKeepingCentre (w * n, juce::jmin (c.getHeight(), w + 30));
+        for (auto* k : knobs)
+            k->setBounds (row.removeFromLeft (w).reduced (3));
+    }
+
+    juce::TextButton addButton;
+    juce::Rectangle<int> listArea, rowsArea, editorArea;
+    int selected = 0;
+    int dragFrom = -1, dropIndex = -1;
+    bool dragMoved = false;
+
+    std::unique_ptr<FxModule> editor;
+    std::unique_ptr<LabeledCombo> modeCombo;
+    juce::OwnedArray<Knob> knobs;
 };
 
 //==============================================================================
@@ -677,11 +1123,11 @@ class WavetableSynthContent : public juce::Component
 public:
     WavetableSynthContent (WavetableEngine& e, std::function<void()> notify)
         : engine (e), onChange (notify),
-          oscTab (e, notify), envTab (e, notify), routingTab (e, notify), fxTab (e, notify)
+          oscTab (e, notify), filterTab (e, notify), envTab (e, notify), routingTab (e, notify), fxTab (e, notify)
     {
         setLookAndFeel (&laf);
 
-        const juce::StringArray names { "OSC", "ENV & LFO", "ROUTING", "FX" };
+        const juce::StringArray names { "OSC", "FILTER", "ENV & LFO", "ROUTING", "FX" };
         for (int i = 0; i < names.size(); ++i)
         {
             auto* b = tabButtons.add (new juce::TextButton (names[i]));
@@ -798,7 +1244,7 @@ public:
     std::function<void()> onInit;
 
 private:
-    std::vector<WtTab*> tabs() { return { &oscTab, &envTab, &routingTab, &fxTab }; }
+    std::vector<WtTab*> tabs() { return { &oscTab, &filterTab, &envTab, &routingTab, &fxTab }; }
 
     WavetableEngine& engine;
     std::function<void()> onChange;
@@ -808,6 +1254,7 @@ private:
     juce::OwnedArray<juce::TextButton> tabButtons;
     juce::TextButton clearButton;
     WtOscTab     oscTab;
+    WtFilterTab  filterTab;
     WtEnvLfoTab  envTab;
     WtRoutingTab routingTab;
     WtFxTab      fxTab;
@@ -947,7 +1394,12 @@ private:
 
         engine.setFilterCutoff    (f ("synth_cutoff", 1400.0));
         engine.setFilterResonance (f ("synth_reso", 1.0));
-        engine.setFilterEnvAmount (f ("synth_filtEnv", 3000.0));
+        // That synth's ENV was Hz at the envelope's peak; same peak in octaves.
+        engine.setFilterType (SynthFilter::Ladder);
+        engine.setFilterVelocity (0.0f);
+        engine.setFilterKeytrack (0.0f);
+        engine.setFilterEnvAmount (std::log2 (1.0f + f ("synth_filtEnv", 3000.0) / engine.getFilterCutoff())
+                                   / WavetableVoice::EnvOctaves);
         engine.setEnvToPosition   (0.0f);
         engine.setAmpADSR    (f ("synth_attack", 0.02),   f ("synth_decay", 0.3),
                               f ("synth_sustain", 0.6),   f ("synth_release", 0.7));
@@ -976,16 +1428,18 @@ private:
             engine.setRoutingAmount (i, (float) props.getDoubleValue ("synth_routeAmount_" + n, 0.0));
         }
 
-        auto& fx = engine.getFx();
-        fx.distDrive     = f ("synth_distDrive", 0.0);
-        fx.distEnabled   = props.getBoolValue ("synth_distOn", true);
-        fx.delayTimeMs   = f ("synth_delayTimeMs", 350.0);
-        fx.delayFeedback = f ("synth_delayFeedback", 0.4);
-        fx.delayMix      = f ("synth_delayMix", 0.18);
-        fx.delayEnabled  = props.getBoolValue ("synth_delayOn", true);
-        fx.reverbWet     = f ("synth_reverbMix", 0.2);
-        fx.reverbSize    = f ("synth_reverbSize", 0.5);
-        fx.reverbEnabled = props.getBoolValue ("synth_reverbOn", true);
+        // Its FX bus was the same as the wavetable synth's first one.
+        juce::ValueTree bus (WavetableEngine::stateType);
+        bus.setProperty ("distDrive", f ("synth_distDrive", 0.0), nullptr);
+        bus.setProperty ("distOn",    props.getBoolValue ("synth_distOn", true), nullptr);
+        bus.setProperty ("delayTime", f ("synth_delayTimeMs", 350.0), nullptr);
+        bus.setProperty ("delayFb",   f ("synth_delayFeedback", 0.4), nullptr);
+        bus.setProperty ("delayMix",  f ("synth_delayMix", 0.18), nullptr);
+        bus.setProperty ("delayOn",   props.getBoolValue ("synth_delayOn", true), nullptr);
+        bus.setProperty ("revMix",    f ("synth_reverbMix", 0.2), nullptr);
+        bus.setProperty ("revSize",   f ("synth_reverbSize", 0.5), nullptr);
+        bus.setProperty ("revOn",     props.getBoolValue ("synth_reverbOn", true), nullptr);
+        engine.getFx().setState (WavetableEngine::rackFromBus (bus));
 
         if (&engine == editing)
             content->refreshAll();

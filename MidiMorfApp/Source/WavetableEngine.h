@@ -5,19 +5,30 @@
 #include <memory>
 #include <vector>
 #include "Wavetable.h"
-#include "MasterFx.h"
+#include "SynthFilter.h"
+#include "FxRack.h"
 #include "TrackRack.h"
 
 //==============================================================================
 // WavetableVoice: two wavetable oscillators (with stereo unison) + sine sub
-// → tanh drive → stereo 4-pole ladder filter → amp ADSR.
+// → tanh drive → stereo filter (SynthFilter) → amp ADSR.
 //
 // The filter envelope doubles as a position envelope: ENV → POS sweeps both
 // oscillators through their tables per note, the classic wavetable pluck.
+//
+// Cutoff moves in octaves, not Hz: the envelope, keytracking and the mod
+// matrix all multiply the knob's frequency, so a sweep sounds the same size
+// at 200 Hz as at 5 kHz, and the envelope can close the filter as well as
+// open it.
 class WavetableVoice : public juce::SynthesiserVoice
 {
 public:
     static constexpr int MaxUnison = 5;
+
+    // ENV at ±1 moves the cutoff this many octaves at the envelope's peak.
+    static constexpr float EnvOctaves = 6.0f;
+    // A mod-matrix route at ±1 moves the cutoff this many octaves.
+    static constexpr float MatrixCutoffOctaves = 5.0f;
 
     struct OscParams
     {
@@ -25,6 +36,26 @@ public:
         float level    = 1.0f;
         float position = 0.0f;  // 0..1, already modulated
         float semis    = 0.0f;  // coarse + fine, in semitones
+    };
+
+    struct FilterParams
+    {
+        int   type       = SynthFilter::Ladder;
+        bool  enabled    = true;
+        float cutoff     = 2500.0f;  // Hz, the knob
+        float modOctaves = 0.0f;     // from the mod matrix, the same for every voice
+        float reso       = 0.8f;     // 0..4, already modulated
+        float envAmount  = 0.0f;     // -1..1
+        float velocity   = 0.0f;     // 0..1: how much a soft note shrinks the envelope
+        float keytrack   = 0.0f;     // 0..1: octaves of cutoff per octave of pitch, around middle C
+    };
+
+    // Mod-matrix routes from Velocity, as depth per unit of velocity. They
+    // can't be worked out once per block like the other sources, because each
+    // voice was played at its own velocity.
+    struct VelocityMods
+    {
+        float posA = 0.0f, posB = 0.0f, cutoff = 0.0f, reso = 0.0f, pitch = 0.0f, gain = 0.0f;
     };
 
     bool canPlaySound (juce::SynthesiserSound*) override { return true; }
@@ -38,6 +69,7 @@ public:
                     juce::SynthesiserSound*, int pitchWheel) override
     {
         level = velocity;
+        noteNumber = midiNoteNumber;
         bendTarget = bendNow = wheelToSemis (pitchWheel);
         float driftCents = (random.nextFloat() * 2.0f - 1.0f) * 1.5f;
         frequency = juce::MidiMessage::getMidiNoteInHertz (midiNoteNumber)
@@ -52,8 +84,9 @@ public:
         }
         subPhase = 0.0;
 
-        for (auto& s : lsL) s = 0.0f;
-        for (auto& s : lsR) s = 0.0f;
+        filterL.reset();
+        filterR.reset();
+        coeffCountdown = 0;
         ampAdsr.noteOn();
         filterAdsr.noteOn();
     }
@@ -85,17 +118,20 @@ public:
     // Pushed from the engine (audio thread, once per block).
     void setBlockParams (const OscParams& a, const OscParams& b, float sub,
                          int unisonCount, float unisonDetuneCents,
-                         float cutoff, float reso, float envAmount, float envToPos,
+                         const FilterParams& f, const VelocityMods& vm, float envToPos,
                          float drv, float gainIn, float pitchModSemis)
     {
         oscA = a; oscB = b;
         subLevel = sub;
         unison = juce::jlimit (1, MaxUnison, unisonCount);
         unisonDetune = unisonDetuneCents;
-        filterCutoff = cutoff; filterReso = reso; filterEnvAmount = envAmount;
+        filter = f; velMods = vm;
         envPosAmount = envToPos;
         drive = drv; gain = gainIn; pitchModSemi = pitchModSemis;
     }
+
+    // The cutoff this voice used most recently, for the filter display.
+    float getCurrentCutoff() const noexcept { return currentCutoff; }
 
     void setAmpADSR (const juce::ADSR::Parameters& p)    { ampAdsr.setParameters (p); }
     void setFilterADSR (const juce::ADSR::Parameters& p) { filterAdsr.setParameters (p); }
@@ -108,7 +144,9 @@ public:
 
         // A bend glides over a few blocks rather than stepping.
         bendNow += (bendTarget - bendNow) * 0.4f;
-        const double base = frequency * std::pow (2.0, (pitchModSemi + bendNow) / 12.0) / currentSampleRate;
+        const float vel = level;
+        const float pitchSemis = pitchModSemi + vel * velMods.pitch * 7.0f;
+        const double base = frequency * std::pow (2.0, (pitchSemis + bendNow) / 12.0) / currentSampleRate;
         const double incA = base * std::pow (2.0, oscA.semis / 12.0);
         const double incB = base * std::pow (2.0, oscB.semis / 12.0);
         const double incSub = base * 0.5;
@@ -139,14 +177,21 @@ public:
         float* outL = outputBuffer.getWritePointer (0);
         float* outR = outputBuffer.getNumChannels() > 1 ? outputBuffer.getWritePointer (1) : nullptr;
 
-        const float twoPiOverSr = juce::MathConstants<float>::twoPi / (float) currentSampleRate;
-        const float reso = juce::jlimit (0.0f, 4.0f, filterReso);
+        // Everything about the cutoff except the envelope is fixed for the
+        // block; the envelope's part is added every ControlRate samples.
+        const float reso = juce::jlimit (0.0f, SynthFilter::MaxReso, filter.reso + vel * velMods.reso * SynthFilter::MaxReso);
+        const float envDepth = filter.envAmount * EnvOctaves * (1.0f - filter.velocity + filter.velocity * vel);
+        const float fixedOctaves = filter.modOctaves
+                                 + vel * velMods.cutoff * MatrixCutoffOctaves
+                                 + filter.keytrack * (float) (noteNumber - 60) / 12.0f;
+        const float posModA = vel * velMods.posA, posModB = vel * velMods.posB;
+        const float voiceGain = juce::jlimit (0.0f, 0.6f, gain + vel * velMods.gain * 0.2f);
 
         for (int sample = startSample; sample < startSample + numSamples; ++sample)
         {
             const float filtEnv = filterAdsr.getNextSample();
-            const float posA = juce::jlimit (0.0f, 1.0f, oscA.position + envPosAmount * filtEnv);
-            const float posB = juce::jlimit (0.0f, 1.0f, oscB.position + envPosAmount * filtEnv);
+            const float posA = juce::jlimit (0.0f, 1.0f, oscA.position + posModA + envPosAmount * filtEnv);
+            const float posB = juce::jlimit (0.0f, 1.0f, oscB.position + posModB + envPosAmount * filtEnv);
 
             float l = 0.0f, r = 0.0f;
             for (int u = 0; u < unison; ++u)
@@ -186,12 +231,20 @@ public:
                 r = std::tanh (r * k) * norm;
             }
 
-            float fc = juce::jlimit (20.0f, 20000.0f, filterCutoff + filterEnvAmount * filtEnv);
-            float g  = 1.0f - std::exp (-twoPiOverSr * fc);
-            l = ladder (lsL, l, g, reso);
-            r = ladder (lsR, r, g, reso);
+            if (filter.enabled)
+            {
+                if (--coeffCountdown <= 0)
+                {
+                    coeffCountdown = ControlRate;
+                    currentCutoff = juce::jlimit (20.0f, 20000.0f,
+                                                  filter.cutoff * std::exp2 (fixedOctaves + envDepth * filtEnv));
+                    coeffs = SynthFilter::makeCoeffs (filter.type, currentCutoff, reso, currentSampleRate);
+                }
+                l = filterL.process (filter.type, coeffs, l);
+                r = filterR.process (filter.type, coeffs, r);
+            }
 
-            const float amp = ampAdsr.getNextSample() * gain;
+            const float amp = ampAdsr.getNextSample() * voiceGain;
             if (outR != nullptr)
             {
                 outL[sample] += l * amp;
@@ -211,19 +264,15 @@ public:
     }
 
 private:
-    static float ladder (float* s, float in, float g, float reso)
-    {
-        float x = in - reso * s[3];
-        s[0] += g * (x    - s[0]);
-        s[1] += g * (s[0] - s[1]);
-        s[2] += g * (s[1] - s[2]);
-        s[3] += g * (s[2] - s[3]);
-        return s[3];
-    }
+    // Filter coefficients are recomputed this often (samples). Fast enough
+    // that a snappy envelope stays smooth, slow enough that tan() and exp2()
+    // don't cost much across 32 voices on 4 tracks.
+    static constexpr int ControlRate = 8;
 
     double currentSampleRate = 44100.0;
     double frequency = 440.0;
-    float  level = 0.0f;
+    float  level = 0.0f;     // the note's velocity, 0..1
+    int    noteNumber = 60;
     juce::Random random;
 
     double phaseA[MaxUnison] {}, phaseB[MaxUnison] {};
@@ -233,12 +282,16 @@ private:
     float subLevel = 0.0f;
     int   unison = 1;
     float unisonDetune = 0.0f;
-    float filterCutoff = 2000.0f, filterReso = 1.0f, filterEnvAmount = 0.0f;
+    FilterParams filter;
+    VelocityMods velMods;
     float envPosAmount = 0.0f;
     float drive = 0.0f, gain = 0.15f, pitchModSemi = 0.0f;
     float bendTarget = 0.0f, bendNow = 0.0f;   // semitones, from the channel's pitch wheel
 
-    float lsL[4] {}, lsR[4] {};
+    SynthFilter::Channel filterL, filterR;
+    SynthFilter::Coeffs coeffs;
+    int   coeffCountdown = 0;
+    float currentCutoff = 2500.0f;
     juce::ADSR ampAdsr, filterAdsr;
 };
 
@@ -353,6 +406,7 @@ public:
 
         processModulation (info.numSamples);
         synth.renderNextBlock (*info.buffer, midi, info.startSample, info.numSamples);
+        publishLiveCutoff();
 
         auto* buf = info.buffer;
         float* L = buf->getNumChannels() > 0 ? buf->getWritePointer (0, info.startSample) : nullptr;
@@ -479,15 +533,28 @@ public:
     float getGain() const             { return gain; }
 
     //==========================================================================
-    // Filter + envelopes
+    // Filter + envelopes. ENV is -1..1 (±WavetableVoice::EnvOctaves at the
+    // envelope's peak); VEL and KEY are 0..1.
+    void  setFilterType (int t)         { filterType = juce::jlimit (0, SynthFilter::NumTypes - 1, t); }
+    void  setFilterEnabled (bool on)    { filterOn = on; }
     void  setFilterCutoff (float hz)    { filterCutoff = juce::jlimit (20.0f, 20000.0f, hz); }
-    void  setFilterResonance (float q)  { filterReso = juce::jlimit (0.0f, 4.0f, q); }
-    void  setFilterEnvAmount (float hz) { filterEnvAmount = juce::jlimit (0.0f, 10000.0f, hz); }
+    void  setFilterResonance (float q)  { filterReso = juce::jlimit (0.0f, SynthFilter::MaxReso, q); }
+    void  setFilterEnvAmount (float a)  { filterEnvAmount = juce::jlimit (-1.0f, 1.0f, a); }
+    void  setFilterVelocity (float v)   { filterVel = juce::jlimit (0.0f, 1.0f, v); }
+    void  setFilterKeytrack (float k)   { filterKey = juce::jlimit (0.0f, 1.0f, k); }
     void  setEnvToPosition (float a)    { envToPos = juce::jlimit (-1.0f, 1.0f, a); }
+    int   getFilterType() const         { return filterType; }
+    bool  isFilterEnabled() const       { return filterOn; }
     float getFilterCutoff() const       { return filterCutoff; }
     float getFilterResonance() const    { return filterReso; }
     float getFilterEnvAmount() const    { return filterEnvAmount; }
+    float getFilterVelocity() const     { return filterVel; }
+    float getFilterKeytrack() const     { return filterKey; }
     float getEnvToPosition() const      { return envToPos; }
+
+    // Where the filter is right now on the most recent sounding note, for the
+    // filter display; negative when nothing is playing.
+    float getLiveCutoff() const         { return liveCutoff.load(); }
 
     void setAmpADSR (float a, float d, float s, float r)    { ampA = a; ampD = d; ampS = s; ampR = r; adsrDirty = true; }
     void setFilterADSR (float a, float d, float s, float r) { filA = a; filD = d; filS = s; filR = r; adsrDirty = true; }
@@ -511,7 +578,7 @@ public:
     float getRoutingAmount (int slot) const { return validSlot (slot) ? routings[slot].amount : 0.0f; }
 
     //==========================================================================
-    MasterFx& getFx() noexcept { return fx; }
+    FxRack& getFx() noexcept { return fx; }
 
     void resetToDefaults()
     {
@@ -524,16 +591,19 @@ public:
         setUnison (3); setUnisonDetune (12.0f);
         setSubLevel (0.0f); setDrive (0.0f); setGain (0.15f);
 
-        setFilterCutoff (2500.0f); setFilterResonance (0.8f); setFilterEnvAmount (2000.0f);
+        setFilterType (SynthFilter::Ladder); setFilterEnabled (true);
+        setFilterCutoff (1200.0f); setFilterResonance (0.8f); setFilterEnvAmount (0.35f);
+        setFilterVelocity (0.5f); setFilterKeytrack (0.0f);
         setEnvToPosition (0.0f);
         setAmpADSR (0.01f, 0.4f, 0.7f, 0.6f);
         setFilterADSR (0.01f, 0.5f, 0.3f, 0.5f);
 
         setLFORate (0.3f); setLFODepth (0.0f); setLFOWaveform (LFOSine);
 
-        fx.distDrive = 0.0f;  fx.distEnabled = true;
-        fx.delayTimeMs = 350.0f; fx.delayFeedback = 0.4f; fx.delayMix = 0.15f; fx.delayEnabled = true;
-        fx.reverbWet = 0.25f; fx.reverbSize = 0.6f; fx.reverbEnabled = true;
+        fx.clear();
+        fx.add ("delay");
+        if (auto* d = fx.get (0)) d->setValue ("mix", 0.15f);
+        fx.add ("reverb");
 
         // Factory routing: tilt scans the table — pick up the phone and the
         // timbre moves. Mod wheel still opens the filter.
@@ -547,12 +617,16 @@ public:
     // The whole patch as one ValueTree — what presets, projects and autosave
     // all store. Property names are the old "wt_*" settings keys without the
     // prefix, so a patch saved key-by-key converts by just stripping it.
+    //
+    // Version 2 moved the filter to octaves (ENV is -1..1, not Hz) and the FX
+    // into a rack (an FxRack child). Version 1 patches are converted on load.
     static inline const juce::Identifier stateType { "Wavetable" };
+    static constexpr int StateVersion = 2;
 
     juce::ValueTree getState() const override
     {
         juce::ValueTree t (stateType);
-        t.setProperty ("version", 1, nullptr);
+        t.setProperty ("version", StateVersion, nullptr);
 
         for (int o = 0; o < 2; ++o)
         {
@@ -570,9 +644,13 @@ public:
         t.setProperty ("sub",     subLevel, nullptr);
         t.setProperty ("drive",   drive, nullptr);
         t.setProperty ("gain",    gain, nullptr);
+        t.setProperty ("filtType", filterType, nullptr);
+        t.setProperty ("filtOn",  filterOn, nullptr);
         t.setProperty ("cutoff",  filterCutoff, nullptr);
         t.setProperty ("reso",    filterReso, nullptr);
         t.setProperty ("filtEnv", filterEnvAmount, nullptr);
+        t.setProperty ("filtVel", filterVel, nullptr);
+        t.setProperty ("filtKey", filterKey, nullptr);
         t.setProperty ("envPos",  envToPos, nullptr);
 
         auto adsr = [] (float a, float d, float s, float r)
@@ -593,15 +671,7 @@ public:
             t.setProperty ("routeAmount_" + n, routings[i].amount, nullptr);
         }
 
-        t.setProperty ("distDrive", fx.distDrive, nullptr);
-        t.setProperty ("distOn",    fx.distEnabled, nullptr);
-        t.setProperty ("delayTime", fx.delayTimeMs, nullptr);
-        t.setProperty ("delayFb",   fx.delayFeedback, nullptr);
-        t.setProperty ("delayMix",  fx.delayMix, nullptr);
-        t.setProperty ("delayOn",   fx.delayEnabled, nullptr);
-        t.setProperty ("revMix",    fx.reverbWet, nullptr);
-        t.setProperty ("revSize",   fx.reverbSize, nullptr);
-        t.setProperty ("revOn",     fx.reverbEnabled, nullptr);
+        t.appendChild (fx.getState(), nullptr);
         return t;
     }
 
@@ -613,6 +683,7 @@ public:
         auto f = [&t] (const juce::String& id, float cur) { return (float) (double) t.getProperty (id, cur); };
         auto i = [&t] (const juce::String& id, int cur)   { return (int) t.getProperty (id, cur); };
         auto b = [&t] (const juce::String& id, bool cur)  { return (bool) t.getProperty (id, cur); };
+        const bool legacy = (int) t.getProperty ("version", 1) < 2;
 
         for (int o = 0; o < 2; ++o)
         {
@@ -639,8 +710,29 @@ public:
         setGain            (f ("gain",    gain));
         setFilterCutoff    (f ("cutoff",  filterCutoff));
         setFilterResonance (f ("reso",    filterReso));
-        setFilterEnvAmount (f ("filtEnv", filterEnvAmount));
         setEnvToPosition   (f ("envPos",  envToPos));
+
+        if (legacy)
+        {
+            // The ladder, no velocity or keytracking: the filter as it was.
+            // ENV was Hz added at the envelope's peak; the octaves that reach
+            // the same peak give the same sweep.
+            setFilterType (SynthFilter::Ladder);
+            setFilterEnabled (true);
+            setFilterVelocity (0.0f);
+            setFilterKeytrack (0.0f);
+            if (t.hasProperty ("filtEnv"))
+                setFilterEnvAmount (std::log2 (1.0f + juce::jmax (0.0f, f ("filtEnv", 0.0f)) / filterCutoff)
+                                    / WavetableVoice::EnvOctaves);
+        }
+        else
+        {
+            setFilterType      (i ("filtType", filterType));
+            setFilterEnabled   (b ("filtOn",   filterOn));
+            setFilterEnvAmount (f ("filtEnv",  filterEnvAmount));
+            setFilterVelocity  (f ("filtVel",  filterVel));
+            setFilterKeytrack  (f ("filtKey",  filterKey));
+        }
 
         auto adsr = [&t] (const char* id, float* out)
         {
@@ -662,17 +754,52 @@ public:
             setRoutingSource (s, i ("routeSrc_" + n,    routings[s].source));
             setRoutingDest   (s, i ("routeDest_" + n,   routings[s].dest));
             setRoutingAmount (s, f ("routeAmount_" + n, routings[s].amount));
+
+            // A route to the cutoff was ±5000 Hz at full depth. Convert it
+            // to the octaves that move the cutoff as far for a source at 0.8
+            // (velocity 100, a wheel most of the way up).
+            if (legacy && routings[s].dest == ModDestCutoff && t.hasProperty ("routeAmount_" + n))
+            {
+                constexpr float typical = 0.8f;
+                const float a = routings[s].amount;
+                const float octaves = std::log2 (1.0f + std::abs (a) * typical * 5000.0f / filterCutoff);
+                setRoutingAmount (s, std::copysign (octaves / (typical * WavetableVoice::MatrixCutoffOctaves), a));
+            }
         }
 
-        fx.distDrive     = f ("distDrive", fx.distDrive);
-        fx.distEnabled   = b ("distOn",    fx.distEnabled);
-        fx.delayTimeMs   = f ("delayTime", fx.delayTimeMs);
-        fx.delayFeedback = f ("delayFb",   fx.delayFeedback);
-        fx.delayMix      = f ("delayMix",  fx.delayMix);
-        fx.delayEnabled  = b ("delayOn",   fx.delayEnabled);
-        fx.reverbWet     = f ("revMix",    fx.reverbWet);
-        fx.reverbSize    = f ("revSize",   fx.reverbSize);
-        fx.reverbEnabled = b ("revOn",     fx.reverbEnabled);
+        auto rack = t.getChildWithName (FxRack::stateType);
+        if (rack.isValid())
+            fx.setState (rack);
+        else if (t.hasProperty ("distOn") || t.hasProperty ("delayOn") || t.hasProperty ("revOn"))
+            fx.setState (rackFromBus (t));
+    }
+
+    // The old fixed bus (distortion → delay → reverb, each switchable) as a
+    // rack of the modules that were switched on, set the same.
+    static juce::ValueTree rackFromBus (const juce::ValueTree& t)
+    {
+        auto f = [&t] (const char* id, double def) { return (double) t.getProperty (id, def); };
+        juce::ValueTree rack (FxRack::stateType);
+        auto add = [&rack] (const char* type, std::initializer_list<std::pair<const char*, double>> values)
+        {
+            juce::ValueTree u (FxRack::unitType);
+            u.setProperty ("type", type, nullptr);
+            u.setProperty ("on", true, nullptr);
+            u.setProperty ("mode", 0, nullptr);   // SOFT / MONO: the old bus's curve and delay
+            for (auto& [id, v] : values)
+                u.setProperty (id, v, nullptr);
+            rack.appendChild (u, nullptr);
+        };
+
+        if ((bool) t.getProperty ("distOn", true))
+            add ("distortion", { { "drive", f ("distDrive", 0.0) }, { "tone", 1.0 }, { "mix", 1.0 } });
+        if ((bool) t.getProperty ("delayOn", true))
+            add ("delay", { { "time", f ("delayTime", 350.0) }, { "fb", f ("delayFb", 0.4) },
+                            { "tone", 1.0 }, { "mix", f ("delayMix", 0.18) } });
+        if ((bool) t.getProperty ("revOn", true))
+            add ("reverb", { { "wet", f ("revMix", 0.2) }, { "size", f ("revSize", 0.5) },
+                             { "damp", 0.4 }, { "width", 1.0 } });
+        return rack;
     }
 
 private:
@@ -745,9 +872,28 @@ private:
         src[ModSrcAccelY]   = accelY.load();
         src[ModSrcLFO]      = lfoRaw * lfoDepth;
 
+        // Velocity routes to the voice go to each voice, which knows its own
+        // note's velocity. Routes to the FX are shared, so those still use
+        // the most recent note's.
         float mod[NumModDests] = { 0 };
+        WavetableVoice::VelocityMods velMods;
         for (const auto& r : routings)
+        {
+            if (r.source == ModSrcVelocity)
+            {
+                switch (r.dest)
+                {
+                    case ModDestPosA:      velMods.posA   += r.amount; continue;
+                    case ModDestPosB:      velMods.posB   += r.amount; continue;
+                    case ModDestCutoff:    velMods.cutoff += r.amount; continue;
+                    case ModDestResonance: velMods.reso   += r.amount; continue;
+                    case ModDestPitch:     velMods.pitch  += r.amount; continue;
+                    case ModDestGain:      velMods.gain   += r.amount; continue;
+                    default: break;
+                }
+            }
             mod[r.dest] += src[r.source] * r.amount;
+        }
 
         WavetableVoice::OscParams a, b;
         a.table    = tableA.load();
@@ -761,19 +907,48 @@ private:
         effPosA.store (a.position);
         effPosB.store (b.position);
 
-        const float cutoff = juce::jlimit (20.0f, 20000.0f, filterCutoff + mod[ModDestCutoff] * 5000.0f);
-        const float reso   = juce::jlimit (0.0f, 4.0f, filterReso + mod[ModDestResonance] * 4.0f);
+        WavetableVoice::FilterParams filter;
+        filter.type       = filterType;
+        filter.enabled    = filterOn;
+        filter.cutoff     = filterCutoff;
+        filter.modOctaves = mod[ModDestCutoff] * WavetableVoice::MatrixCutoffOctaves;
+        filter.reso       = juce::jlimit (0.0f, SynthFilter::MaxReso, filterReso + mod[ModDestResonance] * SynthFilter::MaxReso);
+        filter.envAmount  = filterEnvAmount;
+        filter.velocity   = filterVel;
+        filter.keytrack   = filterKey;
+
         const float g      = juce::jlimit (0.0f, 0.6f, gain + mod[ModDestGain] * 0.2f);
         const float pitch  = mod[ModDestPitch] * 7.0f;
 
         for (int i = 0; i < synth.getNumVoices(); ++i)
             if (auto* v = dynamic_cast<WavetableVoice*> (synth.getVoice (i)))
                 v->setBlockParams (a, b, subLevel, unison, unisonDetune,
-                                   cutoff, reso, filterEnvAmount, envToPos, drive, g, pitch);
+                                   filter, velMods, envToPos, drive, g, pitch);
 
         // Delay time: ±1000 ms at full depth, same as the classic engine.
-        fx.setModulated (mod[ModDestDistDrive], mod[ModDestDelayMix],
-                         mod[ModDestDelayTime] * 1000.0f, mod[ModDestReverbMix]);
+        FxUnit::MatrixMods fxMods;
+        fxMods.distDrive   = mod[ModDestDistDrive];
+        fxMods.delayMix    = mod[ModDestDelayMix];
+        fxMods.delayTimeMs = mod[ModDestDelayTime] * 1000.0f;
+        fxMods.reverbWet   = mod[ModDestReverbMix];
+        fx.setModulated (fxMods);
+    }
+
+    // After the voices have rendered: the cutoff of the newest sounding note,
+    // for the filter display.
+    void publishLiveCutoff()
+    {
+        float cutoff = -1.0f;
+        for (int i = synth.getNumVoices(); --i >= 0;)
+            if (auto* v = dynamic_cast<WavetableVoice*> (synth.getVoice (i)))
+                if (v->isVoiceActive())
+                {
+                    if (newestVoice == nullptr || ! newestVoice->isVoiceActive() || newestVoice->wasStartedBefore (*v))
+                        newestVoice = v;
+                }
+        if (newestVoice != nullptr && newestVoice->isVoiceActive())
+            cutoff = newestVoice->getCurrentCutoff();
+        liveCutoff.store (cutoff);
     }
 
     //==========================================================================
@@ -808,7 +983,7 @@ private:
     LockFreeFifo midiQueue;
     juce::MidiBuffer audioThreadMidi;
     juce::Synthesiser synth;
-    MasterFx fx;
+    FxRack fx;
     double currentSampleRate = 44100.0;
 
     std::shared_ptr<const Wavetable> ownedA, ownedB;
@@ -821,7 +996,12 @@ private:
     float unisonDetune = 12.0f;
     float subLevel = 0.0f, drive = 0.0f, gain = 0.15f;
 
-    float filterCutoff = 2500.0f, filterReso = 0.8f, filterEnvAmount = 2000.0f, envToPos = 0.0f;
+    int   filterType = SynthFilter::Ladder;
+    bool  filterOn = true;
+    float filterCutoff = 2500.0f, filterReso = 0.8f, filterEnvAmount = 0.3f, envToPos = 0.0f;
+    float filterVel = 0.5f, filterKey = 0.0f;
+    std::atomic<float> liveCutoff { -1.0f };
+    WavetableVoice* newestVoice = nullptr;   // audio thread
     float ampA = 0.01f, ampD = 0.4f, ampS = 0.7f, ampR = 0.6f;
     float filA = 0.01f, filD = 0.5f, filS = 0.3f, filR = 0.5f;
     std::atomic<bool> adsrDirty { true }, killAll { false };
@@ -830,6 +1010,8 @@ private:
     int    lfoWaveform = LFOSine;
     double lfoPhase = 0.0;
 
-    std::atomic<float> modWheel { 0.5f }, lastVelocity { 0.0f }, accelX { 0.0f }, accelY { 0.0f };
+    // The wheel rests at the bottom, like a real one, so a route from it does
+    // nothing until it's moved.
+    std::atomic<float> modWheel { 0.0f }, lastVelocity { 0.0f }, accelX { 0.0f }, accelY { 0.0f };
     Routing routings[NumRoutingSlots];
 };

@@ -107,6 +107,8 @@ namespace WavetablePresets
         constexpr int MW = E::ModSrcModWheel, Vel = E::ModSrcVelocity, AX = E::ModSrcAccelX, AY = E::ModSrcAccelY, LFO = E::ModSrcLFO;
         constexpr int PosA = E::ModDestPosA, PosB = E::ModDestPosB, Cut = E::ModDestCutoff, Res = E::ModDestResonance,
                       Pitch = E::ModDestPitch, Gain = E::ModDestGain;
+        constexpr int LFO2 = E::ModSrcLFO2, LFO3 = E::ModSrcLFO3, Env3 = E::ModSrcEnv3, M1 = E::ModSrcMacro1, M2 = E::ModSrcMacro2;
+        constexpr int WarpA = E::ModDestWarpA, Detune = E::ModDestDetune;
 
         static const std::vector<WavetablePreset> all {
             // ── Bass ────────────────────────────────────────────────────────
@@ -299,6 +301,52 @@ namespace WavetablePresets
                     { "distOn", true }, { "distDrive", 0.6 },
                     { "delayOn", true }, { "delayTime", 166.0 }, { "delayFb", 0.55 }, { "delayMix", 0.3 } },
                   { { LFO, PosA, 0.5f } }),
+
+            // ── Show-offs for the mod system, voices and warp ───────────────
+            make ("Glide Lead", "Lead",
+                  { { "osc0_tableName", "Saw" }, { "osc1_tableName", "Saw" }, { "osc1_level", 0.7 }, { "osc1_fine", 8.0 },
+                    { "unison", 3 }, { "detune", 10.0 }, { "drive", 0.25 }, { "gain", 0.17 },
+                    { "voiceMode", E::Legato }, { "glide", 0.14 },
+                    { "filtType", SynthFilter::LP24 }, { "cutoff", 1600.0 }, { "reso", 1.2 }, { "filtEnv", 0.35 }, { "filtVel", 0.6 },
+                    { "amp", "0.005,0.3,0.85,0.25" }, { "fenv", "0.005,0.5,0.4,0.3" },
+                    { "lfo1_shape", SynthMod::toString (SynthMod::preset (0)) }, { "lfo1_rate", 5.5 }, { "lfo1_mode", SynthMod::Retrigger },
+                    { "lfo1_delay", 0.35 }, { "lfo1_rise", 0.6 },
+                    { "delayOn", true }, { "delayTime", 375.0 }, { "delayFb", 0.35 }, { "delayMix", 0.2 },
+                    { "revOn", true }, { "revMix", 0.15 } },
+                  { { LFO2, Pitch, 0.025f }, { MW, Cut, 0.4f } }),
+            make ("Gate Pad", "Pad",
+                  { { "osc0_tableName", "Morph" }, { "osc0_pos", 0.45 }, { "osc1_tableName", "Saw" }, { "osc1_level", 0.35 }, { "osc1_fine", 9.0 },
+                    { "unison", 5 }, { "detune", 16.0 }, { "gain", 0.05 },
+                    { "filtType", SynthFilter::LP12 }, { "cutoff", 2600.0 }, { "reso", 1.0 }, { "filtEnv", 0.0 },
+                    { "amp", "0.4,1.0,0.9,1.5" },
+                    { "lfo0_shape", SynthMod::toString (SynthMod::preset (8)) }, { "lfo0_sync", true }, { "lfo0_div", 5 },
+                    { "lfo2_shape", SynthMod::toString (SynthMod::preset (0)) }, { "lfo2_rate", 0.07 },
+                    { "revOn", true }, { "revMix", 0.45 }, { "revSize", 0.85 } },
+                  { { LFO, Gain, 0.25f }, { LFO3, PosA, 0.4f }, { AY, Cut, 0.3f } }),
+            make ("FM Warp Bass", "Bass",
+                  { { "osc0_tableName", "Sine" }, { "osc0_warp", E::WarpFM }, { "osc0_warpAmt", 0.25 },
+                    { "osc1_tableName", "Sine" }, { "osc1_level", 0.0 }, { "osc1_semi", 12 }, { "osc1_fine", 0.0 },
+                    { "unison", 1 }, { "sub", 0.4 }, { "drive", 0.3 }, { "gain", 0.3 },
+                    { "voiceMode", E::Mono }, { "glide", 0.04 },
+                    { "filtType", SynthFilter::LP24 }, { "cutoff", 1400.0 }, { "reso", 0.6 }, { "filtEnv", 0.3 }, { "filtVel", 0.6 },
+                    { "amp", "0.002,0.3,0.7,0.1" }, { "fenv", "0.001,0.25,0.2,0.1" }, { "env3", "0.001,0.18,0.0,0.1" } },
+                  { { Env3, WarpA, 0.6f }, { Vel, WarpA, 0.2f } }),
+            make ("Step Filter", "FX",
+                  { { "osc0_tableName", "Saw" }, { "osc1_tableName", "Square" }, { "osc1_level", 0.5 }, { "osc1_semi", -12 },
+                    { "unison", 3 }, { "detune", 12.0 }, { "gain", 0.18 },
+                    { "filtType", SynthFilter::LP24 }, { "cutoff", 700.0 }, { "reso", 2.6 }, { "filtEnv", 0.0 },
+                    { "amp", "0.005,0.3,0.9,0.3" },
+                    { "lfo2_shape", SynthMod::toString (SynthMod::preset (6)) }, { "lfo2_sync", true }, { "lfo2_div", 2 }, { "lfo2_mode", SynthMod::Retrigger },
+                    { "delayOn", true }, { "delayTime", 250.0 }, { "delayFb", 0.4 }, { "delayMix", 0.2 } },
+                  { { LFO3, Cut, 0.55f }, { MW, Res, 0.2f } }),
+            make ("Macro Morph", "Pad",
+                  { { "osc0_tableName", "Vocal" }, { "osc0_pos", 0.0 }, { "osc1_tableName", "Glass" }, { "osc1_level", 0.4 }, { "osc1_semi", 12 },
+                    { "unison", 4 }, { "detune", 8.0 }, { "gain", 0.15 },
+                    { "filtType", SynthFilter::LP12 }, { "cutoff", 1500.0 }, { "reso", 0.6 }, { "filtEnv", 0.1 },
+                    { "amp", "0.6,1.0,0.9,2.0" },
+                    { "macroName0", "MORPH" }, { "macroName1", "WIDTH" },
+                    { "revOn", true }, { "revMix", 0.4 }, { "revSize", 0.8 } },
+                  { { M1, PosA, 1.0f }, { M1, Cut, 0.4f }, { M2, Detune, 0.7f }, { M2, PosB, 0.5f } }),
         };
         return all;
     }

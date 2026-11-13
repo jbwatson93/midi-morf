@@ -312,6 +312,9 @@ public:
         const auto& p = *params;
         const bool useA = p.osc[0].table != nullptr;
         const bool useB = p.osc[1].table != nullptr;
+        // An oscillator FM'd by the other needs the other running, even
+        // when it's turned all the way down.
+        const bool fmFromB = p.osc[0].warp == WarpFM, fmFromA = p.osc[1].warp == WarpFM;
 
         float* outL = outputBuffer.getWritePointer (0);
         float* outR = outputBuffer.getNumChannels() > 1 ? outputBuffer.getWritePointer (1) : nullptr;
@@ -332,7 +335,7 @@ public:
             for (int u = 0; u < unison; ++u)
             {
                 float s = 0.0f;
-                if (useA && levelA > 0.0001f)
+                if (useA && (levelA > 0.0001f || fmFromA))
                 {
                     const double ph = warpPhase (p.osc[0].warp, warpA, phaseA[u], lastB[u]);
                     const float v = p.osc[0].table->read (mipA, ph, posA);
@@ -341,7 +344,7 @@ public:
                     phaseA[u] += incA * ratio[u];
                     if (phaseA[u] >= 1.0) phaseA[u] -= 1.0;
                 }
-                if (useB && levelB > 0.0001f)
+                if (useB && (levelB > 0.0001f || fmFromB))
                 {
                     const double ph = warpPhase (p.osc[1].warp, warpB, phaseB[u], lastA[u]);
                     const float v = p.osc[1].table->read (mipB, ph, posB);

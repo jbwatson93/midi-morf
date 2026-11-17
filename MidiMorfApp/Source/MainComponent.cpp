@@ -420,6 +420,15 @@ MainComponent::MainComponent()
 
     fxPage.onStateChanged = [this] { saveState(); };
     transportPage.onStateChanged = [this] { saveState(); };
+    transportPage.setLink (audioEngine.getLink());
+
+    // Another Link app started or stopped the session (start/stop sync on):
+    // the same as our own Play and Stop.
+    audioEngine.getLink().onStartStop = [this] (bool playing)
+    {
+        if (playing != audioEngine.getSequencers().isAnyPlaying())
+            togglePlay();
+    };
 
     // Accelerometer
     accelerometer.setListener (this);

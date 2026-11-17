@@ -11,6 +11,7 @@
 #include "DrumSynth.h"
 #include "MidiOut.h"
 #include "Halo.h"
+#include "LinkSync.h"
 
 //==============================================================================
 // Owns the iOS audio device, the track sources and the track rack. The device
@@ -124,12 +125,14 @@ public:
         sourcePlayer.setSource (&sequencers);
         deviceManager.addAudioCallback (&sourcePlayer);
         running = true;
+        link.setActive (true);
 
         // MIDI out is timed to when the phone's audio is heard.
         if (auto* device = deviceManager.getCurrentAudioDevice())
         {
             const double sr = juce::jmax (1.0, device->getCurrentSampleRate());
             midiOut.setAudioLatencyMs (1000.0 * (device->getCurrentBufferSizeSamples() + device->getOutputLatencyInSamples()) / sr);
+            link.setOutputLatencySeconds (device->getOutputLatencyInSamples() / sr);
         }
     }
 
@@ -145,6 +148,7 @@ public:
         deviceManager.removeAudioCallback (&sourcePlayer);
         sourcePlayer.setSource (nullptr);
         running = false;
+        link.setActive (false);   // nothing plays in the background
 
         if (Platform::closesAudioDeviceInBackground() && deviceInitialised)
         {
@@ -241,6 +245,7 @@ public:
         sequencers.stopAll();
     }
     LocalSequencers& getSequencers() noexcept { return sequencers; }
+    LinkSync& getLink() noexcept { return link; }
     TrackRack& getRack() noexcept             { return rack; }
     PunchFx& getPunchFx() noexcept            { return punch; }
     MidiOutRouter& getMidiOut() noexcept      { return midiOut; }
@@ -308,9 +313,25 @@ private:
     PunchFx punch;
     MidiOutRouter midiOut;   // before the rack, which taps into it
     TrackRack rack;
-    LocalSequencers sequencers { rack };
+    LinkSync link;   // before the sequencers, which follow it
+    LocalSequencers sequencers { rack, link };
     juce::AudioDeviceManager deviceManager;
-    juce::AudioSourcePlayer sourcePlayer;
+    // Hands Link the device's time for each buffer before the block renders.
+    struct TimedSourcePlayer : juce::AudioSourcePlayer
+    {
+        explicit TimedSourcePlayer (LinkSync& l) : link (l) {}
+
+        void audioDeviceIOCallbackWithContext (const float* const* in, int numIn, float* const* out, int numOut,
+                                               int numSamples, const juce::AudioIODeviceCallbackContext& context) override
+        {
+            link.setBufferHostTimeNs (context.hostTimeNs != nullptr ? *context.hostTimeNs : 0);
+            juce::AudioSourcePlayer::audioDeviceIOCallbackWithContext (in, numIn, out, numOut, numSamples, context);
+        }
+
+        LinkSync& link;
+    };
+
+    TimedSourcePlayer sourcePlayer { link };
     SampleRecorder recorder;
     bool running = false;
     bool micOn = false;

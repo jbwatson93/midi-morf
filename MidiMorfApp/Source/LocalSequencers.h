@@ -10,6 +10,7 @@
 #include "SessionModel.h"
 #include "NoteClip.h"
 #include "Mlr.h"
+#include "LinkSync.h"
 
 //==============================================================================
 // The sequencers in Local mode, on the phone's own clock, plus the note-clip
@@ -32,6 +33,10 @@
 // This is the AudioSource the device plays. Each block is cut at clock ticks
 // and at every exact-sample event, so notes land on the right sample.
 //
+// With Ableton Link on, the clock follows the session's beat: it is lined up
+// with Link at the start of every block (followLink), starts on the session's
+// next bar, and the tempo is the session's.
+//
 // Threading: the engines are only ever ticked on the audio thread. Edits from
 // the pages take `lock` briefly; the engines' note output is queued under the
 // same lock and drained on the audio thread, so the track sources are only
@@ -47,7 +52,7 @@ public:
     static constexpr int NumTracks = TrackRack::NumTracks;
     static constexpr int DrumLanes = ::Drums::NumDrums, DrumSteps = 16;
 
-    explicit LocalSequencers (TrackRack& r) : rack (r)
+    LocalSequencers (TrackRack& r, LinkSync& l) : rack (r), link (l)
     {
         for (int t = 0; t < NumTracks; ++t)
         {
@@ -82,9 +87,16 @@ public:
             tap->setBlockPosition (0);
         }
 
+        LinkSync::Block lb;
+        const bool linked = link.beginBlock (lb);
+        if (linked)
+            bpm.store (juce::jlimit (20.0, 999.0, lb.bpm));   // Link's range: the session's tempo wins
+
         {
             const juce::SpinLock::ScopedLockType sl (lock);
-            updateTransport();
+            updateTransport (linked ? &lb : nullptr);
+            if (linked && clockRunning)
+                followLink (lb);
         }
 
         while (remaining > 0)
@@ -156,6 +168,9 @@ public:
             pos += n;
             remaining -= n;
         }
+
+        if (linked)
+            link.endBlock();
     }
 
     //==========================================================================
@@ -217,7 +232,15 @@ public:
         return recording != RecIdle;
     }
 
-    void   setBpm (double b) { bpm.store (juce::jlimit (40.0, 240.0, b)); }
+    // With Link on, the tempo goes to the whole session.
+    void setBpm (double b)
+    {
+        b = juce::jlimit (MinBpm, MaxBpm, b);
+        bpm.store (b);
+        if (link.isEnabled())
+            link.requestTempo (b);
+    }
+
     double getBpm() const    { return bpm.load(); }
 
     int getPlayhead (int track) const
@@ -822,8 +845,8 @@ private:
         s.running.store (false);
     }
 
-    // Audio thread, under lock.
-    void updateTransport()
+    // Audio thread, under lock. `lb` is Link's block, or null with Link off.
+    void updateTransport (const LinkSync::Block* lb)
     {
         bool anyWanted = recording != RecIdle;
         for (auto& p : notePlayers)
@@ -847,13 +870,61 @@ private:
             clockRunning  = true;
             globalTick    = 0;
             samplesToTick = 0.0;
-            if (auto* tap = rack.getMidiTap()) tap->clock (MidiTap::Clock::Start);
+            if (lb != nullptr)
+                startOnLink (*lb);
         }
         else if (! anyWanted && clockRunning)
         {
             clockRunning = false;
             if (auto* tap = rack.getMidiTap()) tap->clock (MidiTap::Clock::Stop);
+            if (lb != nullptr && lb->sessionPlaying)
+                link.setPlayingAtBeat (false, lb->beat);
         }
+    }
+
+    // Audio thread, under lock: the clock has just started with Link on.
+    // Alone, it starts now and the session's beat 0 moves here, so whoever
+    // joins later lines up with our bar 1. With peers it waits for the
+    // session's next bar, or starts a hair late if one has only just gone by
+    // (another app's start, with start/stop sync, lands here).
+    void startOnLink (const LinkSync::Block& lb)
+    {
+        if (lb.peers == 0)
+        {
+            link.requestBeatAtBlockStart (0.0);
+            linkOrigin = 0.0;
+            linkBeatShift = lb.beat;   // this block's beat, before the move
+        }
+        else
+        {
+            const double bar = std::floor (lb.beat / BeatsPerBar) * BeatsPerBar;
+            linkOrigin = lb.beat - bar < 0.125 ? bar : bar + BeatsPerBar;
+            linkBeatShift = 0.0;
+        }
+        if (lb.startStopSync && ! lb.sessionPlaying)
+            link.setPlayingAtBeat (true, linkOrigin);
+    }
+
+    // Audio thread, under lock: lines the clock up with the session's beat at
+    // the start of this block. Small differences (clock drift, the device's
+    // timing) move the next tick by a fraction of a sample. A jump of more
+    // than two beats means the session's timeline moved (we joined one, or a
+    // peer reset it): we keep our place in the bar and catch up to it.
+    void followLink (const LinkSync::Block& lb)
+    {
+        const double beat = lb.beat - linkBeatShift;
+        linkBeatShift = 0.0;   // only the start block is before the move
+        const double spt = samplesPerTick();
+        const double now = (double) globalTick - samplesToTick / spt;
+        double target = (beat - linkOrigin) * SeqPPQN;
+
+        if (std::abs (target - now) > 2 * SeqPPQN)
+        {
+            linkOrigin += std::round ((target - now) / (BeatsPerBar * SeqPPQN)) * BeatsPerBar;
+            target = (beat - linkOrigin) * SeqPPQN;
+        }
+
+        samplesToTick = ((double) globalTick - target) * spt;
     }
 
     // Note clips and recording — audio thread, under lock.
@@ -1066,7 +1137,11 @@ private:
     void tick()
     {
         if (auto* tap = rack.getMidiTap())
+        {
+            if (globalTick == 0)
+                tap->clock (MidiTap::Clock::Start);   // here, not at Play: with Link the first tick can wait for the bar
             tap->clock (MidiTap::Clock::Tick);
+        }
 
         if (globalTick % (4 * SeqPPQN) == 0 && recording != RecIdle)
             recordingAtBar();
@@ -1125,6 +1200,9 @@ private:
     }
 
     TrackRack& rack;
+    LinkSync& link;
+
+    static constexpr double MinBpm = 40.0, MaxBpm = 240.0, BeatsPerBar = 4.0;
 
     // Declared before the slots: the engines' destructors still send note-offs.
     mutable juce::SpinLock lock;
@@ -1140,6 +1218,8 @@ private:
     bool   clockRunning  = false;   // audio thread
     int    globalTick    = 0;
     double samplesToTick = 0.0;
+    double linkOrigin = 0.0;      // the session beat our tick 0 is on (audio thread)
+    double linkBeatShift = 0.0;   // see startOnLink
 
     // Note clips and recording, under lock.
     std::array<NotePlayer, TrackRack::NumTracks> notePlayers {};

@@ -4,6 +4,7 @@
 #include "EventRouter.h"
 #include "MidiMorfColors.h"
 #include "Glassmorphism.h"
+#include "LinkSync.h"
 
 // The global transport. The header strip sets the tempo; Play/Stop start and
 // stop every sequencer together.
@@ -230,11 +231,24 @@ public:
 
         addAndMakeVisible (content);
 
+        // Ableton's guidelines: a text label that says "Ableton Link" in full
+        // and its state, Enabled or Disabled, opening Ableton's own pane.
+        linkButton.onClick = [this] { if (link != nullptr) link->showSettings(); };
+        addChildComponent (linkButton);
+
         timerCallback();
         startTimerHz (15);
     }
 
     ~TransportPage() override { setLookAndFeel (nullptr); }
+
+    void setLink (LinkSync& l)
+    {
+        link = &l;
+        linkButton.setVisible (LinkSync::isAvailable());
+        resized();
+        timerCallback();
+    }
 
     // Tempo changed — worth saving.
     std::function<void()> onStateChanged;
@@ -260,6 +274,11 @@ public:
         header.removeFromLeft (6);
         tapButton.setBounds (header.removeFromLeft (56));
         header.removeFromLeft (10);
+        if (linkButton.isVisible())
+        {
+            linkButton.setBounds (header.removeFromRight (juce::jmin (230, header.getWidth() / 2)));
+            header.removeFromRight (10);
+        }
         hintLabel.setBounds (header);
 
         const int contentH = landH - headerH;
@@ -289,6 +308,22 @@ private:
     {
         bpmLabel.setText (juce::String (juce::roundToInt (seqs.getBpm())), juce::dontSendNotification);
         content.setLocalRunning (seqs.isAnyPlaying());
+
+        if (link != nullptr && linkButton.isVisible())
+        {
+            juce::String text ("Ableton Link: ");
+            if (link->isEnabled())
+            {
+                text << "Enabled";
+                if (const int n = link->numPeers(); n > 0)
+                    text << " (" << n << (n == 1 ? " app)" : " apps)");
+            }
+            else
+                text << "Disabled";
+            if (linkButton.getButtonText() != text)
+                linkButton.setButtonText (text);
+            linkButton.setToggleState (link->isEnabled(), juce::dontSendNotification);
+        }
     }
 
     void setBpm (double b)
@@ -319,6 +354,8 @@ private:
 
     juce::Label bpmTitle, bpmLabel, hintLabel;
     juce::TextButton slowerButton { "-" }, fasterButton { "+" }, tapButton { "TAP" };
+    juce::TextButton linkButton;
+    LinkSync* link = nullptr;
 
     TransportPortraitContent content;
 

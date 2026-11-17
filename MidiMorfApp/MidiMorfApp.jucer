@@ -17,6 +17,9 @@
             file="Source/MainComponent.cpp"/>
       <FILE id="plt000" name="Platform.h" compile="0" resource="0" file="Source/Platform.h"/>
       <FILE id="plt001" name="Platform_ios.mm" compile="1" resource="0" file="Source/Platform_ios.mm"/>
+      <FILE id="lnk001" name="LinkSync.h" compile="0" resource="0" file="Source/LinkSync.h"/>
+      <FILE id="lnk002" name="LinkSync.cpp" compile="1" resource="0" file="Source/LinkSync.cpp"/>
+      <FILE id="lnk003" name="LinkSync_ios.mm" compile="1" resource="0" file="Source/LinkSync_ios.mm"/>
       <FILE id="plt002" name="Platform_android.cpp" compile="1" resource="0"
             file="Source/Platform_android.cpp"/>
       <FILE id="lvgSTU" name="MidiMorfProtocol.h" compile="0" resource="0"
@@ -141,13 +144,14 @@
   <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
   <EXPORTFORMATS>
     <XCODE_IPHONE targetFolder="Builds/iOS" microphonePermissionNeeded="1" microphonePermissionsText="Midi-Morf uses the microphone to record samples." UIFileSharingEnabled="1" UIStatusBarHidden="1" extraDefs="JUCE_IOS_AUDIO_EXPLICIT_SAMPLERATES=48000.0"
-                  customPList="&lt;plist&gt;&lt;dict&gt;&#10;  &lt;key&gt;ITSAppUsesNonExemptEncryption&lt;/key&gt;&#10;  &lt;false/&gt;&#10;  &lt;key&gt;UISupportedInterfaceOrientations&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;UIInterfaceOrientationLandscapeRight&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UIRequiresFullScreen&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;LSSupportsOpeningDocumentsInPlace&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;CFBundleIconName&lt;/key&gt;&#10;  &lt;string&gt;AppIcon&lt;/string&gt;&#10;  &lt;key&gt;NSBluetoothAlwaysUsageDescription&lt;/key&gt;&#10;  &lt;string&gt;Midi-Morf uses Bluetooth to send MIDI to your synths and drum machines.&lt;/string&gt;&#10;  &lt;key&gt;NSLocalNetworkUsageDescription&lt;/key&gt;&#10;  &lt;string&gt;Midi-Morf uses the local network to send MIDI to your computer over Wi-Fi.&lt;/string&gt;&#10;  &lt;key&gt;NSBonjourServices&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;_apple-midi._udp&lt;/string&gt;&#10;  &lt;/array&gt;&#10;&lt;/dict&gt;&lt;/plist&gt;"
+                  customPList="&lt;plist&gt;&lt;dict&gt;&#10;  &lt;key&gt;ITSAppUsesNonExemptEncryption&lt;/key&gt;&#10;  &lt;false/&gt;&#10;  &lt;key&gt;UISupportedInterfaceOrientations&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;UIInterfaceOrientationLandscapeRight&lt;/string&gt;&#10;  &lt;/array&gt;&#10;  &lt;key&gt;UIRequiresFullScreen&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;LSSupportsOpeningDocumentsInPlace&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;CFBundleIconName&lt;/key&gt;&#10;  &lt;string&gt;AppIcon&lt;/string&gt;&#10;  &lt;key&gt;NSBluetoothAlwaysUsageDescription&lt;/key&gt;&#10;  &lt;string&gt;Midi-Morf uses Bluetooth to send MIDI to your synths and drum machines.&lt;/string&gt;&#10;  &lt;key&gt;NSLocalNetworkUsageDescription&lt;/key&gt;&#10;  &lt;string&gt;Midi-Morf uses the local network to play in time with other apps over Ableton Link, and to send MIDI to your computer over Wi-Fi.&lt;/string&gt;&#10;  &lt;key&gt;ABLLinkStartStopSyncSupported&lt;/key&gt;&#10;  &lt;true/&gt;&#10;  &lt;key&gt;ABLLinkPeerName&lt;/key&gt;&#10;  &lt;string&gt;Midi-Morf&lt;/string&gt;&#10;  &lt;key&gt;NSBonjourServices&lt;/key&gt;&#10;  &lt;array&gt;&#10;      &lt;string&gt;_apple-midi._udp&lt;/string&gt;&#10;  &lt;/array&gt;&#10;&lt;/dict&gt;&lt;/plist&gt;"
                   iosDevelopmentTeamID="69KM48W4TU" extraCustomFrameworks="CoreMotion"
+                  externalLibraries="LinkKit" customXcodeResourceFolders="ThirdParty/LinkKit/LinkKitResources.bundle"
                   customXcassetsFolder="Resources/iOS/Images.xcassets"
                   iosScreenOrientation="UIInterfaceOrientationLandscapeRight" iPadScreenOrientation="UIInterfaceOrientationLandscapeRight">
       <CONFIGURATIONS>
-        <CONFIGURATION isDebug="1" name="Debug" iosDeploymentTarget="17.5" iosCompatibility="17.5"/>
-        <CONFIGURATION isDebug="0" name="Release" iosDeploymentTarget="17.5" iosCompatibility="17.5"/>
+        <CONFIGURATION isDebug="1" name="Debug" iosDeploymentTarget="17.5" iosCompatibility="17.5" headerPath="../../ThirdParty/LinkKit/include" libraryPath="../../ThirdParty/LinkKit/lib/$(PLATFORM_NAME)"/>
+        <CONFIGURATION isDebug="0" name="Release" iosDeploymentTarget="17.5" iosCompatibility="17.5" headerPath="../../ThirdParty/LinkKit/include" libraryPath="../../ThirdParty/LinkKit/lib/$(PLATFORM_NAME)"/>
       </CONFIGURATIONS>
       <MODULEPATHS>
         <MODULEPATH id="juce_audio_basics" path="../../juce"/>

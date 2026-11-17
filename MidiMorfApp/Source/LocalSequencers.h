@@ -160,6 +160,7 @@ public:
                             s->player().releaseAll();
             }
 
+            rack.setSongBeat (clockRunning && segmentTick >= 0.0 ? segmentTick / SeqPPQN : -1.0);
             rack.render (*buf, pos, n);
             addClick (*buf, pos, n);
 

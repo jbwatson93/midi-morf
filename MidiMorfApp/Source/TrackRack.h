@@ -43,6 +43,10 @@ public:
     // (the synth's LFOs). Audio thread.
     virtual void setTempo (double /*bpm*/) {}
 
+    // Where the transport is, in beats from bar 1, at the first sample of the
+    // render; negative while stopped. Synced LFOs lock to it. Audio thread.
+    virtual void setSongBeat (double /*beat*/) {}
+
     // A source that resonates with the other tracks (Halo) says so. The rack
     // renders it after them and, before each render, hands it what each of
     // them just played: mono, before the fader (so a muted track still
@@ -178,8 +182,13 @@ public:
     // The delay bus follows this tempo (set once, before audio starts).
     void setTempoSource (std::function<double()> f) { tempoSource = std::move (f); }
 
+    // Audio thread, before render(): the transport's beat at its first
+    // sample, or negative while stopped.
+    void setSongBeat (double beat) noexcept { songBeat = beat; }
+
     void prepare (double sampleRate, int maxBlockSize)
     {
+        rate = sampleRate;
         scratch.setSize (2, juce::jmax (maxBlockSize, 1024));
         for (auto& h : heard)
             h.assign ((size_t) scratch.getNumSamples(), 0.0f);
@@ -283,6 +292,7 @@ public:
                     if (pass == 1)
                         s->hearTracks (heardBy.data(), NumTracks, n);
                     s->setTempo (bpm);
+                    s->setSongBeat (songBeat < 0.0 ? -1.0 : songBeat + done * bpm / (60.0 * rate));
                     s->render (scratch, 0, n);
                     if (! inserts[(size_t) t].isNeutral())
                         inserts[(size_t) t].process (scratch.getWritePointer (0), scratch.getNumChannels() > 1 ? scratch.getWritePointer (1) : nullptr, n);
@@ -551,6 +561,7 @@ private:
     std::atomic<float> masterVolume { 1.0f };
     juce::SmoothedValue<float> masterGain;   // audio thread
     std::function<double()> tempoSource;
+    double songBeat = -1.0, rate = 48000.0;   // audio thread
     bool anySolo = false;                    // audio thread
     std::array<std::array<juce::SmoothedValue<float>, 2>, NumTracks> gains;   // audio thread, per side
     juce::AudioBuffer<float> scratch;

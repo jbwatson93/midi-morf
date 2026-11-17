@@ -856,6 +856,7 @@ public:
         audioThreadMidi.addEvent (juce::MidiMessage::pitchWheel (juce::jlimit (1, 16, ch), wheel), 0);
     }
     void setTempo (double bpm) override { tempo.store (juce::jlimit (20.0, 400.0, bpm)); }
+    void setSongBeat (double beat) override { songBeat = beat; }
 
     void render (juce::AudioBuffer<float>& buffer, int start, int num) override
     {
@@ -1493,7 +1494,9 @@ private:
         }
 
         // LFOs: Free ones run here, shared by every voice; Retrig and Env ones
-        // run in each voice from its note-on.
+        // run in each voice from its note-on. A synced Free LFO locks to the
+        // transport while it plays (its PHASE knob shifts it from the bar
+        // line), unless its rate is modulated; stopped, it runs on from there.
         const double bpm = tempo.load();
         for (int k = 0; k < NumLfos; ++k)
         {
@@ -1502,6 +1505,11 @@ private:
             lb.lfo = &l;
             lb.hz = l.hz (bpm);
             lb.mode = l.mode; lb.rise = l.rise; lb.delay = l.delay; lb.phase = l.phase; lb.depth = l.depth;
+            if (songBeat >= 0.0 && l.sync && fxMod[ModDestLFO1Rate + k] == 0.0f)
+            {
+                const double cycles = songBeat / SynthMod::divisionBeats (l.division) + l.phase;
+                freePhase[k] = cycles - std::floor (cycles);
+            }
             lb.freePhase = freePhase[k];
             freePhase[k] += lb.hz * std::exp2 (fxMod[ModDestLFO1Rate + k] * 4.0f) * numSamples / currentSampleRate;
             freePhase[k] -= std::floor (freePhase[k]);
@@ -1605,6 +1613,7 @@ private:
     FxRack fx;
     double currentSampleRate = 44100.0;
     std::atomic<double> tempo { 120.0 };
+    double songBeat = -1.0;   // audio thread
 
     std::shared_ptr<const Wavetable> ownedA, ownedB;
     std::atomic<const Wavetable*> tableA { nullptr }, tableB { nullptr };

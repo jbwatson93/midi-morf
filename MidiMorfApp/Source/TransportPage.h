@@ -233,7 +233,7 @@ public:
 
         // Ableton's guidelines: a text label that says "Ableton Link" in full
         // and its state, Enabled or Disabled, opening Ableton's own pane.
-        linkButton.onClick = [this] { if (link != nullptr) link->showSettings(); };
+        linkButton.onClick = [this] { if (link != nullptr) link->showSettings (linkButton); };
         addChildComponent (linkButton);
 
         timerCallback();

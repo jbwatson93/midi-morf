@@ -20,6 +20,7 @@
       <FILE id="lnk001" name="LinkSync.h" compile="0" resource="0" file="Source/LinkSync.h"/>
       <FILE id="lnk002" name="LinkSync.cpp" compile="1" resource="0" file="Source/LinkSync.cpp"/>
       <FILE id="lnk003" name="LinkSync_ios.mm" compile="1" resource="0" file="Source/LinkSync_ios.mm"/>
+      <FILE id="lnk004" name="LinkSync_android.cpp" compile="1" resource="0" file="Source/LinkSync_android.cpp"/>
       <FILE id="plt002" name="Platform_android.cpp" compile="1" resource="0"
             file="Source/Platform_android.cpp"/>
       <FILE id="lvgSTU" name="MidiMorfProtocol.h" compile="0" resource="0"
@@ -173,13 +174,13 @@
     </XCODE_IPHONE>
     <ANDROIDSTUDIO targetFolder="Builds/Android" androidPushNotifications="0" microphonePermissionNeeded="1"
                    androidScreenOrientation="landscape" androidMinimumSDK="26" androidTargetSDK="36"
-                   androidInternetNeeded="0" androidExternalWriteNeeded="0"
+                   androidInternetNeeded="1" androidOtherPermissions="android.permission.ACCESS_NETWORK_STATE android.permission.ACCESS_WIFI_STATE" extraDefs="LINK_PLATFORM_LINUX=1" androidExternalWriteNeeded="0"
                    androidReadMediaAudioPermission="0" androidReadMediaImagesPermission="0"
                    androidReadMediaVideoPermission="0" androidAdditionalResourceFolders="Resources/Android/res"
                    androidManifestCustomXmlElements="&lt;manifest&gt;&lt;application android:icon=&quot;@mipmap/ic_launcher&quot; android:roundIcon=&quot;@mipmap/ic_launcher&quot; android:label=&quot;Midi-Morf&quot;&gt;&lt;property android:name=&quot;android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY&quot; android:value=&quot;true&quot;/&gt;&lt;/application&gt;&lt;/manifest&gt;">
       <CONFIGURATIONS>
-        <CONFIGURATION isDebug="1" name="Debug" androidArchitectures="arm64-v8a"/>
-        <CONFIGURATION isDebug="0" name="Release" androidArchitectures="arm64-v8a armeabi-v7a"/>
+        <CONFIGURATION isDebug="1" name="Debug" androidArchitectures="arm64-v8a" headerPath="../../ThirdParty/link/include;../../ThirdParty/link/modules/asio-standalone/asio/include"/>
+        <CONFIGURATION isDebug="0" name="Release" androidArchitectures="arm64-v8a armeabi-v7a" headerPath="../../ThirdParty/link/include;../../ThirdParty/link/modules/asio-standalone/asio/include"/>
       </CONFIGURATIONS>
       <MODULEPATHS/>
     </ANDROIDSTUDIO>

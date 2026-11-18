@@ -102,7 +102,7 @@ void LinkSync::setOutputLatencySeconds (double s)
 }
 
 // Ableton's own pane, in a navigation bar with Done, as a sheet.
-void LinkSync::showSettings()
+void LinkSync::showSettings (juce::Component&)
 {
     auto* top = topViewController();
     if (top == nil)

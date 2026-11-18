@@ -36,3 +36,8 @@ MidiMorfApp/Source/DevBreaks.h
 # Its license forbids passing the SDK on, so it never goes in the repo. Unzip a
 # LinkKit release into MidiMorfApp/ThirdParty/LinkKit (see LINK.md).
 MidiMorfApp/ThirdParty/LinkKit/
+
+# ── Ableton Link (Android) ───────────────────────────────────────────────────
+# GPLv2+ (or Ableton's proprietary license). Kept out until JB settles which;
+# clone it into MidiMorfApp/ThirdParty/link (see LINK.md).
+MidiMorfApp/ThirdParty/link/

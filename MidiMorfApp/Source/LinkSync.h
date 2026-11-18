@@ -11,10 +11,10 @@
 // LocalSequencers asks where the beat is at the start of every audio block
 // and lines its clock up with it (see LocalSequencers::followLink).
 //
-// iOS uses Ableton's LinkKit (LinkSync_ios.mm). The SDK isn't in the repo
-// (its license forbids passing it on), so a checkout without it, and every
-// other platform, gets the stub in LinkSync.cpp: isAvailable() is false and
-// Link never turns on.
+// iOS uses Ableton's LinkKit (LinkSync_ios.mm), Android Ableton's open-source
+// Link library (LinkSync_android.cpp). Neither is in the repo (see LINK.md),
+// so a checkout without them gets the stub in LinkSync.cpp: isAvailable() is
+// false and Link never turns on.
 //
 // Threading: setters, getters and callbacks are message thread, except the
 // "audio thread" section.
@@ -30,10 +30,11 @@ public:
     //==========================================================================
     // Message thread.
 
-    // The user turns Link on and off in Ableton's own settings pane.
+    // The user turns Link on and off in Ableton's own settings pane (on
+    // Android, a callout from `from` with the same switches).
     bool isEnabled() const;
     int  numPeers() const;
-    void showSettings();
+    void showSettings (juce::Component& from);
 
     // Called when the app goes to and from the background. Link stays
     // active in the background only while something is playing.

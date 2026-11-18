@@ -5,23 +5,47 @@
 #include "WavetablePresets.h"
 
 //==============================================================================
-// The preset strip on the Sound page: ◀  name  ▶  SAVE. A star after the
-// name means the sound has been changed since the preset was loaded.
+// A die showing five, for the button that rolls a random patch.
+class DiceButton : public juce::Button
+{
+public:
+    DiceButton() : juce::Button ("Random patch") { setTooltip ("Random patch"); }
+
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        const float side = juce::jmin ((float) getWidth(), (float) getHeight()) - 10.0f;
+        const auto die = juce::Rectangle<float> (side, side).withCentre (getLocalBounds().toFloat().getCentre());
+        auto colour = MidiMorfColors::textLight.withAlpha (down ? 1.0f : over ? 0.9f : 0.75f);
+        g.setColour (colour);
+        g.drawRoundedRectangle (die, side * 0.2f, 1.5f);
+        const float pip = side * 0.16f, in = side * 0.27f;
+        for (auto c : { die.getCentre(), die.getTopLeft() + juce::Point<float> (in, in), die.getTopRight() + juce::Point<float> (-in, in),
+                        die.getBottomLeft() + juce::Point<float> (in, -in), die.getBottomRight() + juce::Point<float> (-in, -in) })
+            g.fillEllipse (juce::Rectangle<float> (pip, pip).withCentre (c));
+    }
+};
+
+//==============================================================================
+// The preset strip on the Sound page: ◀  name  ▶  dice  MUT  SAVE. A star
+// after the name means the sound has been changed since the preset was
+// loaded. The dice rolls a new random patch; MUT nudges the current one.
 class PresetBar : public juce::Component
 {
 public:
     PresetBar()
     {
-        for (auto* b : { &prev, &next, &name, &save })
+        for (auto* b : std::initializer_list<juce::Component*> { &prev, &next, &name, &dice, &mutate, &save })
             addAndMakeVisible (b);
-        prev.onClick = [this] { if (onStep) onStep (-1); };
-        next.onClick = [this] { if (onStep) onStep (1); };
-        name.onClick = [this] { if (onBrowse) onBrowse(); };
-        save.onClick = [this] { if (onSave) onSave(); };
+        prev.onClick   = [this] { if (onStep) onStep (-1); };
+        next.onClick   = [this] { if (onStep) onStep (1); };
+        name.onClick   = [this] { if (onBrowse) onBrowse(); };
+        dice.onClick   = [this] { if (onRoll) onRoll(); };
+        mutate.onClick = [this] { if (onMutate) onMutate(); };
+        save.onClick   = [this] { if (onSave) onSave(); };
     }
 
     std::function<void (int direction)> onStep;
-    std::function<void()> onBrowse, onSave;
+    std::function<void()> onBrowse, onSave, onRoll, onMutate;
 
     void set (const juce::String& presetName, bool modified, juce::Colour colour)
     {
@@ -34,19 +58,23 @@ public:
     {
         auto r = getLocalBounds();
         save.setBounds (r.removeFromRight (56).reduced (3));
+        mutate.setBounds (r.removeFromRight (46).reduced (3));
+        dice.setBounds (r.removeFromRight (34).reduced (1));
         prev.setBounds (r.removeFromLeft (34).reduced (3));
         next.setBounds (r.removeFromRight (34).reduced (3));
         name.setBounds (r.reduced (3));
     }
 
 private:
-    juce::TextButton prev { "<" }, next { ">" }, name, save { "SAVE" };
+    juce::TextButton prev { "<" }, next { ">" }, name, mutate { "MUT" }, save { "SAVE" };
+    DiceButton dice;
 };
 
 //==============================================================================
 // Full-page preset browser over the Sound page: a column of categories, the
-// presets in the chosen one as a grid (yours after the factory ones), Init,
-// and Close. Picking a preset loads it and closes.
+// presets in the chosen one as a grid (yours after the factory ones), Random
+// (a new patch in the chosen category), Init and Close. Picking a preset
+// loads it and closes.
 class PresetBrowser : public juce::Component
 {
 public:
@@ -59,6 +87,12 @@ public:
 
         initButton.onClick  = [this] { pick (WavetablePresets::init()); };
         closeButton.onClick = [this] { setVisible (false); };
+        randomButton.onClick = [this]
+        {
+            setVisible (false);
+            if (onRoll) onRoll (shownCategory);
+        };
+        addAndMakeVisible (randomButton);
         addAndMakeVisible (initButton);
         addAndMakeVisible (closeButton);
 
@@ -73,6 +107,7 @@ public:
     }
 
     std::function<void (const WavetablePreset&)> onPick;
+    std::function<void (const juce::String& category)> onRoll;
 
     // Opens on the category of the current preset.
     void show (const juce::String& currentName, juce::Colour colour)
@@ -111,6 +146,7 @@ public:
         auto top = area.removeFromTop (36);
         closeButton.setBounds (top.removeFromRight (80).reduced (2));
         initButton.setBounds (top.removeFromRight (80).reduced (2));
+        randomButton.setBounds (top.removeFromRight (150).reduced (2));
         title.setBounds (top);
         area.removeFromTop (6);
 
@@ -130,6 +166,8 @@ public:
 private:
     void showCategory (const juce::String& category)
     {
+        shownCategory = category;
+        randomButton.setButtonText ("Random " + category);
         for (auto* b : categoryButtons)
             b->setToggleState (b->getButtonText() == category, juce::dontSendNotification);
 
@@ -168,10 +206,10 @@ private:
     }
 
     juce::Label title;
-    juce::TextButton initButton { "Init" }, closeButton { "Close" };
+    juce::TextButton initButton { "Init" }, closeButton { "Close" }, randomButton { "Random" };
     juce::OwnedArray<juce::TextButton> categoryButtons, presetButtons;
     std::vector<WavetablePreset> presets, shown;
-    juce::String current;
+    juce::String current, shownCategory;
     juce::Colour accent { MidiMorfColors::accent };
     juce::Rectangle<int> gridArea;
 };

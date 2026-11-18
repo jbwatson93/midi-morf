@@ -17,6 +17,7 @@
             file="Source/MainComponent.cpp"/>
       <FILE id="plt000" name="Platform.h" compile="0" resource="0" file="Source/Platform.h"/>
       <FILE id="plt001" name="Platform_ios.mm" compile="1" resource="0" file="Source/Platform_ios.mm"/>
+      <FILE id="dice01" name="PatchDice.h" compile="0" resource="0" file="Source/PatchDice.h"/>
       <FILE id="lnk001" name="LinkSync.h" compile="0" resource="0" file="Source/LinkSync.h"/>
       <FILE id="lnk002" name="LinkSync.cpp" compile="1" resource="0" file="Source/LinkSync.cpp"/>
       <FILE id="lnk003" name="LinkSync_ios.mm" compile="1" resource="0" file="Source/LinkSync_ios.mm"/>

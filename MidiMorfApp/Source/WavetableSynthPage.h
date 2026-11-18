@@ -5,6 +5,7 @@
 #include <JuceHeader.h>
 #include "WavetableEngine.h"
 #include "PresetBrowser.h"
+#include "PatchDice.h"
 #include "SynthWidgets.h"
 #include "SynthLookAndFeel.h"
 #include "SynthModUI.h"
@@ -1795,7 +1796,9 @@ private:
 //
 // Presets: the bar steps through them and opens the browser; SAVE writes a
 // user preset; INIT loads Init. A star marks a sound changed since its
-// preset was loaded.
+// preset was loaded. The dice rolls a random patch (PatchDice) in the
+// category of the last roll, else the current preset's; MUT nudges the
+// current sound and marks it changed.
 //
 // saveState / restoreState are for the engine it was built with (T1's synth),
 // under the settings key that synth has always used — read only when moving
@@ -1808,7 +1811,10 @@ public:
         bar.onStep   = [this] (int dir) { step (dir); };
         bar.onBrowse = [this] { browser.show (presetName, accent); };
         bar.onSave   = [this] { promptSave(); };
+        bar.onRoll   = [this] { roll (lastRoll.category.isNotEmpty() ? lastRoll.category : categoryOf (presetName)); };
+        bar.onMutate = [this] { mutate(); };
         browser.onPick = [this] (const WavetablePreset& p) { load (p); };
+        browser.onRoll = [this] (const juce::String& category) { roll (category); };
         addChildComponent (browser);
 
         edit (e, "Init", MidiMorfColors::accent);
@@ -2003,12 +2009,47 @@ private:
         load (all[(size_t) (((index < 0 ? 0 : index + direction) % n + n) % n)]);
     }
 
+    // Empty when the preset has none (Init), which rolls any category.
+    juce::String categoryOf (const juce::String& name) const
+    {
+        if (name == lastRoll.name)
+            return lastRoll.category;
+        for (auto& p : WavetablePresets::all())
+            if (p.name == name && p.category.isNotEmpty())
+                return p.category;
+        return {};
+    }
+
+    void roll (const juce::String& category)
+    {
+        auto p = PatchDice::roll (category, random);
+        PatchDice::matchLevel (p.state, scratchEngine());
+        lastRoll = p;
+        load (p);
+    }
+
+    void mutate()
+    {
+        auto state = PatchDice::mutate (editing->getState(), random);
+        PatchDice::matchLevel (state, scratchEngine());
+        editing->setState (state);
+        content->refreshAll();
+        patchChanged();
+    }
+
+    // Plays patches offline to set their level; never heard.
+    WavetableEngine& scratchEngine()
+    {
+        if (scratch == nullptr)
+            scratch = std::make_unique<WavetableEngine> (24);
+        return *scratch;
+    }
+
     void promptSave()
     {
-        juce::String category = "Pad";
-        for (auto& p : WavetablePresets::all())
-            if (p.name == presetName && p.category.isNotEmpty())
-                category = p.category;
+        juce::String category = categoryOf (presetName);
+        if (category.isEmpty())
+            category = "Pad";
 
         auto* w = new juce::AlertWindow ("Save preset", "Name your sound and pick where it goes.", juce::MessageBoxIconType::NoIcon);
         w->addTextEditor ("name", presetName == "Init" ? juce::String ("My Sound") : presetName, "Name");
@@ -2055,6 +2096,9 @@ public:
 private:
     PresetBrowser browser;
     juce::String presetName { "Init" };
+    WavetablePreset lastRoll;
+    juce::Random random;
+    std::unique_ptr<WavetableEngine> scratch;
     juce::ValueTree baseline;
     juce::Colour accent { MidiMorfColors::accent };
 };

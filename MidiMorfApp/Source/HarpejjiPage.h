@@ -255,10 +255,19 @@ public:
     //==========================================================================
     void mouseDown (const juce::MouseEvent& e) override
     {
-        auto& t = touches[(size_t) (e.source.getIndex() % (int) touches.size())];
+        // A finger this source left behind (its lift never reached us) goes first.
+        if (auto* old = touchFor (e.source))
+            letGo (*old);
+
+        const auto slot = std::find_if (touches.begin(), touches.end(), [] (const Touch& c) { return ! c.source.has_value(); });
+        if (slot == touches.end())
+            return;   // more fingers than slots
+
+        auto& t = *slot;
         t = hit (e.position);
         if (t.string < 0)
             return;
+        t.source = e.source;
         if (t.fret == Nut)
         {
             mute (t.string);
@@ -270,21 +279,18 @@ public:
     // The finger stays on its string: along it slides, across it bends.
     void mouseDrag (const juce::MouseEvent& e) override
     {
-        auto& t = touches[(size_t) (e.source.getIndex() % (int) touches.size())];
-        if (t.string < 0 || t.fret == Nut)
+        auto* t = touchFor (e.source);
+        if (t == nullptr || t->fret == Nut)
             return;
-        t.pos = fretPosition (e.position.x);
-        t.y = e.position.y;
-        followFinger (t);
+        t->pos = fretPosition (e.position.x);
+        t->y = e.position.y;
+        followFinger (*t);
     }
 
     void mouseUp (const juce::MouseEvent& e) override
     {
-        auto& t = touches[(size_t) (e.source.getIndex() % (int) touches.size())];
-        const int s = t.string;
-        t = {};
-        if (s >= 0)
-            updateString (s);
+        if (auto* t = touchFor (e.source))
+            letGo (*t);
     }
 
 private:
@@ -311,12 +317,40 @@ private:
 
     // A finger: the fret it came down on (the note it plays), where it is now
     // along the string (in frets, 0 = the nut end of the first fret) and how
-    // far it has moved across it.
+    // far it has moved across it. Slots go to fingers by their touch, not by
+    // its index, so two fingers never share one.
     struct Touch
     {
         int string = -1, fret = -1;
         float startPos = 0.0f, pos = 0.0f, startY = 0.0f, y = 0.0f;
+        std::optional<juce::MouseInputSource> source;
     };
+
+    Touch* touchFor (const juce::MouseInputSource& src)
+    {
+        for (auto& t : touches)
+            if (t.source.has_value() && *t.source == src)
+                return &t;
+        return nullptr;
+    }
+
+    void letGo (Touch& t)
+    {
+        const int s = t.string;
+        t = {};
+        if (s >= 0)
+            updateString (s);
+    }
+
+    // A finger whose touch has ended without its mouseUp reaching us (taken
+    // by a page change, a system gesture or a cancelled touch) lets go here,
+    // so its note can't hang on.
+    void releaseLostFingers()
+    {
+        for (auto& t : touches)
+            if (t.source.has_value() && ! t.source->isDragging())
+                letGo (t);
+    }
 
     int noteAt (int s, int f) const
     {
@@ -482,6 +516,7 @@ private:
             playing.fill (-1);
             heldFret.fill (-1);
         }
+        releaseLostFingers();
         if (! anySounding())
             stopTimer();
         if (isShowing())

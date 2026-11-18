@@ -230,7 +230,10 @@ private:
         for (int i = 0; i < WavetableLibrary::NumAnalogWaves; ++i)
             tableCombo.addItem (names[i], i + 1);
         tableCombo.addSectionHeading ("WAVETABLE");
-        for (int i = WavetableLibrary::NumAnalogWaves; i < names.size(); ++i)
+        for (int i = WavetableLibrary::NumAnalogWaves; i < WavetableLibrary::FirstExperimental; ++i)
+            tableCombo.addItem (names[i], i + 1);
+        tableCombo.addSectionHeading ("EXPERIMENTAL");
+        for (int i = WavetableLibrary::FirstExperimental; i < names.size(); ++i)
             tableCombo.addItem (names[i], i + 1);
         tableCombo.addSeparator();
 

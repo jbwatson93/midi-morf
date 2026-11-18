@@ -162,10 +162,17 @@ namespace WavetableLibrary
         static const juce::StringArray names {
             "Sine", "Triangle", "Saw", "Square",
             "Morph", "PWM", "Harmonics", "Vocal", "FM",
-            "Sync", "Fold", "Digital", "Organ", "Glass"
+            "Sync", "Fold", "Digital", "Organ", "Glass",
+            // Experimental (FirstExperimental on). Patches store the name, so
+            // append only.
+            "Resonance", "Ring", "Tube", "Crush", "Spectral", "Comb",
+            "Chaos", "Fractal", "Primes", "Scatter", "Overtone", "Glitch"
         };
         return names;
     }
+
+    // Where the experimental tables start in builtInNames, for the menu.
+    static constexpr int FirstExperimental = 14;
 
     inline bool isAnalog (int index) { return index >= 0 && index < NumAnalogWaves; }
 
@@ -388,7 +395,7 @@ namespace WavetableLibrary
                     break;
                 }
 
-                default: // Glass: seeded inharmonic-ish bell spectra, crossfaded
+                case 9: // Glass: seeded inharmonic-ish bell spectra, crossfaded
                 {
                     auto spectrumFor = [] (int seed, std::vector<float>& out)
                     {
@@ -412,11 +419,227 @@ namespace WavetableLibrary
         return frames;
     }
 
+    // Each frame scaled to the same power, so scanning one of these never
+    // dips into near-silence where the shape gets thin or spiky.
+    inline void equalPower (std::vector<Spectrum>& frames)
+    {
+        for (auto& f : frames)
+        {
+            double power = 0.0;
+            for (auto& bin : f) power += std::norm (bin);
+            if (power > 1.0e-12)
+            {
+                const float g = (float) (1.0 / std::sqrt (power));
+                for (auto& bin : f) bin *= g;
+            }
+        }
+    }
+
+    // A well-mixed number from a seed: juce::Random's first value barely
+    // changes between neighbouring seeds.
+    inline uint32_t hash (uint32_t x)
+    {
+        x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; x ^= x >> 16;
+        return x;
+    }
+
+    // The experimental tables: shapes for finding sounds rather than
+    // imitating instruments. Index 0 = Resonance. Several use a fixed seed,
+    // so a table is the same on every device and in every saved patch.
+    inline std::vector<Spectrum> generateExperimental (int index)
+    {
+        constexpr int F = BuiltInFrames;
+        constexpr int H = Wavetable::NumHarmonics;
+        constexpr double twoPi = juce::MathConstants<double>::twoPi;
+        constexpr double pi    = juce::MathConstants<double>::pi;
+        std::vector<Spectrum> frames;
+        frames.reserve (F);
+
+        for (int f = 0; f < F; ++f)
+        {
+            const double t = (double) f / (double) (F - 1);
+            std::vector<float> amps ((size_t) H + 1, 0.0f);
+
+            switch (index)
+            {
+                case 0: // Resonance: phase-distortion "filter" — a fading window on a sine 1 → 16× the pitch
+                {
+                    const double ratio = std::pow (16.0, t);
+                    frames.push_back (fromFunction ([ratio] (double x)
+                    {
+                        return (float) ((1.0 - x) * std::cos (twoPi * ratio * x));
+                    }));
+                    break;
+                }
+
+                case 1: // Ring: a sine ring-modulated by another, 1 → 24× the pitch
+                {
+                    const double m = 1.0 + t * 23.0;
+                    frames.push_back (fromFunction ([m] (double x)
+                    {
+                        return (float) (std::sin (twoPi * x) * std::sin (twoPi * m * x));
+                    }));
+                    break;
+                }
+
+                case 2: // Tube: an offset sine overdriven, warm → square-ish, with even harmonics
+                {
+                    const double gain = std::pow (30.0, t);
+                    frames.push_back (fromFunction ([gain] (double x)
+                    {
+                        return (float) std::tanh (gain * (std::sin (twoPi * x) + 0.3));
+                    }));
+                    break;
+                }
+
+                case 3: // Crush: a sine sample-held at 64 → 3 steps and quantised 16 → 2 levels
+                {
+                    const double steps  = std::round (64.0 * std::pow (3.0 / 64.0, t));
+                    const double levels = std::round (16.0 * std::pow (2.0 / 16.0, t));
+                    frames.push_back (fromFunction ([steps, levels] (double x)
+                    {
+                        const double v = std::sin (twoPi * (std::floor (x * steps) + 0.5) / steps);
+                        return (float) (std::round (v * levels) / levels);
+                    }));
+                    break;
+                }
+
+                case 4: // Spectral: a band of noise-phased partials sweeping from 2 up to 150
+                {
+                    const double centre = 2.0 * std::pow (75.0, t), width = 1.5 + centre * 0.25;
+                    juce::Random r (4004);
+                    Spectrum s ((size_t) H + 1);
+                    for (int h = 1; h <= H; ++h)
+                    {
+                        const double d = (h - centre) / width;
+                        const float a = (float) std::exp (-0.5 * d * d), phase = r.nextFloat() * (float) twoPi;
+                        s[(size_t) h] = std::polar (a, phase);
+                    }
+                    frames.push_back (s);
+                    break;
+                }
+
+                case 5: // Comb: a saw through a comb filter whose teeth close in
+                {
+                    const double spacing = 0.5 * std::pow (0.04, t);   // notch every 1/spacing harmonics
+                    for (int h = 1; h <= H; ++h)
+                        amps[(size_t) h] = (float) (2.0 / (pi * h) * std::abs (std::cos (pi * h * spacing)));
+                    frames.push_back (additive (amps));
+                    break;
+                }
+
+                case 6: // Chaos: the logistic map traced through one cycle, calm (r 3.5) → wild (r 4)
+                {
+                    const double rate = 3.5 + 0.5 * t;
+                    std::vector<double> pts (48);
+                    double v = 0.37;
+                    for (int k = 0; k < 200; ++k) v = rate * v * (1.0 - v);   // settle on the attractor
+                    double mean = 0.0;
+                    for (auto& p : pts) { v = rate * v * (1.0 - v); p = v; mean += v; }
+                    mean /= (double) pts.size();
+                    frames.push_back (fromFunction ([&pts, mean] (double x)
+                    {
+                        const double idx = x * (double) pts.size();
+                        const int i0 = (int) idx % (int) pts.size(), i1 = (i0 + 1) % (int) pts.size();
+                        const double w = 0.5 - 0.5 * std::cos (pi * (idx - std::floor (idx)));   // smooth steps
+                        return (float) (pts[(size_t) i0] + w * (pts[(size_t) i1] - pts[(size_t) i0]) - mean);
+                    }));
+                    break;
+                }
+
+                case 7: // Fractal: a Weierstrass curve — partials at powers of 3, rolling off less and less
+                {
+                    const float a = (float) (0.2 + 0.65 * t);
+                    float amp = 1.0f;
+                    for (int h = 1; h <= H; h *= 3, amp *= a)
+                        amps[(size_t) h] = amp;
+                    frames.push_back (additive (amps));
+                    break;
+                }
+
+                case 8: // Primes: only the prime partials (and the fundamental), dark → bright
+                {
+                    // Scattered phases: in step they pile up into one tall
+                    // spike, which normalises far quieter than it sounds.
+                    const double tilt = 1.6 - 1.2 * t;
+                    Spectrum s ((size_t) H + 1);
+                    for (int h = 1; h <= H; ++h)
+                    {
+                        bool prime = h > 1;
+                        for (int d = 2; d * d <= h && prime; ++d) prime = h % d != 0;
+                        if (prime || h == 1)
+                            s[(size_t) h] = std::polar ((float) std::pow ((double) h, -tilt),
+                                                        (float) (hash ((uint32_t) h + 8008) % 6283) * 0.001f);
+                    }
+                    frames.push_back (s);
+                    break;
+                }
+
+                case 9: // Scatter: sine grains strewn through the cycle, 4 → 16 of them
+                {
+                    const double count = 4.0 + t * 12.0;
+                    frames.push_back (fromFunction ([count] (double x)
+                    {
+                        juce::Random r (9009);
+                        double out = 0.0;
+                        for (int g = 0; g < 16; ++g)
+                        {
+                            const double centre = r.nextDouble(), width = 0.1 + 0.2 * r.nextDouble();
+                            const double ratio = std::round (2.0 + 22.0 * r.nextDouble());
+                            const double fade = juce::jlimit (0.0, 1.0, count - g);
+                            double d = x - centre;
+                            d -= std::round (d);   // wrap, so grains cross the cycle's end
+                            if (fade > 0.0 && std::abs (d) < width * 0.5)
+                                out += fade * (0.5 + 0.5 * std::cos (twoPi * d / width)) * std::sin (twoPi * ratio * x);
+                        }
+                        return (float) out;
+                    }));
+                    break;
+                }
+
+                case 10: // Overtone: the fundamental plus one partial gliding from 2 to 32 — scan it for a whistle
+                {
+                    const double k = 2.0 + t * 30.0;
+                    const int k0 = (int) k;
+                    amps[1] = 1.0f;
+                    amps[(size_t) k0]     += (float) (1.0 - (k - k0));
+                    amps[(size_t) k0 + 1] += (float) (k - k0);
+                    frames.push_back (additive (amps));
+                    break;
+                }
+
+                default: // Glitch: the cycle cut into 2 → 16 slices, each a different shape
+                {
+                    const int slices = (int) std::round (2.0 + t * 14.0);
+                    frames.push_back (fromFunction ([slices] (double x)
+                    {
+                        const int sl = juce::jmin (slices - 1, (int) (x * slices));
+                        const double u = x * slices - sl;   // 0..1 within the slice
+                        const uint32_t h = hash (7000u + (uint32_t) sl);
+                        switch (h % 5)
+                        {
+                            case 0:  return (float) (2.0 * u - 1.0);
+                            case 1:  return u < 0.5 ? 1.0f : -1.0f;
+                            case 2:  return (float) std::sin (twoPi * (double) (1 + (h >> 8) % 6) * u);
+                            case 3:  return (float) (hash (8000u + (uint32_t) sl * 64u + (uint32_t) (u * 64.0)) % 2001) * 0.001f - 1.0f;
+                            default: return 0.0f;
+                        }
+                    }));
+                    break;
+                }
+            }
+        }
+        equalPower (frames);
+        return frames;
+    }
+
     inline std::unique_ptr<Wavetable> build (int index)
     {
         index = juce::jlimit (0, builtInNames().size() - 1, index);
         if (isAnalog (index))
             return std::make_unique<Wavetable> (builtInNames()[index], std::vector<Spectrum> { analogWave (index) });
+        if (index >= FirstExperimental)
+            return std::make_unique<Wavetable> (builtInNames()[index], generateExperimental (index - FirstExperimental));
         return std::make_unique<Wavetable> (builtInNames()[index], generate (index - NumAnalogWaves));
     }
 

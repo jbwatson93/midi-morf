@@ -112,7 +112,7 @@ namespace PatchDice
 
         if (category == "Bass")
         {
-            set (t, { { "osc0_tableName", d.pick<const char*> ({ "Saw", "Square", "Sine", "FM", "Fold", "Sync", "Digital", "Morph" }) },
+            set (t, { { "osc0_tableName", d.pick<const char*> ({ "Saw", "Square", "Sine", "FM", "Fold", "Sync", "Digital", "Morph", "Tube", "Resonance", "Crush" }) },
                       { "osc1_tableName", d.pick<const char*> ({ "Saw", "Square", "Sine", "Triangle", "PWM" }) },
                       { "osc1_level", d.range (0.0f, 0.8f) }, { "osc1_semi", d.pick ({ -12, 0, 0, 12 }) }, { "osc1_fine", d.range (0.0f, 18.0f) },
                       { "unison", d.between (1, 2) }, { "detune", d.range (4.0f, 20.0f) },
@@ -140,7 +140,7 @@ namespace PatchDice
         }
         else if (category == "Lead")
         {
-            set (t, { { "osc0_tableName", d.pick<const char*> ({ "Saw", "Square", "Sync", "Vocal", "Digital", "Fold", "PWM", "Morph" }) },
+            set (t, { { "osc0_tableName", d.pick<const char*> ({ "Saw", "Square", "Sync", "Vocal", "Digital", "Fold", "PWM", "Morph", "Resonance", "Tube", "Overtone" }) },
                       { "osc1_tableName", d.pick<const char*> ({ "Saw", "Square", "PWM", "Sync", "Harmonics" }) },
                       { "osc1_level", d.range (0.2f, 0.8f) }, { "osc1_semi", d.pick ({ 0, 0, 12, -12, 7 }) }, { "osc1_fine", d.range (-9.0f, 9.0f) },
                       { "unison", d.between (1, 3) }, { "detune", d.range (5.0f, 15.0f) },
@@ -165,8 +165,8 @@ namespace PatchDice
         }
         else if (category == "Pad")
         {
-            set (t, { { "osc0_tableName", d.pick<const char*> ({ "Morph", "Glass", "Vocal", "Harmonics", "Organ", "Saw", "PWM", "Digital" }) },
-                      { "osc1_tableName", d.pick<const char*> ({ "Saw", "Sine", "Glass", "Vocal", "Triangle", "Morph" }) },
+            set (t, { { "osc0_tableName", d.pick<const char*> ({ "Morph", "Glass", "Vocal", "Harmonics", "Organ", "Saw", "PWM", "Digital", "Spectral", "Comb", "Fractal", "Overtone" }) },
+                      { "osc1_tableName", d.pick<const char*> ({ "Saw", "Sine", "Glass", "Vocal", "Triangle", "Morph", "Primes", "Spectral" }) },
                       { "osc1_level", d.range (0.2f, 0.5f) }, { "osc1_semi", d.pick ({ 0, 12, 12, 7, -12 }) }, { "osc1_fine", d.range (5.0f, 12.0f) },
                       { "unison", d.between (4, 7) }, { "detune", d.range (8.0f, 20.0f) },
                       { "filtType", d.pick ({ (int) SynthFilter::Ladder, (int) SynthFilter::LP24, (int) SynthFilter::LP12 }) },
@@ -187,8 +187,8 @@ namespace PatchDice
         }
         else if (category == "Keys")
         {
-            set (t, { { "osc0_tableName", d.pick<const char*> ({ "FM", "Organ", "Harmonics", "Glass", "Sine", "Triangle", "Digital" }) },
-                      { "osc1_tableName", d.pick<const char*> ({ "Sine", "Triangle", "Organ", "Glass" }) },
+            set (t, { { "osc0_tableName", d.pick<const char*> ({ "FM", "Organ", "Harmonics", "Glass", "Sine", "Triangle", "Digital", "Fractal", "Primes" }) },
+                      { "osc1_tableName", d.pick<const char*> ({ "Sine", "Triangle", "Organ", "Glass", "Ring" }) },
                       { "osc1_level", d.range (0.1f, 0.5f) }, { "osc1_semi", d.pick ({ 0, 12, 12, 24 }) }, { "osc1_fine", d.range (0.0f, 5.0f) },
                       { "unison", d.between (1, 3) }, { "detune", d.range (3.0f, 10.0f) },
                       { "filtType", d.pick ({ (int) SynthFilter::LP24, (int) SynthFilter::LP12 }) },
@@ -205,7 +205,7 @@ namespace PatchDice
         }
         else if (category == "Pluck")
         {
-            set (t, { { "osc0_tableName", d.pick<const char*> ({ "Saw", "Square", "Digital", "Harmonics", "Glass", "FM", "PWM", "Fold" }) },
+            set (t, { { "osc0_tableName", d.pick<const char*> ({ "Saw", "Square", "Digital", "Harmonics", "Glass", "FM", "PWM", "Fold", "Resonance", "Comb", "Crush" }) },
                       { "osc1_tableName", d.pick<const char*> ({ "Saw", "Square", "Triangle", "Glass" }) },
                       { "osc1_level", d.range (0.1f, 0.6f) }, { "osc1_semi", d.pick ({ 0, 12, -12, 7 }) }, { "osc1_fine", d.range (0.0f, 8.0f) },
                       { "unison", d.between (1, 3) }, { "detune", d.range (5.0f, 14.0f) },
@@ -220,8 +220,15 @@ namespace PatchDice
         }
         else   // FX: looser, with more going on
         {
-            set (t, { { "osc0_tableName", d.pick<const char*> ({ "Digital", "Fold", "FM", "Sync", "Vocal", "Glass", "Harmonics", "Morph" }) },
-                      { "osc1_tableName", d.pick<const char*> ({ "Digital", "Fold", "FM", "Square", "Saw", "PWM" }) },
+            // Mostly the experimental tables.
+            const auto& names = WavetableLibrary::builtInNames();
+            auto anyTable = [&]
+            {
+                return d.chance (0.75f) ? names[d.between (WavetableLibrary::FirstExperimental, names.size() - 1)]
+                                        : juce::String (d.pick<const char*> ({ "Digital", "Fold", "FM", "Sync", "Vocal", "Glass" }));
+            };
+            set (t, { { "osc0_tableName", anyTable() },
+                      { "osc1_tableName", anyTable() },
                       { "osc1_level", d.range (0.0f, 0.8f) }, { "osc1_semi", d.pick ({ -12, 0, 7, 12, 19 }) }, { "osc1_fine", d.range (-25.0f, 25.0f) },
                       { "unison", d.between (1, 5) }, { "detune", d.range (5.0f, 30.0f) },
                       { "noise", d.chance (0.3f) ? d.range (0.05f, 0.2f) : 0.0f }, { "drive", d.range (0.0f, 0.5f) },

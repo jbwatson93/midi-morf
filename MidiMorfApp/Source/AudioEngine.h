@@ -11,6 +11,7 @@
 #include "DrumSynth.h"
 #include "MidiOut.h"
 #include "Halo.h"
+#include "GrainSource.h"
 #include "LinkSync.h"
 
 //==============================================================================
@@ -19,16 +20,16 @@
 // Local-mode clock in between. Stereo out; the mic comes on only to record
 // a sample.
 //
-// Each track has its own synth, sampler and drum synth, and plays one of them
+// Each track has its own synth, sampler, grain, drum synth and Halo, and plays one of them
 // (or nothing). Defaults: T1 Synth, T2 Synth with the Acid Bass preset, T3
 // Sampler slicing the Amen, T4 Drums.
 class AudioEngine
 {
 public:
     // Values are saved in projects. Sampler was "Breaks" before it played
-    // keys and one-shots too.
-    enum class Sound { Empty = 0, Synth = 1, Sampler = 2, Drums = 3, Halo = 4 };
-    static constexpr int NumSounds = 5;
+    // keys and one-shots too; Grain was one of the Sampler's modes until 3.1.
+    enum class Sound { Empty = 0, Synth = 1, Sampler = 2, Drums = 3, Halo = 4, Grain = 5 };
+    static constexpr int NumSounds = 6;
 
     AudioEngine()
     {
@@ -44,6 +45,8 @@ public:
             rack.addToPool (mlrs[(size_t) t].get());
             halos[(size_t) t] = std::make_unique<HaloSource>();
             rack.addToPool (halos[(size_t) t].get());
+            grains[(size_t) t] = std::make_unique<GrainSource>();
+            rack.addToPool (grains[(size_t) t].get());
         }
         samplers[2]->setBuiltInBreak (0);   // the Amen, for the slicer
 
@@ -72,6 +75,10 @@ public:
         // A sampler picked for the first time starts with the Amen rather than silence.
         if (sound == Sound::Sampler && samplers[(size_t) track]->getBreak() == nullptr)
             samplers[(size_t) track]->setBuiltInBreak (0);
+        // A Grain starts with a pad, something to hold still under a finger.
+        if (sound == Sound::Grain && grains[(size_t) track]->getBreak() == nullptr
+            && grains[(size_t) track]->renderFromPreset (GrainSource::defaultPreset) == nullptr)
+            grains[(size_t) track]->setBuiltInBreak (0);
 
         sounds[(size_t) track] = sound;
         applySource (track);
@@ -222,6 +229,9 @@ public:
     // A track's own Remix grid, whether or not the track is playing it.
     MlrSource& getTrackMlr (int track) noexcept { return *mlrs[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
 
+    // A track's own Grain, whether or not the track is playing it.
+    GrainSource& getTrackGrain (int track) noexcept { return *grains[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
+
     // A track's own Halo, whether or not the track is playing it.
     HaloSource& getTrackHalo (int track) noexcept { return *halos[(size_t) juce::jlimit (0, TrackRack::NumTracks - 1, track)]; }
 
@@ -262,6 +272,7 @@ public:
             case Sound::Sampler: return samplers[(size_t) track]->getSampleName();
             case Sound::Drums:   return drums[(size_t) track]->getKitName();
             case Sound::Halo:    return "Halo";
+            case Sound::Grain:   return grains[(size_t) track]->getSampleName();
             default:            return "Empty";
         }
     }
@@ -296,6 +307,7 @@ private:
                              : sound == Sound::Sampler ? (SoundSource*) samplers[(size_t) track].get()
                              : sound == Sound::Drums   ? (SoundSource*) drums[(size_t) track].get()
                              : sound == Sound::Halo    ? (SoundSource*) halos[(size_t) track].get()
+                             : sound == Sound::Grain   ? (SoundSource*) grains[(size_t) track].get()
                                                        : nullptr);
     }
 
@@ -309,6 +321,7 @@ private:
     std::array<std::unique_ptr<DrumSource>, TrackRack::NumTracks> drums;
     std::array<std::unique_ptr<MlrSource>, TrackRack::NumTracks> mlrs;
     std::array<std::unique_ptr<HaloSource>, TrackRack::NumTracks> halos;
+    std::array<std::unique_ptr<GrainSource>, TrackRack::NumTracks> grains;
     std::array<bool, TrackRack::NumTracks> remixing {};
     PunchFx punch;
     MidiOutRouter midiOut;   // before the rack, which taps into it

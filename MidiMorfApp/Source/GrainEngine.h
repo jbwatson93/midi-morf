@@ -6,7 +6,7 @@
 #include <atomic>
 
 //==============================================================================
-// The sampler's GRAIN mode: the sample played as clouds of short grains.
+// The Grain sound (GrainSource): the sample played as clouds of short grains.
 //
 // A cloud is a stream of grains around a point in the sample. Each finger on
 // the waveform is one cloud (Touch clouds, set from the message thread), and
@@ -25,7 +25,7 @@
 // pitch (±12 semitones), SPRAY or DENSITY.
 //
 // The grains are a fixed pool, so nothing is allocated on the audio thread;
-// with every grain busy, a new one waits. The engine reads the sampler's
+// with every grain busy, a new one waits. The engine reads the source's
 // current (trimmed) sample and renders into BreakPlayer's voice buffers, so
 // TONE, the filter and GAIN apply as to every other mode.
 //
@@ -53,7 +53,7 @@ public:
         std::atomic<int>   yAxis { YSize };
         std::atomic<float> position { 0.25f };  // where notes play, 0..1
         std::atomic<bool>  freeze { false };    // clouds stop scanning
-        std::atomic<float> tuneSemis { 0.0f };  // the sampler's TRANSPOSE + DETUNE
+        std::atomic<float> tuneSemis { 0.0f };  // TRANSPOSE + DETUNE
         std::atomic<float> velSense { 1.0f };
     } settings;
 

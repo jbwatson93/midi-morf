@@ -113,6 +113,11 @@
       <FILE id="ses002" name="ProjectBrowser.h" compile="0" resource="0" file="Source/ProjectBrowser.h"/>
       <FILE id="smpPg1" name="SamplerPage.h" compile="0" resource="0" file="Source/SamplerPage.h"/>
       <FILE id="smplr1" name="Sampler.h" compile="0" resource="0" file="Source/Sampler.h"/>
+      <FILE id="smpSrc1" name="SampleSource.h" compile="0" resource="0" file="Source/SampleSource.h"/>
+      <FILE id="smpEd1" name="SampleEditor.h" compile="0" resource="0" file="Source/SampleEditor.h"/>
+      <FILE id="smpPgB1" name="SamplePage.h" compile="0" resource="0" file="Source/SamplePage.h"/>
+      <FILE id="grnSrc1" name="GrainSource.h" compile="0" resource="0" file="Source/GrainSource.h"/>
+      <FILE id="grnPg1" name="GrainPage.h" compile="0" resource="0" file="Source/GrainPage.h"/>
       <FILE id="pTemIk" name="SampleRecorder.h" compile="0" resource="0" file="Source/SampleRecorder.h"/>
       <FILE id="drm000" name="DrumSynth.h" compile="0" resource="0" file="Source/DrumSynth.h"/>
       <FILE id="drm001" name="DrumGridPage.h" compile="0" resource="0" file="Source/DrumGridPage.h"/>

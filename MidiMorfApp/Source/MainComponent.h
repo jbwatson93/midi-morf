@@ -20,6 +20,7 @@
 #include "Walkthrough.h"
 #include "RemixPage.h"
 #include "SamplerPage.h"
+#include "GrainPage.h"
 #include "DrumGridPage.h"
 #include "DrumKitPage.h"
 #include "HaloPage.h"
@@ -179,6 +180,7 @@ private:
     PerformView performView;   // iPad only
     DrumKitPage drumKitPage;
     HaloPage haloPage;
+    GrainPage grainPage;
     NoteEditorPage noteEditorPage;
     int editingScene = -1;   // the clip the note editor has open
 

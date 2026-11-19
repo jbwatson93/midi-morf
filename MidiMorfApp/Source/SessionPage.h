@@ -688,6 +688,7 @@ private:
 
             sound.addItem ("Synth", 1 + 1);
             sound.addItem ("Sampler", 2 + 1);
+            sound.addItem ("Grain", 5 + 1);
             sound.addItem ("Drums", 3 + 1);
             sound.addItem ("Halo", 4 + 1);
             sound.addItem ("Empty", 0 + 1);

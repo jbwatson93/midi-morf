@@ -47,7 +47,8 @@ static constexpr int seqPageBase      = MidiMorf::NUM_CONTROLLERS + 9;
 static constexpr int seqPageEnd       = seqPageBase + NumKinds * TrackRack::NumTracks;
 // Then pages added since, after all the tracks' pages so no index moves.
 static constexpr int haloPageIdx      = seqPageEnd;
-static constexpr int numPages         = haloPageIdx + 1;
+static constexpr int grainPageIdx     = seqPageEnd + 1;
+static constexpr int numPages         = grainPageIdx + 1;
 
 static int seqPageIdx (int kind, int track) { return seqPageBase + kind * TrackRack::NumTracks + track; }
 static bool isSeqPage (int page)            { return page >= seqPageBase && page < seqPageEnd; }   // any track's instrument page
@@ -305,6 +306,7 @@ MainComponent::MainComponent()
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (remixPages[(size_t) t].get());
     for (int t = 0; t < TrackRack::NumTracks; ++t) pageContainer.addPage (harpejjiPages[(size_t) t].get());
     pageContainer.addPage (&haloPage);
+    pageContainer.addPage (&grainPage);
 
     // Perform borrows the tracks' instrument pages and hands them back.
     performView.onShow       = [this] { populatePerform(); };
@@ -383,6 +385,8 @@ MainComponent::MainComponent()
     };
     samplerPage.onChanged = [this] { homePage->refresh(); updateRail(); saveState(); };
     samplerPage.setRecorder (audioEngine.getRecorder());
+    grainPage.onChanged = [this] { homePage->refresh(); updateRail(); saveState(); };
+    grainPage.setRecorder (audioEngine.getRecorder());
 
     noteEditorPage.onBack = [this] { pageContainer.setPage (homePageIdx); };
     noteEditorPage.getPlayPosition = [this]
@@ -412,11 +416,14 @@ MainComponent::MainComponent()
     haloPage.onChanged      = [this] { saveState(); };
     drumKitPage.onKitLoaded = [this] { homePage->refresh(); updateRail(); };
     drumKitPage.onAudition  = [this] (int note, bool down) { audition (drumKitPage.getTrack(), note, down); };
-    samplerPage.onMicNeeded = [this] (std::function<void (bool)> done)
+    for (auto* page : std::initializer_list<SamplePage*> { &samplerPage, &grainPage })
     {
-        Platform::requestMicrophone ([this, done] (bool granted) { done (granted && audioEngine.setMicOn (true)); });
-    };
-    samplerPage.onMicDone = [this] { audioEngine.setMicOn (false); };
+        page->onMicNeeded = [this] (std::function<void (bool)> done)
+        {
+            Platform::requestMicrophone ([this, done] (bool granted) { done (granted && audioEngine.setMicOn (true)); });
+        };
+        page->onMicDone = [this] { audioEngine.setMicOn (false); };
+    }
 
     fxPage.onStateChanged = [this] { saveState(); };
     transportPage.onStateChanged = [this] { saveState(); };
@@ -590,6 +597,7 @@ juce::String MainComponent::getPageDisplayName (int pageIndex) const
     if (pageIndex == drumKitPageIdx)   return "Drums";
     if (pageIndex == noteEditorPageIdx) return "Editor";
     if (pageIndex == haloPageIdx)      return "Halo";
+    if (pageIndex == grainPageIdx)     return "Grain";
     return {};
 }
 
@@ -652,7 +660,8 @@ void MainComponent::setSound (int track, int sound)
     const int page = pageContainer.getCurrentPage();
     if ((page == synthPageIdx && audioEngine.getWavetable (soundTrack) == nullptr)
         || (page == drumKitPageIdx && audioEngine.getTrackSound (drumKitPage.getTrack()) != AudioEngine::Sound::Drums)
-        || (page == haloPageIdx && audioEngine.getTrackSound (haloPage.getTrack()) != AudioEngine::Sound::Halo))
+        || (page == haloPageIdx && audioEngine.getTrackSound (haloPage.getTrack()) != AudioEngine::Sound::Halo)
+        || (page == grainPageIdx && audioEngine.getTrackSound (grainPage.getTrack()) != AudioEngine::Sound::Grain))
         pageContainer.setPage (homePageIdx);
 }
 
@@ -670,6 +679,9 @@ int MainComponent::trackOfPage (int pageIndex) const
 
     if (pageIndex == haloPageIdx)
         return haloPage.getTrack();
+
+    if (pageIndex == grainPageIdx)
+        return grainPage.getTrack();
 
     if (pageIndex == noteEditorPageIdx)
         return noteEditorPage.getTrack();
@@ -691,7 +703,8 @@ int MainComponent::pageOf (int track) const
 
 bool MainComponent::pageIsSound (int pageIndex) const
 {
-    return pageIndex == synthPageIdx || pageIndex == samplerPageIdx || pageIndex == drumKitPageIdx || pageIndex == haloPageIdx;
+    return pageIndex == synthPageIdx || pageIndex == samplerPageIdx || pageIndex == drumKitPageIdx || pageIndex == haloPageIdx
+        || pageIndex == grainPageIdx;
 }
 
 // First tap: the track's instrument. Tapping the lit track again flips
@@ -780,6 +793,10 @@ int MainComponent::prepareSoundPage (int track)
         case AudioEngine::Sound::Halo:
             haloPage.edit (audioEngine.getTrackHalo (track), track);
             return haloPageIdx;
+
+        case AudioEngine::Sound::Grain:
+            grainPage.edit (audioEngine.getTrackGrain (track), track);
+            return grainPageIdx;
 
         default:
             return -1;
@@ -1537,6 +1554,7 @@ void MainComponent::populatePerform()
             const int editor = sound == AudioEngine::Sound::Synth   ? synthPageIdx
                              : sound == AudioEngine::Sound::Sampler ? samplerPageIdx
                              : sound == AudioEngine::Sound::Halo    ? haloPageIdx
+                             : sound == AudioEngine::Sound::Grain   ? grainPageIdx
                                                                     : drumKitPageIdx;
             if (usedEditors.insert (editor).second)
                 show[(size_t) t] = prepareSoundPage (t);
@@ -1737,6 +1755,7 @@ void MainComponent::saveNow()
         track.appendChild (audioEngine.getTrackDrums (t).getState(), nullptr);
         track.appendChild (audioEngine.getTrackMlr (t).getState(), nullptr);
         track.appendChild (audioEngine.getTrackHalo (t).getState(), nullptr);
+        track.appendChild (audioEngine.getTrackGrain (t).getState(), nullptr);
         audioEngine.getMidiOut().saveTrack (t, track);
         project.appendChild (track, nullptr);
     }
@@ -1855,6 +1874,16 @@ void MainComponent::restoreState()
                 audioEngine.getTrackMlr (t).setState (grid);
             if (auto halo = track.getChildWithName (HaloSource::stateType); halo.isValid())
                 audioEngine.getTrackHalo (t).setState (halo);
+            if (auto grain = track.getChildWithName (GrainSource::stateType); grain.isValid())
+                audioEngine.getTrackGrain (t).setState (grain);
+            else if (auto sampler = track.getChildWithName (SamplerSource::stateType); (int) sampler.getProperty ("mode", 0) == 3)
+            {
+                // From before Grain was its own sound: a sampler in Grain
+                // mode becomes the track's Grain, sample, settings and all.
+                audioEngine.getTrackGrain (t).setState (sampler);
+                if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Sampler)
+                    setSound (t, (int) AudioEngine::Sound::Grain);
+            }
             audioEngine.getMidiOut().loadTrack (t, track);
             setInstrument (t, track.getProperty ("instrument", defaultInst[t]));
             audioEngine.getRack().setVolume (t, (float) (double) track.getProperty ("volume", 1.0));
@@ -1930,6 +1959,14 @@ void MainComponent::restoreState()
             break;
         }
 
+    // The Grain page likewise.
+    for (int t = 0; t < TrackRack::NumTracks; ++t)
+        if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Grain)
+        {
+            grainPage.edit (audioEngine.getTrackGrain (t), t);
+            break;
+        }
+
     // The Halo page likewise.
     for (int t = 0; t < TrackRack::NumTracks; ++t)
         if (audioEngine.getTrackSound (t) == AudioEngine::Sound::Halo)
@@ -1951,6 +1988,8 @@ void MainComponent::restoreState()
     int lastPage = settings->getIntValue ("lastPage", -1);
     if (lastPage == haloPageIdx && audioEngine.getTrackSound (haloPage.getTrack()) != AudioEngine::Sound::Halo)
         lastPage = -1;   // no track plays Halo any more
+    if (lastPage == grainPageIdx && audioEngine.getTrackSound (grainPage.getTrack()) != AudioEngine::Sound::Grain)
+        lastPage = -1;
     const bool reachable = lastPage >= 0 && lastPage < numPages
                            && ((lastPage >= MidiMorf::NUM_CONTROLLERS && lastPage < seqPageBase && lastPage != drumGridPageIdx && lastPage != noteEditorPageIdx)
                                || lastPage == (int) CM::Transport || lastPage == (int) CM::FXPunchIn

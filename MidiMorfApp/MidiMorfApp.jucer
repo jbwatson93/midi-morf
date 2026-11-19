@@ -2,7 +2,7 @@
 
 <JUCERPROJECT id="tEiODR" name="MidiMorfApp" projectType="guiapp" useAppConfig="0"
               addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" companyName="Retro Relic"
-              version="3.0.3">
+              version="3.1.0">
   <MAINGROUP id="rL3Kk6" name="MidiMorfApp">
     <GROUP id="{819795D2-B9DA-2740-0AF6-C8F10D4674AA}" name="Source">
       <FILE id="U1w5TJ" name="AboutPage.h" compile="0" resource="0" file="Source/AboutPage.h"/>
@@ -173,7 +173,7 @@
         <MODULEPATH id="juce_audio_processors_headless" path="../../../../../../../Applications/JUCE/modules"/>
       </MODULEPATHS>
     </XCODE_IPHONE>
-    <ANDROIDSTUDIO targetFolder="Builds/Android" androidPushNotifications="0" microphonePermissionNeeded="1"
+    <ANDROIDSTUDIO androidVersionCode="2" targetFolder="Builds/Android" androidPushNotifications="0" microphonePermissionNeeded="1"
                    androidScreenOrientation="landscape" androidMinimumSDK="26" androidTargetSDK="36"
                    androidInternetNeeded="1" androidOtherPermissions="android.permission.ACCESS_NETWORK_STATE android.permission.ACCESS_WIFI_STATE" extraDefs="LINK_PLATFORM_LINUX=1" androidExternalWriteNeeded="0"
                    androidReadMediaAudioPermission="0" androidReadMediaImagesPermission="0"

@@ -29,6 +29,17 @@ fi
 
 password="$(cat "$passfile")"
 
+# Ableton Link on Android is GPL, so the Play build leaves it out until the
+# license is settled (see LINK.md): the library is moved aside for the build,
+# and the app falls back to its stub. --with-link keeps it in.
+link="$app/ThirdParty/link"
+parked="$app/ThirdParty/.link-parked"
+if [[ "${1:-}" != "--with-link" && -d "$link" ]]; then
+    mv "$link" "$parked"
+    trap 'mv "$parked" "$link"' EXIT
+    echo "Building without Ableton Link"
+fi
+
 "/Applications/JUCE/Projucer.app/Contents/MacOS/Projucer" --resave "$app/MidiMorfApp.jucer"
 
 # Passed through the environment so the password stays out of the process list.
